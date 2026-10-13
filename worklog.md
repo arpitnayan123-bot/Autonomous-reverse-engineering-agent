@@ -376,3 +376,29 @@ Stage Summary:
 - Contracts: ChatMessage.modelId column; GET history rows + modelId; SSE usage event + modelId; export adds "model:" meta.
 - Infra rules: post-db:push restarts MUST be verified for port binding (EADDRINUSE check); eval-polling before Enter is the reliable way to catch sub-second UI states on video/eval.
 - Next candidates: chat folders/tags on top of time groups, file compare view, i18n, streaming tool-arg preview (args already shown; could stream partial JSON), provider pricing refresh date surfaced in UI, per-session cumulative cost in session list rows.
+
+---
+Task ID: 13 (cron review round 8 — Home dashboard redesign + REA repo credit)
+Agent: main agent (webDevReview)
+Task: User request — "redesign the homepage/dashboard with more precise and connected features and beautiful design" + "give credit to the github repo rea". Standard round flow: assess → QA → implement.
+
+Work Log:
+- Status assessment: dev server healthy, tsc clean (src/), lint clean, git at round-7 + one anonymous auto-commit (live tool-intent preview feature — kept, verified working). Live QA (fresh browser): demo session persisted, free-chat streaming end-to-end ✓ → phase STABLE → features.
+- FEATURE 1 — Home dashboard (user's main ask): NEW src/components/rea/home-dashboard.tsx renders as the empty state of every free chat (the app "homepage"). Structure:
+  - Ambient background: blueprint grid (radial-masked) + emerald engine glow + slow scanline sweep (.rea-home-bg/-glow/-grid/-scan in globals.css, prefers-reduced-motion safe).
+  - Hero: REA pill badge, "Your reverse-engineering workspace" with emerald-gradient keyword, live status chips — engine v6.4.0 · 170 tools (pulsing dot, healthy color), active provider model, add-your-API-key CTA (opens settings) when no key.
+  - 4 live stat cards (all click-through): CHATS (count + total messages → opens palette), FILES (count + latest → opens inspector), ENGINE TOOLS (170 · v6.4.0 ready → opens system dialog), MSG QUOTA (remaining/limit per 5-min window → opens shortcuts). Data comes from the same store the sidebar/status bar use, so it can never drift.
+  - Recent chats + recent files panels (top 4 each): rows show message count, timeAgo, per-chat cost estimate, FormatBadge + size + run status; click → openSession / openInspector; hover arrow affordance; empty states included.
+  - Quick actions row: New chat (⌘⇧O), API key, Engine, Palette (⌘K).
+  - Starter prompts (4 free-chat questions) + session rollup line "est. spend across N chats: ~$X · M messages".
+  - REA CREDIT CARD (user ask): GitHub icon, "Powered by REA — Reverse Engineer Anything", MIT badge, github.com/morluto/rea, engine version + tool count; links to https://github.com/morluto/rea (target=_blank rel=noopener).
+  - Staggered framer-motion entrance (fadeUp, 50ms steps); all interactive elements keyboard-focusable with emerald rings.
+- FEATURE 2 — REA repo credit surfaced in 3 places: (1) dashboard credit card, (2) VSCode-style status bar left segment is now a GitHub link — dot + Github icon + "rea-agents 6.4.0 · morluto/rea", (3) System dialog → About tab gained a "Credits & attribution" card explaining the platform is a front end for open-source morluto/rea (npm rea-agents, MIT) with the repo link.
+- WIRING: top-bar "REA" brand is now a button → returns Home (newFreeChat) with title "Back to Home"; chat-workspace EmptyState branches — free chats render HomeDashboard, file-bound drafts keep the focused file-centric prompt (filename highlighted emerald mono, TARGET_SUGGESTIONS).
+- BUG FIXED (QA-found): autoscroll inherited the previous chat's stick-to-bottom position on Home AND my first fix fought the user's scrolling (effect reset scrollTop on every atBottom flip). Final behavior: scroll resets to top only on NAVIGATION (session/draft/history navKey change); when sending from Home, atBottom re-pins to true so the first turn sticks to the bottom.
+- QA verification (fresh browser passes, 1440×900 + 390×844): dashboard renders with live numbers (22 chats/61 msgs, 3 files, 170 tools, 19/20 quota) ✓; Engine quick action → System dialog ✓; chats stat card → palette ✓; recent chat row → transcript loads (2 rows) ✓; recent file row → inspector opens ✓; sidebar file click → file-bound draft shows focused empty state ✓; REA brand → Home with scroll reset ✓; starter pill → sends + streams ✓; credit links ×2 target=_blank+noreferrer ✓; About tab contains credits ✓; mobile 390×844: stat grid 2×2, panels full-width, composer intact ✓; scroll position holds under user scroll ✓; tsc clean (src/), eslint 0 problems ✓.
+
+Stage Summary:
+- The app now has a real homepage: a live, fully-wired dashboard instead of a plain prompt screen — every tile navigates, all numbers are store-derived (never stale), and the REA upstream repo is credited in the dashboard, status bar and docs.
+- Files: NEW src/components/rea/home-dashboard.tsx; chat-workspace.tsx (EmptyState branch + autoscroll fix + send re-pin); app-shell.tsx (brand button, status-bar credit); docs-view.tsx (credits card); globals.css (home ambient bg).
+- Next candidates: folders/tags for chats, file-compare view, i18n, streaming tool-arg preview polish (partial JSON), per-session cumulative cost column in sidebar rows, pricing-refresh date surfaced in UI.

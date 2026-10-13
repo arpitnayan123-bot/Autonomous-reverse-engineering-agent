@@ -10,6 +10,7 @@ import {
   FileCode,
   FileSearch,
   FileText,
+  Github,
   HardDrive,
   Layers,
   ListChecks,
@@ -144,6 +145,41 @@ export function DocsView() {
               {label}
             </div>
           ))}
+        </div>
+      </SectionCard>
+
+      {/* --------------------- Upstream attribution --------------------- */}
+      <SectionCard title="Credits & attribution" description="The engine behind this platform" icon={Github}>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-zinc-100">
+              REA — Reverse Engineer Anything
+            </p>
+            <p className="mt-1 max-w-xl text-xs leading-relaxed text-zinc-500">
+              This platform is a browser front end built on top of the open-source{" "}
+              <a
+                href="https://github.com/morluto/rea"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-emerald-400 underline decoration-emerald-500/40 underline-offset-2 transition-colors hover:text-emerald-300"
+              >
+                morluto/rea
+              </a>{" "}
+              project (npm: <code className="rounded bg-zinc-900 px-1 py-0.5 font-mono text-[10px] text-zinc-300">rea-agents</code>
+              , MIT license). All binary analysis — 170 MCP tools, evidence grading, format
+              inspection — is performed by the real REA engine running in a sandboxed child
+              process.
+            </p>
+          </div>
+          <a
+            href="https://github.com/morluto/rea"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-[11px] text-zinc-300 transition-colors hover:border-emerald-500/30 hover:text-emerald-300"
+          >
+            <Github className="size-3.5" aria-hidden />
+            github.com/morluto/rea
+          </a>
         </div>
       </SectionCard>
 

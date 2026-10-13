@@ -33,6 +33,7 @@ import {
 } from "@/lib/api-client";
 import { useReaStore } from "@/store/rea-store";
 import { CopyButton, Markdown, humanBytes, humanDuration, humanTokens, toastError } from "@/components/rea/shared";
+import { HomeDashboard } from "@/components/rea/home-dashboard";
 import { estimateCostUsd, formatCostUsd } from "@/lib/pricing";
 import { PenLine } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
@@ -50,13 +51,6 @@ import { cn } from "@/lib/utils";
 // Free chats (no file) and file chats share this surface; file chats can call
 // REA tools (visible inline as collapsible trace steps).
 // ---------------------------------------------------------------------------
-
-const FREE_SUGGESTIONS = [
-  "What file formats can REA analyze?",
-  "How do I start reverse engineering an unknown binary?",
-  "Explain ELF program headers vs section headers",
-  "What is the safest way to analyze a suspicious file?",
-];
 
 const TARGET_SUGGESTIONS = [
   "What does this file do?",
@@ -274,11 +268,25 @@ export function ChatWorkspace({
   }, [entries]);
 
   // ---- Autoscroll (only while pinned to bottom) ---------------------------
+  // Home dashboard (empty transcript): land on the hero at the top. The reset
+  // fires on NAVIGATION (session/draft/history changes) only — never on the
+  // scroll handler's atBottom flips, which would fight the user scrolling.
+  const navKeyRef = React.useRef("");
+  const navKey = `${activeSessionId ?? "draft"}:${draftTargetId ?? "free"}:${historyLoading ? "l" : "r"}`;
   React.useEffect(() => {
     const el = scrollRef.current;
-    if (!el || !atBottom) return;
+    if (!el) return;
+    if (entries.length === 0) {
+      if (navKeyRef.current !== navKey) {
+        navKeyRef.current = navKey;
+        el.scrollTop = 0;
+      }
+      return;
+    }
+    navKeyRef.current = navKey;
+    if (!atBottom) return;
     el.scrollTop = el.scrollHeight;
-  }, [entries, streaming, atBottom]);
+  }, [entries, streaming, atBottom, navKey]);
 
   // ---- Jump-to-message (sidebar search hit) -------------------------------
   const [jumpFlashId, setJumpFlashId] = React.useState<string | null>(null);
@@ -509,6 +517,9 @@ export function ChatWorkspace({
       toastError(new Error(`Message too long (${message.length}/8000 characters). Trim it first.`));
       return;
     }
+    // Sending from the Home dashboard: re-pin to bottom so the first turn is
+    // visible even if the user had scrolled the dashboard away from it.
+    if (entries.length === 0) setAtBottom(true);
     const userEntry: ChatEntry = { id: nextId(), role: "user", content: message, trace: [] };
     setInput("");
     void runTurn({
@@ -1325,7 +1336,8 @@ function ToolIntentRow({ intent }: { intent: ToolIntent }) {
 }
 
 // ---------------------------------------------------------------------------
-// Empty state (Claude-Code-like "ready" screen)
+// Empty state — free chats render the full Home dashboard; file-bound drafts
+// keep a focused, file-centric prompt screen.
 // ---------------------------------------------------------------------------
 
 function EmptyState({
@@ -1339,7 +1351,11 @@ function EmptyState({
   onSuggest: (text: string) => void;
   onOpenSettings: () => void;
 }) {
-  const suggestions = boundTarget ? TARGET_SUGGESTIONS : FREE_SUGGESTIONS;
+  if (!boundTarget) {
+    return <HomeDashboard hasKey={hasKey} onSuggest={onSuggest} />;
+  }
+
+  const suggestions = TARGET_SUGGESTIONS;
 
   return (
     <div className="flex min-h-full flex-col items-center justify-center px-4 py-12">
@@ -1348,21 +1364,12 @@ function EmptyState({
           <Binary className="size-5 text-emerald-400" aria-hidden />
         </span>
         <h2 className="text-lg font-semibold text-zinc-100">
-          {boundTarget ? "What do you want to know about this file?" : "What are we investigating?"}
+          What do you want to know about{" "}
+          <span className="font-mono text-emerald-300">{boundTarget.originalName}</span>?
         </h2>
         <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-zinc-500">
-          {boundTarget ? (
-            <>
-              <span className="text-zinc-300">{boundTarget.originalName}</span> is attached. The
-              agent will run real REA engine tools (strings, hex, format inspectors) and back every
-              claim with evidence.
-            </>
-          ) : (
-            <>
-              Ask anything about reverse engineering — or pick a file from the sidebar to open a
-              tool-driven investigation chat.
-            </>
-          )}
+          The agent will run real REA engine tools (strings, hex, format inspectors) and back
+          every claim with graded evidence.
         </p>
 
         {hasKey === false && (

@@ -446,6 +446,66 @@ body {
 
 /* rea: cache reset */
 
+/* rea: home dashboard ambient background — blueprint grid + engine glow +
+   slow scanline. Purely decorative, pointer-transparent, reduced-motion safe. */
+.rea-home-bg {
+  z-index: 0;
+}
+.rea-home-glow {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(52% 42% at 50% 0%, rgb(16 185 129 / 0.075) 0%, transparent 70%),
+    radial-gradient(36% 30% at 82% 78%, rgb(20 184 166 / 0.05) 0%, transparent 72%);
+}
+.rea-home-grid {
+  position: absolute;
+  inset: -1px;
+  background-image:
+    linear-gradient(to right, rgb(63 63 70 / 0.22) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(63 63 70 / 0.22) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: radial-gradient(75% 60% at 50% 12%, black 0%, transparent 78%);
+  -webkit-mask-image: radial-gradient(75% 60% at 50% 12%, black 0%, transparent 78%);
+}
+.rea-home-scan {
+  position: absolute;
+  inset-inline: 0;
+  top: -12%;
+  height: 22%;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgb(16 185 129 / 0.028) 45%,
+    rgb(16 185 129 / 0.05) 50%,
+    rgb(16 185 129 / 0.028) 55%,
+    transparent 100%
+  );
+  animation: rea-home-scan 9s linear infinite;
+}
+@keyframes rea-home-scan {
+  0% {
+    transform: translateY(-30%);
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(520%);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rea-home-scan {
+    animation: none;
+    opacity: 0;
+  }
+}
+
 /* rea: touch reveal — hover-gated affordances must stay reachable on
    touch devices (no hover capability): show them at rest instead of
    hiding them behind an interaction that cannot happen. */

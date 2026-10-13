@@ -8,6 +8,7 @@ import {
   CircleDot,
   CircleUserRound,
   Download,
+  Github,
   KeyRound,
   Keyboard,
   LogOut,
@@ -481,10 +482,17 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           </SheetContent>
         </Sheet>
 
-        <span className="hidden items-center gap-2 font-mono text-xs font-bold tracking-widest text-zinc-200 md:flex">
+        {/* Brand — clicking returns to the Home dashboard (fresh free chat). */}
+        <button
+          type="button"
+          onClick={() => newFreeChat()}
+          title="Back to Home"
+          aria-label="REA home — start a fresh chat"
+          className="hidden items-center gap-2 rounded font-mono text-xs font-bold tracking-widest text-zinc-200 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none md:flex"
+        >
           <Binary className="size-3.5 text-emerald-400" aria-hidden />
           REA
-        </span>
+        </button>
         <ChevronRight className="hidden size-3 text-zinc-700 md:block" aria-hidden />
 
         {/* Context title */}
@@ -1375,7 +1383,15 @@ function StatusBar() {
 
   return (
     <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-zinc-800/80 bg-zinc-950 px-3 font-mono text-[10px] text-zinc-500">
-      <span className="flex items-center gap-1.5" aria-label={`REA engine ${capabilities?.engine.healthy ? "healthy" : "unavailable"}`}>
+      {/* REA engine credit — links to the upstream repo (user request: give credit). */}
+      <a
+        href="https://github.com/morluto/rea"
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={`REA engine by morluto on GitHub — ${capabilities?.engine.healthy ? "healthy" : "unavailable"}`}
+        title="Powered by REA — Reverse Engineer Anything · github.com/morluto/rea (MIT)"
+        className="flex items-center gap-1.5 rounded px-1 py-0.5 -mx-1 transition-colors hover:text-emerald-300"
+      >
         <span
           className={cn(
             "size-1.5 rounded-full",
@@ -1383,8 +1399,12 @@ function StatusBar() {
           )}
           aria-hidden
         />
-        rea-agents {capabilities?.engine.version ?? "v6.4.0"}
-      </span>
+        <Github className="hidden size-3 text-zinc-600 sm:inline" aria-hidden />
+        <span>
+          rea-agents {capabilities?.engine.version ?? "v6.4.0"}
+          <span className="hidden text-zinc-700 md:inline"> · morluto/rea</span>
+        </span>
+      </a>
       <span className="hidden sm:inline">
         model: {providerActive ? `${providerActive.provider}/${providerActive.model}` : "platform"}
       </span>
