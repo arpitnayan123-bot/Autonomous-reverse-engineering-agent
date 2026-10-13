@@ -4,11 +4,13 @@
 
 # REA — Reverse Engineer Anything
 
-**A browser-native, AI-powered reverse-engineering platform.**
+**A browser-native AI platform for software intelligence & reconstruction.**
 
-Chat in plain language. A real analysis engine runs **170 professional tools**
-and answers with a graded evidence ledger — observations you can verify,
-never guesses dressed as facts.
+Chat in plain language. A real analysis engine runs **170 professional tools**,
+a universal pipeline crawls sites, parses repositories, maps architecture,
+researches ecosystems, scaffolds code and verifies results — and every claim
+lands in a graded evidence ledger: observations you can verify, never guesses
+dressed as facts.
 
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-71717a?logo=typescript)](https://www.typescriptlang.org)
@@ -29,6 +31,8 @@ never guesses dressed as facts.
 | 🗂 **Targets & artifacts** | Upload a binary (≤ 50 MB, magic-byte validated) and every message, tool call and evidence row stays bound to that target. |
 | 🔍 **Evidence-first ledger** | Every finding is graded **OBSERVED → DERIVED → INFERRED → UNKNOWN**. The UI deep-links straight to the raw evidence, so the line between measured and guessed is never blurred. |
 | 🔑 **Zero-config chat, or BYOK** | Works out of the box on the platform's default GLM chat — with self-healing credentials (provider key rotations are detected and recovered automatically). Prefer your own? Drop OpenAI / Anthropic / Gemini / DeepSeek / Kimi / GLM keys into the encrypted vault. |
+| 🔎 **Universal pipeline (PLATFORM mode)** | One goal in — `DISCOVER → COLLECT → UNDERSTAND → MAP → RESEARCH → PLAN → BUILD → TEST → VERIFY` out. Websites are crawled politely (robots.txt, SSRF-guarded, technology fingerprinting, optional headless-Chromium render), GitHub repos are materialized and parsed with tree-sitter (22+ languages, AST-level symbols/imports/routes), research reports carry citations, and PLAN/BUILD pause for **human approval** before a single file is written. |
+| 🧩 **Eight integrated capabilities** | Explorer (crawl + render + DOM extract) · Reverse Engineer (AST recon + endpoint/secret heuristics) · Research Agent (cited web/GitHub/docs/YouTube) · Builder (isolated workspace, guarded file ops, allowlisted no-shell terminal) · Verification (functional checks, reference diff, regression scoring) · Universal Connectors (HTTP + MCP-stdio, sealed headers) · Knowledge Graph (SQLite entities/relations with provenance) · Orchestration (persisted DAG, retries, checkpoints, cancel, approvals). |
 | 🧭 **Agent planning** | On multi-step work the agent emits a plan — a live checklist card tracks each step inside the transcript and survives reloads. |
 | 🧮 **Honest accounting** | Per-message token counts, cost estimates, turn durations and live tool-run timers — sourced from actual provider payloads, not invented. |
 | 🔊 **Read aloud** | Any assistant message can be spoken through TTS without leaving the page. |
@@ -45,6 +49,8 @@ flowchart LR
         AGENT["Agent loop<br/>(tool-calling, SSE)"]
         AUTH["scrypt auth +<br/>revocable sessions"]
         VAULT["BYOK vault<br/>(encrypted keys)"]
+        PIPE["Universal pipeline<br/>crawl · parse · research ·<br/>build · verify · orchestrate"]
+        CONN["Connector registry<br/>HTTP · MCP stdio"]
     end
     subgraph Engine["REA engine"]
         MCP["rea-agents MCP server<br/>170 tools · JSON-RPC · stdio"]
@@ -58,12 +64,16 @@ flowchart LR
     VAULT --> AGENT
     AGENT --> DB
     AUTH --> DB
+    UI --> PIPE
+    PIPE --> CONN
+    PIPE --> DB
 ```
 
 **One route, many rooms.** The whole product lives on `/` — home, chat,
-inspector, targets, security and admin are client-side views. The server
-exposes a small, honest REST surface (`/api/chat`, `/api/provider`,
-`/api/capabilities`, `/api/security`, …) and speaks SSE for streaming turns.
+inspector, targets, security, the universal platform workspace and admin are
+client-side views. The server exposes a small, honest REST surface
+(`/api/chat`, `/api/projects/*`, `/api/connectors`, `/api/capabilities`,
+`/api/security`, …) and speaks SSE for streaming turns.
 
 ## 🚀 Quickstart
 
@@ -87,7 +97,34 @@ conversation binds to that target: evidence, tool traces and reports included.
 
 > The engine **fails closed** by design: native providers (Ghidra / IDA /
 > Hopper desktop apps) are bring-your-own and absent here — the agent reports
-> that honestly instead of inventing results.
+> that honestly instead of inventing results. The same doctrine governs the
+> universal pipeline: a rate-limited GitHub API, a missing Chromium runtime or
+> an unreachable site is reported as exactly that — never simulated.
+
+## 🌐 The universal pipeline (PLATFORM mode)
+
+Toggle **CHAT / PLATFORM** in the top bar. Create a project from a website URL,
+an `owner/repo` pair, or an uploaded target, then:
+
+1. **Run the pipeline** with a goal — steps execute as a persisted DAG with
+   retries, timeouts, checkpoints and cancellation; independent steps run in
+   parallel.
+2. **Approve at the gates** — the PLAN and BUILD stages park the pipeline and
+   wait for a human decision. Rejecting a gate stops the run honestly.
+3. **Inspect the outputs** — crawled pages with tech fingerprints, a knowledge
+   graph (pages, symbols, endpoints, dependencies — each node tagged
+   OBSERVED / DERIVED / INFERRED / UNKNOWN), cited research reports, a workspace
+   file editor + terminal, and verification runs scored 0–100 with regression
+   detection.
+
+Optional capabilities are detected, never faked: install a Chromium runtime
+(`bunx playwright-core install chromium`) to enable rendered screenshots and
+browser-backed verification checks; set `GITHUB_TOKEN` to lift GitHub API rate
+limits; register HTTP or MCP connectors (auth headers are sealed with the same
+AES-256-GCM vault as provider keys) under **Connectors**.
+
+Third-party licensing is documented in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md);
+the ecosystem audit lives at [`docs/ecosystem-audit.md`](docs/ecosystem-audit.md).
 
 ## 🔑 Model providers
 
@@ -112,11 +149,16 @@ conversation binds to that target: evidence, tool traces and reports included.
 
 ```
 src/app/                 Next.js App Router — single-route UI + /api/* handlers
-src/components/rea/      Chat workspace, home, inspector, security, admin
-src/lib/                 Engine bridge (MCP stdio), agent loop, auth, vault, tools
-prisma/schema.prisma     SQLite schema — users, sessions, chats, evidence, audit
+src/components/rea/      Chat workspace, home, inspector, platform, security
+src/server/agent/        Agent loop, providers, BYOK vault, prompts
+src/server/platform/     Universal pipeline: explorer, recon, research,
+                         builder, verifier, connectors, orchestrator, graph
+src/server/engine/       REA MCP bridge (JSON-RPC over stdio)
+prisma/schema.prisma     SQLite schema — users, chats, evidence, projects,
+                         knowledge graph, orchestrations, connectors, audit
 public/                  Static assets
 scripts/                 Maintenance (seed, verify engine bridge, wipe chats)
+docs/                    Ecosystem audit
 skills/, examples/       Bundled tooling & reference examples
 ```
 
@@ -128,6 +170,14 @@ Built on the open-source **REA** project —
 The engine, its 170-tool MCP server and the evidence-first philosophy belong
 to that project; this repository wraps it in a production-grade browser
 platform.
+
+Integrated third-party packages: **cheerio** (MIT), **web-tree-sitter** (MIT),
+**tree-sitter-wasms** (Unlicense), **diff** (BSD-3-Clause),
+**playwright-core** (Apache-2.0, optional runtime), **@modelcontextprotocol/sdk**
+(MIT) — full notices in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+Architecture was informed by (but does not redistribute code from)
+OpenHands, browser-use, graphiti, langgraph, crawlee and firecrawl —
+see the ecosystem audit for the license-driven decisions.
 
 ---
 
