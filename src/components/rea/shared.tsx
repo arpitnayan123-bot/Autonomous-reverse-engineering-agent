@@ -31,6 +31,36 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { PrismLight as SyntaxHighlighter } from "react-syntax-highlighter";
+import oneDark from "react-syntax-highlighter/dist/esm/styles/prism/one-dark";
+
+import langBash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
+import langC from "react-syntax-highlighter/dist/esm/languages/prism/c";
+import langCpp from "react-syntax-highlighter/dist/esm/languages/prism/cpp";
+import langCsharp from "react-syntax-highlighter/dist/esm/languages/prism/csharp";
+import langDiff from "react-syntax-highlighter/dist/esm/languages/prism/diff";
+import langDocker from "react-syntax-highlighter/dist/esm/languages/prism/docker";
+import langGo from "react-syntax-highlighter/dist/esm/languages/prism/go";
+import langIni from "react-syntax-highlighter/dist/esm/languages/prism/ini";
+import langJava from "react-syntax-highlighter/dist/esm/languages/prism/java";
+import langJavascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
+import langJson from "react-syntax-highlighter/dist/esm/languages/prism/json";
+import langKotlin from "react-syntax-highlighter/dist/esm/languages/prism/kotlin";
+import langMarkdown from "react-syntax-highlighter/dist/esm/languages/prism/markdown";
+import langPhp from "react-syntax-highlighter/dist/esm/languages/prism/php";
+import langPython from "react-syntax-highlighter/dist/esm/languages/prism/python";
+import langRuby from "react-syntax-highlighter/dist/esm/languages/prism/ruby";
+import langRust from "react-syntax-highlighter/dist/esm/languages/prism/rust";
+import langSmali from "react-syntax-highlighter/dist/esm/languages/prism/smali";
+import langSolidity from "react-syntax-highlighter/dist/esm/languages/prism/solidity";
+import langSql from "react-syntax-highlighter/dist/esm/languages/prism/sql";
+import langSwift from "react-syntax-highlighter/dist/esm/languages/prism/swift";
+import langToml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
+import langTypescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
+import langWasm from "react-syntax-highlighter/dist/esm/languages/prism/wasm";
+import langXml from "react-syntax-highlighter/dist/esm/languages/prism/markup";
+import langYaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
+
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -482,9 +512,107 @@ export function TiltCard({
 // Markdown
 // ---------------------------------------------------------------------------
 
+// --- Real syntax highlighting (Prism light build, REA-relevant languages) ---
+// Registered once at module level: each grammar is tiny and registration is a
+// no-op after the first call. Aliases map the fence labels models actually
+// emit (sh/zsh/yml/tsx/…) onto registered grammars.
+const PRISM_LANGUAGES: Array<[string, unknown]> = [
+  ["bash", langBash],
+  ["c", langC],
+  ["cpp", langCpp],
+  ["csharp", langCsharp],
+  ["diff", langDiff],
+  ["docker", langDocker],
+  ["go", langGo],
+  ["ini", langIni],
+  ["java", langJava],
+  ["javascript", langJavascript],
+  ["json", langJson],
+  ["kotlin", langKotlin],
+  ["markdown", langMarkdown],
+  ["php", langPhp],
+  ["python", langPython],
+  ["ruby", langRuby],
+  ["rust", langRust],
+  ["smali", langSmali],
+  ["solidity", langSolidity],
+  ["sql", langSql],
+  ["swift", langSwift],
+  ["toml", langToml],
+  ["typescript", langTypescript],
+  ["wasm", langWasm],
+  ["xml", langXml],
+  ["yaml", langYaml],
+];
+for (const [name, grammar] of PRISM_LANGUAGES) {
+  SyntaxHighlighter.registerLanguage(name, grammar);
+}
+const REGISTERED_LANGUAGES = new Set(PRISM_LANGUAGES.map(([name]) => name));
+
+const LANGUAGE_ALIASES: Record<string, string> = {
+  sh: "bash",
+  shell: "bash",
+  zsh: "bash",
+  console: "bash",
+  terminal: "bash",
+  "c++": "cpp",
+  cs: "csharp",
+  golang: "go",
+  js: "javascript",
+  jsx: "javascript",
+  mjs: "javascript",
+  node: "javascript",
+  json5: "json",
+  jsonc: "json",
+  kt: "kotlin",
+  md: "markdown",
+  py: "python",
+  python3: "python",
+  rb: "ruby",
+  sol: "solidity",
+  ts: "typescript",
+  tsx: "typescript",
+  yml: "yaml",
+  html: "xml",
+  svg: "xml",
+  plist: "xml",
+};
+
+/** Resolve a fence label to a registered grammar name (null = no highlight). */
+function resolveHighlightLanguage(label: string): string | null {
+  const lang = label.trim().toLowerCase();
+  if (!lang) return null;
+  if (REGISTERED_LANGUAGES.has(lang)) return lang;
+  const alias = LANGUAGE_ALIASES[lang];
+  return alias && REGISTERED_LANGUAGES.has(alias) ? alias : null;
+}
+
+// One-Dark, re-tuned to melt into the zinc-950 shell (transparent body, no
+// default margins — the shell owns spacing).
+const ONE_DARK_BASE = oneDark as Record<string, Record<string, unknown>>;
+const REA_CODE_STYLE: Record<string, Record<string, unknown>> = {
+  ...ONE_DARK_BASE,
+  'pre[class*="language-"]': {
+    ...(ONE_DARK_BASE['pre[class*="language-"]'] ?? {}),
+    background: "transparent",
+    margin: 0,
+    padding: "12px 14px",
+    fontSize: "12px",
+    lineHeight: 1.6,
+  },
+  'code[class*="language-"]': {
+    ...(ONE_DARK_BASE['code[class*="language-"]'] ?? {}),
+    background: "transparent",
+    fontSize: "12px",
+    lineHeight: 1.6,
+    textShadow: "none",
+  },
+};
+
 /**
  * Chat/IDE-style code block: language label + copy button header over a
- * dark body. Falls back to a plain <pre> for non-highlighted blocks.
+ * syntax-highlighted dark body (Prism/one-dark). Unregistered languages fall
+ * back to a plain mono <pre> — never an error, never a blank block.
  */
 function CodeBlockShell({ children }: { children: React.ReactNode }) {
   let language = "";
@@ -504,17 +632,40 @@ function CodeBlockShell({ children }: { children: React.ReactNode }) {
   if (!isBlock) {
     return <pre className="mb-2">{children}</pre>;
   }
+  const highlight = resolveHighlightLanguage(language);
   return (
     <div className="mb-2 overflow-hidden rounded-md border border-zinc-800 bg-zinc-950">
       <div className="flex h-7 items-center border-b border-zinc-800/80 bg-zinc-900/60 px-2.5">
         <span className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">
-          {language}
+          {language || "text"}
         </span>
+        {highlight && (
+          <span
+            className="ml-1.5 hidden rounded-full bg-emerald-500/10 px-1.5 py-px font-mono text-[8px] uppercase tracking-wider text-emerald-400/80 sm:inline"
+            aria-hidden
+          >
+            highlighted
+          </span>
+        )}
         <span className="ml-auto">
           <CopyButton value={code} label={`Copy ${language} code`} small />
         </span>
       </div>
-      <pre className="overflow-x-auto">{children}</pre>
+      {highlight ? (
+        <SyntaxHighlighter
+          language={highlight}
+          style={REA_CODE_STYLE}
+          useInlineStyles
+          PreTag="div"
+          customStyle={{ margin: 0, background: "transparent", overflowX: "auto" }}
+        >
+          {code}
+        </SyntaxHighlighter>
+      ) : (
+        <pre className="rea-scroll overflow-x-auto p-3 font-mono text-xs leading-relaxed text-zinc-200">
+          {code}
+        </pre>
+      )}
     </div>
   );
 }
