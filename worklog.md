@@ -594,3 +594,21 @@ Stage Summary:
 - https://github.com/arpitnayan123-bot/reverse-engineering-agent now hosts the full platform history, every commit authored by Arpit Nayan, with runtime data and key material scrubbed from all 38 historical commits and a structural README as the landing page.
 - Honest notes: (1) authorship rewrite was required by the "authored as me" instruction — commit SHAs changed (old SHAs in earlier worklog entries are pre-rewrite); content/messages/dates preserved. (2) commit timestamps remain sandbox-dated (Oct 2026) — dates were deliberately preserved, not falsified. (3) commit emails expose the user's public-visibility GitHub email; the `{id}+{login}@users.noreply.github.com` alternative is available if privacy is preferred later.
 - Next candidates: repo topics/description setup via API, GitHub Actions CI (lint+tsc), release tags, README screenshot section once a build is published.
+
+---
+Task ID: 18
+Agent: Z.ai Code (brand designer + release engineer)
+Task: "design a beautiful logo for REA and put that in the website and the readme of my repo and commit as me authored."
+
+Work Log:
+- DESIGN: generated 5 candidates via the image-generation skill (prism cube / lens-over-chip / exploded-cube+shards / strict-palette stack / saturated tile version), visually reviewed every one. Winner: three interlocking deconstructed cubes with an orbit ring on a near-black rounded tile, emerald→teal glow — reads as "a system under scan" (the reverse-engineering metaphor) and stays legible at favicon sizes. Two candidates were discarded for off-brand blue drift (including a hue-rotation experiment with sharp that mapped the wrong hues — honest dead end, deleted).
+- ASSETS (sharp pipeline from the 1024 master): public/rea-logo.png (1024, README hero + OG/Twitter), public/rea-logo-256.png (favicon + in-app marks), public/rea-logo-180.png (apple-touch). Orphaned generic sandbox `public/logo.svg` ("Z" mark) deleted.
+- WEBSITE: layout.tsx metadata — icons.icon → /rea-logo-256.png, icons.apple → /rea-logo-180.png, openGraph.images + twitter.images → /rea-logo.png; auth screen — placeholder Terminal-icon box replaced with the real emblem (64px, rounded-2xl, zinc ring + emerald glow shadow, priority); app-shell — top-bar brand button and mobile sheet title now carry the 16/20px emblem with a hairline ring (lucide Binary kept for non-brand target icons).
+- README: hero image swapped from logo.svg to public/rea-logo.png (relative path renders on GitHub).
+- VERIFIED: eslint clean; agent-browser screenshot of the live app confirms the emblem renders in the top bar beside "REA" (logged-in workspace view, dev.log clean); favicon + og assets resolve from /public.
+- Commit: 77ae3d0 "feat(brand): REA logo — generated emblem, favicon + auth/shell integration, OG/Twitter images" (8 files).
+
+Stage Summary:
+- REA now has a real brand mark everywhere it appears: favicon + apple-touch icon, sign-in screen, top bar, mobile nav, Open Graph/Twitter cards, and the GitHub README hero.
+- Honest notes: the logo is AI-generated raster (PNG) — no vector master; a hand-traced SVG would be needed for print-scale use. The emblem intentionally keeps a subtle teal-cyan accent (within the app's emerald/teal family).
+- Next candidates: hand-traced SVG logo variant, README screenshot section (app home + chat), GitHub repo description/topics via API, CI (lint+tsc).
