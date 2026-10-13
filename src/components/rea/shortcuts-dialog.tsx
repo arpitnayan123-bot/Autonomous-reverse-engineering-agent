@@ -83,11 +83,8 @@ export function ShortcutsDialog({
             <Row keys={["⇧", "Enter"]} label="New line" />
             <Row keys={["Esc"]} label="Close / cancel" hint="dialogs, rename, palette" />
           </Group>
-          <Group title="Message actions (hover)" >
-            <Row keys={["✎"]} label="Edit & resend" hint="truncates the chat after that turn" />
-            <Row keys={["↻"]} label="Regenerate" hint="last assistant turn" />
-            <Row keys={["⑂"]} label="Fork" hint="branch a new chat from any message" />
-            <Row keys={["❝"]} label="Quote" hint="insert blockquote in composer" />
+          <Group title="Message actions (hover)">
+            <Row keys={["…"]} label="Edit · Regenerate · Fork · Quote" hint="hover a message (tap on touch) for the action row" />
           </Group>
           <Group title="Security">
             <Row keys={["🔒"]} label="Keys & sessions" hint="HttpOnly cookies, keys never in the client bundle" />

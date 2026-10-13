@@ -241,25 +241,6 @@ body {
    emerald glow, card sheen, marching dashed drop zone.
 --------------------------------------------------------------------------- */
 
-/* 3D scene primitives ----------------------------------------------------- */
-.rea-perspective {
-  perspective: 1200px;
-}
-.rea-preserve-3d {
-  transform-style: preserve-3d;
-}
-/* Faces of the reusable REA cube (positioning done inline per face). */
-.rea-cube-face {
-  position: absolute;
-  inset: 0;
-  border: 1px solid rgb(16 185 129 / 0.3); /* emerald-500/30 */
-  background: linear-gradient(135deg, oklch(0.21 0.006 285.885), rgb(6 78 59 / 0.4));
-  /* emerald-950/40 */
-  backface-visibility: visible;
-  display: grid;
-  place-items: center;
-}
-
 /* Glass panel -------------------------------------------------------------- */
 .rea-glass {
   background-image: linear-gradient(

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { MotionConfig } from "framer-motion";
 import { Loader2, Terminal } from "lucide-react";
 
 import { apiGet, type ProviderCatalog, type ReaUser } from "@/lib/api-client";
@@ -48,7 +49,13 @@ export function ReaApp() {
     return <AuthView onAuthenticated={(u) => setUser(u)} />;
   }
 
-  return <AppShell user={user} />;
+  return (
+    // Respect the OS "reduce motion" preference for every framer-motion
+    // transition in the shell (message entry, sheet slides…).
+    <MotionConfig reducedMotion="user">
+      <AppShell user={user} />
+    </MotionConfig>
+  );
 }
 
 /** Refresh provider state from the server into the store (used by shell + dialog). */

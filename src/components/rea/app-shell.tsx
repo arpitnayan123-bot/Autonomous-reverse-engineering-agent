@@ -51,6 +51,7 @@ import { ShortcutsDialog } from "@/components/rea/shortcuts-dialog";
 import { SystemDialog } from "@/components/rea/system-dialog";
 import { TargetPanel } from "@/components/rea/target-panel";
 import { humanBytes, timeAgo, toastError } from "@/components/rea/shared";
+import { toast } from "@/hooks/use-toast";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -115,6 +116,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     closeInspector,
     setCapabilities,
   } = useReaStore();
+  const inspectorTabNonce = useReaStore((s) => s.inspectorTabNonce);
 
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [deletingSession, setDeletingSession] = React.useState<SessionSummary | null>(null);
@@ -230,7 +232,14 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
         e.preventDefault();
         s.newFreeChat();
       } else if (key === "f" && !e.shiftKey) {
-        // ⌘F — focus the sidebar quick filter (Cursor-style).
+        // ⌘F — focus the sidebar quick filter (Cursor-style). Must not yank
+        // focus out of a field the user is typing in (composer, rename…).
+        const el = e.target as HTMLElement | null;
+        const typing =
+          !!el &&
+          (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) &&
+          el.id !== "rea-sidebar-filter";
+        if (typing) return;
         e.preventDefault();
         if (!s.sidebarOpen) s.setSidebarOpen(true);
         requestAnimationFrame(() => {
@@ -327,12 +336,18 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     }
   };
 
-  /** Download the inspector target's investigation report as Markdown. */
+  /** Download the investigation report for the current file context as Markdown. */
   const onExportReport = async () => {
-    if (!inspectorTargetId || exportingReport) return;
+    // Same fallback chain as ⌘I — the palette offers this action whenever any
+    // file context exists, so a silent no-op (inspector never opened) was a
+    // broken promise.
+    const st = useReaStore.getState();
+    const reportTargetId =
+      st.inspectorTargetId ?? activeSession?.targetId ?? st.draftTargetId ?? null;
+    if (!reportTargetId || exportingReport) return;
     setExportingReport(true);
     try {
-      const res = await apiGet<{ target: TargetDetail }>(`/api/targets/${inspectorTargetId}`);
+      const res = await apiGet<{ target: TargetDetail }>(`/api/targets/${reportTargetId}`);
       await exportTargetReport(res.target);
     } catch (err) {
       toastError(err, "Could not export report");
@@ -376,8 +391,17 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     if (!isFileDrag(e)) return;
     e.preventDefault();
     setDragDepth(0);
-    const file = e.dataTransfer?.files?.[0];
-    if (file) void onFileSelected(file);
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    const file = files[0];
+    if (file) {
+      if (files.length > 1) {
+        toast({
+          title: "One file at a time",
+          description: `Dropped ${files.length} files — “${file.name}” was added; drag the next file when ready.`,
+        });
+      }
+      void onFileSelected(file);
+    }
   };
 
   const topBarTitle = activeSession
@@ -613,7 +637,11 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
                 </div>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto rea-scroll">
-                <TargetPanel targetId={inspectorTargetId} externalTab={inspectorTab} />
+                <TargetPanel
+                  targetId={inspectorTargetId}
+                  externalTab={inspectorTab}
+                  externalTabNonce={inspectorTabNonce}
+                />
               </div>
             </aside>
           )}
@@ -630,13 +658,20 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
               </SheetTitle>
             </SheetHeader>
             <div className="h-[calc(100%-3rem)] overflow-y-auto rea-scroll">
-              <TargetPanel targetId={inspectorTargetId} externalTab={inspectorTab} />
+              <TargetPanel
+                targetId={inspectorTargetId}
+                externalTab={inspectorTab}
+                externalTabNonce={inspectorTabNonce}
+              />
             </div>
           </SheetContent>
         </Sheet>
       )}
 
       {/* ========================= Command palette ========================== */}
+      {/* Inline actions object: CommandDialog renders nothing while closed,
+          so the per-render allocation is free; reading the current session
+          from the store keeps the pin action staleness-proof. */}
       <CommandPalette
         actions={{
           onUpload: onPickFile,
@@ -644,7 +679,9 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           onExportReport: () => void onExportReport(),
           onLogout: () => void doLogout(),
           onTogglePinCurrent: () => {
-            if (activeSession) void onTogglePin(activeSession);
+            const st = useReaStore.getState();
+            const current = st.sessions.find((x) => x.id === st.activeSessionId);
+            if (current) void onTogglePin(current);
           },
         }}
       />
@@ -989,7 +1026,7 @@ function SidebarBody(p: SidebarBodyProps) {
     }
     return buckets.filter((b) => b.items.length > 0);
   })();
-  const showTimeGroups = !q && chatBuckets.length > 1;
+  const showTimeGroups = !q; // always group — labels stay consistent whether one bucket or many
   const chatsBody = showTimeGroups ? (
     chatBuckets.map((b) => (
       <div key={b.label} className="mb-1">
@@ -1079,7 +1116,13 @@ function SidebarBody(p: SidebarBodyProps) {
         {q.length >= 2 && (
           <SidebarSection
             label={`Messages${
-              msgSearching ? " · searching…" : msgHits.length > 0 ? ` (${msgHits.length})` : ""
+              msgSearching
+                ? " · searching…"
+                : msgHits.length >= 8
+                  ? " (first 8 — refine query)"
+                  : msgHits.length > 0
+                    ? ` (${msgHits.length})`
+                    : ""
             }`}
           >
             {msgSearching && msgHits.length === 0 ? (
@@ -1174,6 +1217,7 @@ function SidebarBody(p: SidebarBodyProps) {
                   </span>
                 </button>
                 <span
+                  role="img"
                   aria-label={`Analysis status: ${t.status}`}
                   title={`analysis: ${t.status}`}
                   className={cn(

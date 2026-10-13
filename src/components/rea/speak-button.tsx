@@ -22,7 +22,10 @@ let currentStop: (() => void) | null = null;
 function stopCurrent() {
   if (currentAudio) {
     currentAudio.pause();
+    const src = currentAudio.src;
     currentAudio.src = "";
+    // Revoke the blob URL — stopping early must not leak the audio blob.
+    if (src && src.startsWith("blob:")) URL.revokeObjectURL(src);
   }
   currentAudio = null;
   currentStop?.();
@@ -64,8 +67,13 @@ export function SpeakButton({ content, streaming }: { content: string; streaming
   }, []);
 
   const stop = React.useCallback(() => {
-    if (audioRef.current && audioRef.current === currentAudio) stopCurrent();
-    audioRef.current?.pause();
+    if (audioRef.current && audioRef.current === currentAudio) {
+      stopCurrent(); // handles pause + blob revoke
+    } else if (audioRef.current) {
+      audioRef.current.pause();
+      const src = audioRef.current.src;
+      if (src && src.startsWith("blob:")) URL.revokeObjectURL(src);
+    }
     audioRef.current = null;
     setState("idle");
   }, []);
@@ -104,6 +112,8 @@ export function SpeakButton({ content, streaming }: { content: string; streaming
       };
       audio.onerror = () => {
         if (audioRef.current === audio) {
+          const src = audio.src;
+          if (src && src.startsWith("blob:")) URL.revokeObjectURL(src);
           audioRef.current = null;
           setState("idle");
           toastError(new Error("Audio playback failed."));

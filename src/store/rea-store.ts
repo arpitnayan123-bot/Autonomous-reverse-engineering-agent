@@ -32,6 +32,12 @@ interface ReaState {
   inspectorOpen: boolean;
   /** Tab the inspector should land on when (re)opened ("evidence", "findings", …). */
   inspectorTab: string | null;
+  /**
+   * Bumped on every openInspector(tab) call so the panel re-syncs even when
+   * the target+tab pair is unchanged (otherwise the second identical deep
+   * link — e.g. "view evidence" on another answer — would be a no-op).
+   */
+  inspectorTabNonce: number;
 
   /** Desktop sidebar visibility (⌘B). */
   sidebarOpen: boolean;
@@ -52,8 +58,6 @@ interface ReaState {
   hasProviderKey: boolean | null;
   /** Message quota from the last chat POST (X-RateLimit headers). */
   chatQuota: { limit: number; remaining: number } | null;
-  /** Cumulative provider-reported tokens for the active session (null = none known). */
-  sessionTokens: { tokensIn: number; tokensOut: number } | null;
 
   setBooted: (booted: boolean) => void;
   setUser: (user: ReaUser | null) => void;
@@ -91,7 +95,6 @@ interface ReaState {
   setProviderLoaded: (loaded: boolean) => void;
   setHasProviderKey: (has: boolean | null) => void;
   setChatQuota: (quota: { limit: number; remaining: number } | null) => void;
-  setSessionTokens: (tokens: { tokensIn: number; tokensOut: number } | null) => void;
 }
 
 export const useReaStore = create<ReaState>((set) => ({
@@ -108,6 +111,7 @@ export const useReaStore = create<ReaState>((set) => ({
   inspectorTargetId: null,
   inspectorOpen: false,
   inspectorTab: null,
+  inspectorTabNonce: 0,
 
   sidebarOpen: true,
   paletteOpen: false,
@@ -121,7 +125,6 @@ export const useReaStore = create<ReaState>((set) => ({
   providerLoaded: false,
   hasProviderKey: null,
   chatQuota: null,
-  sessionTokens: null,
 
   setBooted: (booted) => set({ booted }),
   setUser: (user) => set({ user }),
@@ -139,7 +142,13 @@ export const useReaStore = create<ReaState>((set) => ({
   setTargets: (targets) => set({ targets }),
   setTargetsLoaded: (targetsLoaded) => set({ targetsLoaded }),
   openInspector: (inspectorTargetId, tab) =>
-    set({ inspectorTargetId, inspectorOpen: true, inspectorTab: tab ?? null }),
+    set((s) => ({
+      inspectorTargetId,
+      inspectorOpen: true,
+      inspectorTab: tab ?? null,
+      // Always bump: repeated deep-links to the same tab must re-sync.
+      inspectorTabNonce: s.inspectorTabNonce + 1,
+    })),
   closeInspector: () => set({ inspectorOpen: false, inspectorTab: null }),
   setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
   setInspectorTab: (inspectorTab) => set({ inspectorTab }),
@@ -158,5 +167,4 @@ export const useReaStore = create<ReaState>((set) => ({
   setProviderLoaded: (providerLoaded) => set({ providerLoaded }),
   setHasProviderKey: (hasProviderKey) => set({ hasProviderKey }),
   setChatQuota: (chatQuota) => set({ chatQuota }),
-  setSessionTokens: (sessionTokens) => set({ sessionTokens }),
 }));

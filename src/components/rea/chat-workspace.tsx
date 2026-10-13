@@ -250,21 +250,6 @@ export function ChatWorkspace({
     };
   }, [activeSessionId]);
 
-  // ---- Session token total (status bar) -----------------------------------
-  React.useEffect(() => {
-    let tokensIn = 0;
-    let tokensOut = 0;
-    let any = false;
-    for (const e of entries) {
-      if (e.role === "assistant" && (e.tokensIn != null || e.tokensOut != null)) {
-        any = true;
-        tokensIn += e.tokensIn ?? 0;
-        tokensOut += e.tokensOut ?? 0;
-      }
-    }
-    useReaStore.getState().setSessionTokens(any ? { tokensIn, tokensOut } : null);
-  }, [entries]);
-
   // ---- Autoscroll (only while pinned to bottom) ---------------------------
   // Home dashboard (empty transcript): land on the hero at the top. The reset
   // fires on NAVIGATION (session/draft/history changes) only — never on the
@@ -279,6 +264,15 @@ export function ChatWorkspace({
         navKeyRef.current = navKey;
         el.scrollTop = 0;
       }
+      return;
+    }
+    if (navKeyRef.current !== navKey) {
+      // Navigated to another chat with content: re-pin to the newest message
+      // (a stale scrolled-up position from the previous chat must not carry
+      // over) and mark the viewport as pinned so autoscroll resumes.
+      navKeyRef.current = navKey;
+      setAtBottom(true);
+      el.scrollTop = el.scrollHeight;
       return;
     }
     navKeyRef.current = navKey;
@@ -503,7 +497,9 @@ export function ChatWorkspace({
       setStreaming(false);
       abortRef.current = null;
       onSessionsChanged?.();
-      onTargetsChanged?.();
+      // File-bound turns can change analysis state; free chats cannot, so
+      // skip the targets refetch (two avoided GETs on every free message).
+      if (targetId) onTargetsChanged?.();
     }
   };
 
@@ -512,7 +508,9 @@ export function ChatWorkspace({
     const message = raw.trim();
     if (!message || streaming) return;
     if (message.length > MAX_MESSAGE_CHARS) {
-      toastError(new Error(`Message too long (${message.length}/8000 characters). Trim it first.`));
+      toastError(
+        new Error(`Message too long (${message.length}/${MAX_MESSAGE_CHARS} characters). Trim it first.`)
+      );
       return;
     }
     // Sending from the Home dashboard: re-pin to bottom so the first turn is
@@ -530,8 +528,24 @@ export function ChatWorkspace({
   /** Edit-and-resend: replace a user turn server-side, drop later turns, re-stream. */
   const submitEdit = (entryId: string) => {
     const content = editValue.trim();
-    if (!content || streaming || !activeSessionId) return;
+    if (!content || streaming) return;
     setEditingId(null);
+    if (!activeSessionId) {
+      // Draft chat with no persisted session (e.g. the first turn failed
+      // before session_saved): drop the optimistic turn locally and resend —
+      // previously this button silently did nothing.
+      setEntries((prev) => {
+        const idx = prev.findIndex((e) => e.id === entryId);
+        return idx < 0 ? prev : prev.slice(0, idx);
+      });
+      const userEntry: ChatEntry = { id: nextId(), role: "user", content, trace: [] };
+      void runTurn({
+        message: content,
+        localUserId: userEntry.id,
+        commit: (prev) => [...prev, userEntry],
+      });
+      return;
+    }
     void runTurn({
       message: content,
       editMessageId: entryId,
@@ -546,7 +560,24 @@ export function ChatWorkspace({
 
   /** Regenerate: drop the last assistant reply and re-run the last user turn. */
   const regenerateLast = () => {
-    if (streaming || !activeSessionId) return;
+    if (streaming) return;
+    if (!activeSessionId) {
+      // Failed FIRST turn in a draft: no session exists to regenerate on the
+      // server — retry by resending the last user message as a fresh turn.
+      const lastUser = [...entries].reverse().find((e) => e.role === "user");
+      if (!lastUser) return;
+      setEntries((prev) => {
+        const idx = prev.findIndex((e) => e.id === lastUser.id);
+        return idx < 0 ? prev : prev.slice(0, idx);
+      });
+      const userEntry: ChatEntry = { id: nextId(), role: "user", content: lastUser.content, trace: [] };
+      void runTurn({
+        message: lastUser.content,
+        localUserId: userEntry.id,
+        commit: (prev) => [...prev, userEntry],
+      });
+      return;
+    }
     void runTurn({
       message: "",
       regenerate: true,
@@ -643,12 +674,17 @@ export function ChatWorkspace({
         return;
       }
       if (e.key === "Escape") {
+        // Dismiss the menu by clearing just the slash token. The token is
+        // start-anchored, so with an empty draft this clears the "/query"
+        // itself — any mental draft typed after a space ends the token and
+        // the menu closes on its own before this branch is reachable.
         e.preventDefault();
         setInput("");
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    // IME safety: Enter that CONFIRMS a CJK composition must not send.
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       void sendWithEvents(input);
     }
@@ -710,6 +746,8 @@ export function ChatWorkspace({
       <div
         ref={scrollRef}
         onScroll={onMessagesScroll}
+        role="log"
+        aria-label="Conversation"
         className="relative min-h-0 flex-1 overflow-y-auto rea-scroll"
       >
         {historyLoading ? (
@@ -752,7 +790,6 @@ export function ChatWorkspace({
                     onQuote={() => quoteIntoComposer(entry)}
                     canRegenerate={
                       !streaming &&
-                      !!activeSessionId &&
                       entry.role === "assistant" &&
                       idx === entries.length - 1
                     }
@@ -818,6 +855,10 @@ export function ChatWorkspace({
                   : "Ask anything about reverse engineering, or attach a file…"
               }
               aria-label="Chat message"
+              aria-expanded={slashOpen}
+              aria-controls={slashOpen ? "rea-prompt-listbox" : undefined}
+              aria-activedescendant={slashOpen ? `rea-prompt-opt-${slashIndex}` : undefined}
+              role={slashOpen ? "combobox" : undefined}
               className="max-h-[180px] resize-none border-0 bg-transparent px-3.5 pt-3 pb-1 text-sm text-zinc-100 placeholder:text-zinc-600 focus-visible:ring-0"
               disabled={streaming}
             />
@@ -852,8 +893,8 @@ export function ChatWorkspace({
                   )}
                   title={
                     input.length > MAX_MESSAGE_CHARS
-                      ? "Over the 8000-character limit — trim the message"
-                      : "Approaching the 8000-character message limit"
+                      ? `Over the ${MAX_MESSAGE_CHARS.toLocaleString()} character limit — trim the message`
+                      : `Approaching the ${MAX_MESSAGE_CHARS.toLocaleString()} character message limit`
                   }
                 >
                   {input.length}/{MAX_MESSAGE_CHARS}
@@ -937,7 +978,7 @@ function friendlyError(raw: string): { title: string; hint?: string } {
   if (/too long|too large|\b413\b|payload|max.*chars|character/.test(m)) {
     return {
       title: "The message exceeded the size limit.",
-      hint: "Trim or split it — the limit is 8,000 characters per message.",
+      hint: `Trim or split it — the limit is ${MAX_MESSAGE_CHARS.toLocaleString()} characters per message.`,
     };
   }
   if (/engine|rea-agents|mcp|spawn|tool .*fail/.test(m)) {
@@ -1047,7 +1088,7 @@ function MessageRow({
                 value={editValue ?? ""}
                 onChange={(e) => onEditValue?.(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     onEditSubmit?.();
                   } else if (e.key === "Escape") {
@@ -1185,10 +1226,7 @@ function MessageRow({
           );
         })()}
         {entry.content && (
-          <div className="rea-markdown text-sm leading-relaxed text-zinc-200">
-            <Markdown>{entry.content}</Markdown>
-            {streaming && <StreamingCaret />}
-          </div>
+          <MessageBody content={entry.content} streaming={streaming} />
         )}
         <MessageMeta entry={entry} model={model} streaming={streaming}>
           {evidenceTargetId && onOpenEvidence && (
@@ -1243,6 +1281,26 @@ function StreamingCaret() {
   );
 }
 
+/**
+ * Memoized markdown body — the hot path. Without memoization every streamed
+ * delta re-parsed EVERY message's markdown (O(messages × content) per token);
+ * with it, only the row whose content actually changed re-renders.
+ */
+const MessageBody = React.memo(function MessageBody({
+  content,
+  streaming,
+}: {
+  content: string;
+  streaming?: boolean;
+}) {
+  return (
+    <div className="rea-markdown text-sm leading-relaxed text-zinc-200">
+      <Markdown>{content}</Markdown>
+      {streaming && <StreamingCaret />}
+    </div>
+  );
+});
+
 /** Small icon button in the hover meta row (edit / regenerate). */
 function MetaButton({
   label,
@@ -1287,17 +1345,21 @@ function MessageMeta({
   const copyLabel =
     entry.role === "assistant" ? "Copy assistant message" : "Copy your message";
   const hasUsage = entry.tokensIn != null || entry.tokensOut != null;
-  // Cost + model chip: the model that actually produced THIS turn (persisted
-  // per row), falling back to the live stream info, then the active provider
-  // (older rows pre-date per-turn model persistence).
+  // Model chip + cost: ONLY the model that actually produced THIS turn
+  // (persisted per row). The live stream model is used only while this row is
+  // still streaming — branding completed turns with the CURRENT model lied
+  // about history and priced old turns at today's model.
   const providerActive = useReaStore((s) => s.providerActive);
-  const costModel = entry.modelId ?? model?.model ?? providerActive?.model ?? null;
+  const liveModel =
+    streaming ? model?.model ?? providerActive?.model ?? null : null;
+  const costModel = entry.modelId ?? liveModel;
   const modelChip =
     entry.modelId ??
-    (model ? modelLabel(model.provider, model.model) : null);
-  const modelTooltip = model
-    ? `${modelLabel(model.provider, model.model)} · ${model.source === "byok" ? "your API key" : "platform model"}`
-    : modelChip ?? "model";
+    (streaming && model ? modelLabel(model.provider, model.model) : null);
+  const modelTooltip =
+    streaming && model
+      ? `${modelLabel(model.provider, model.model)} · ${model.source === "byok" ? "your API key" : "platform model"}`
+      : modelChip ?? "model";
   const costEstimate =
     entry.role === "assistant"
       ? estimateCostUsd(costModel, entry.tokensIn, entry.tokensOut)
@@ -1552,6 +1614,7 @@ function QuotaHint() {
   if (!chatQuota || chatQuota.remaining > 3) return null;
   return (
     <span
+      role="status"
       className={cn(
         "text-amber-400/80",
         chatQuota.remaining === 0 && "text-rose-400/90"

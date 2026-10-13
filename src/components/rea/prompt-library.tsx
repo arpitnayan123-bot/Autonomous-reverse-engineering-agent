@@ -10,7 +10,6 @@ import {
   ScrollText,
   ShieldQuestion,
   Sparkles,
-  Wand2,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -127,6 +126,7 @@ export function SlashMenu({
   return (
     <div
       role="listbox"
+      id="rea-prompt-listbox"
       aria-label="Prompt library"
       className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/95 shadow-2xl shadow-black/50 backdrop-blur"
     >
@@ -148,6 +148,7 @@ export function SlashMenu({
               <button
                 type="button"
                 role="option"
+                id={`rea-prompt-opt-${i}`}
                 aria-selected={active}
                 onClick={() => onPick(entry)}
                 onMouseMove={() => onHover(i)}
@@ -187,14 +188,5 @@ export function SlashMenu({
         })}
       </ul>
     </div>
-  );
-}
-
-/** Small helper chip shown in the composer footer when the menu is closed. */
-export function SlashHint() {
-  return (
-    <span className="flex items-center gap-1 font-mono text-[10px] text-zinc-700">
-      <Wand2 className="size-2.5" aria-hidden />/
-    </span>
   );
 }

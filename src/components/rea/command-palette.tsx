@@ -118,7 +118,12 @@ export function CommandPalette({
                   s.closeInspector();
                   return;
                 }
-                const tid = s.inspectorTargetId ?? activeSession?.targetId ?? null;
+                // Same fallback chain as ⌘I: inspector → session target → draft.
+                const tid =
+                  s.inspectorTargetId ??
+                  activeSession?.targetId ??
+                  s.draftTargetId ??
+                  null;
                 if (tid) s.openInspector(tid);
               })
             }

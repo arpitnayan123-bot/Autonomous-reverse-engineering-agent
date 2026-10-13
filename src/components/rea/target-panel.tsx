@@ -133,10 +133,13 @@ export function TargetPanel({
   className,
   /** Store-driven tab request (evidence deep-link from chat); null = leave as-is. */
   externalTab,
+  /** Bumped on every openInspector — re-fires the tab sync for repeat links. */
+  externalTabNonce,
 }: {
   targetId: string;
   className?: string;
   externalTab?: string | null;
+  externalTabNonce?: number;
 }) {
   const [target, setTarget] = React.useState<TargetDetail | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -156,6 +159,10 @@ export function TargetPanel({
     try {
       const res = await apiGet<{ target: TargetDetail }>(`/api/targets/${targetId}`);
       setTarget(res.target);
+      // Docs ride on the target detail payload — the old code fetched a
+      // /docs sub-endpoint that does not exist, so docs never hydrated.
+      setDocs(res.target.docs ?? null);
+      setDocsSummary(res.target.summary ?? null);
     } catch (err) {
       toastError(err, "Could not load target");
     } finally {
@@ -175,10 +182,12 @@ export function TargetPanel({
   }, [fetchTarget]);
 
   // Deep-link: when the caller requests a specific tab (e.g. Evidence from a
-  // chat message), jump there once the panel has rendered.
+  // chat message), jump there. The nonce re-fires this even when the same
+  // tab is requested twice in a row (the second "view evidence" click must
+  // win over a manual tab switch made in between).
   React.useEffect(() => {
     if (externalTab) setTab(externalTab);
-  }, [externalTab]);
+  }, [externalTab, externalTabNonce]);
 
   // Poll every 4s while the latest run is active so progress updates live.
   const running = isRunActive(target?.runs?.[0]?.status);
@@ -187,25 +196,6 @@ export function TargetPanel({
     const interval = window.setInterval(() => void fetchTarget(), 4000);
     return () => window.clearInterval(interval);
   }, [running, fetchTarget]);
-
-  // Hydrate existing documentation (endpoint may not exist yet — fail silently).
-  React.useEffect(() => {
-    if (!targetId) return;
-    let cancelled = false;
-    apiGet<{ docs: string; summary?: string }>(`/api/targets/${targetId}/docs`)
-      .then((res) => {
-        if (!cancelled && res.docs) {
-          setDocs(res.docs);
-          if (res.summary) setDocsSummary(res.summary);
-        }
-      })
-      .catch(() => {
-        /* no docs yet */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [targetId]);
 
   const generateDocs = async () => {
     if (!targetId || generatingDocs) return;
@@ -383,7 +373,7 @@ export function TargetPanel({
 
         <TabsContent value="overview" className="mt-0 min-h-0 outline-none">
           <div className="rea-scroll max-h-[calc(100dvh-11rem)] space-y-3 overflow-y-auto p-3 pr-2">
-            <OverviewTab target={target} latestRun={latestRun} />
+            <OverviewTab target={target} latestRun={latestRun} runStamp={latestRun?.id ?? "none"} />
           </div>
         </TabsContent>
         <TabsContent value="hex" className="mt-2 outline-none">
@@ -419,14 +409,25 @@ export function TargetPanel({
 // Overview
 // ---------------------------------------------------------------------------
 
-function OverviewTab({ target, latestRun }: { target: TargetDetail; latestRun: Run | null }) {
+function OverviewTab({
+  target,
+  latestRun,
+  runStamp,
+}: {
+  target: TargetDetail;
+  latestRun: Run | null;
+  /** Latest run id — refetches the type counts when a (re-)run appears. */
+  runStamp: string;
+}) {
   const [counts, setCounts] = React.useState<{ type: string; count: number }[] | null>(null);
+  const [totalFindings, setTotalFindings] = React.useState(0);
 
   React.useEffect(() => {
     let cancelled = false;
-    apiGet<{ findings: Finding[] }>(`/api/targets/${target.id}/findings`, { limit: 500 })
+    apiGet<{ findings: Finding[]; total: number }>(`/api/targets/${target.id}/findings`, { limit: 500 })
       .then((res) => {
         if (cancelled) return;
+        setTotalFindings(res.total ?? res.findings.length);
         const byType = new Map<string, number>();
         for (const f of res.findings) byType.set(f.type, (byType.get(f.type) ?? 0) + 1);
         setCounts(
@@ -439,7 +440,7 @@ function OverviewTab({ target, latestRun }: { target: TargetDetail; latestRun: R
     return () => {
       cancelled = true;
     };
-  }, [target.id]);
+  }, [target.id, runStamp]);
 
   const limitations = extractLimitations(latestRun?.result);
 
@@ -508,7 +509,15 @@ function OverviewTab({ target, latestRun }: { target: TargetDetail; latestRun: R
         )}
       </PanelCard>
 
-      <PanelCard title="Findings by type" description="Counts from the findings ledger" icon={Braces}>
+      <PanelCard
+        title="Findings by type"
+        description={
+          totalFindings > (counts?.reduce((a, c) => a + c.count, 0) ?? 0)
+            ? `${totalFindings} in the ledger · top types shown`
+            : "Counts from the findings ledger"
+        }
+        icon={Braces}
+      >
         {counts === null ? (
           <div className="flex flex-wrap gap-2">
             {Array.from({ length: 4 }).map((_, i) => (
@@ -831,14 +840,18 @@ function StringsTab({ targetId }: { targetId: string }) {
 
 function FindingsTab({ targetId }: { targetId: string }) {
   const [findings, setFindings] = React.useState<Finding[] | null>(null);
+  const [total, setTotal] = React.useState(0);
   const [typeFilter, setTypeFilter] = React.useState("all");
   const [search, setSearch] = React.useState("");
 
   React.useEffect(() => {
     let cancelled = false;
-    apiGet<{ findings: Finding[] }>(`/api/targets/${targetId}/findings`, { limit: 500 })
+    apiGet<{ findings: Finding[]; total: number }>(`/api/targets/${targetId}/findings`, { limit: 500 })
       .then((res) => {
-        if (!cancelled) setFindings(res.findings);
+        if (!cancelled) {
+          setFindings(res.findings);
+          setTotal(res.total ?? res.findings.length);
+        }
       })
       .catch((err) => {
         if (!cancelled) {
@@ -870,7 +883,10 @@ function FindingsTab({ targetId }: { targetId: string }) {
     <PanelCard
       title="Findings"
       description={
-        findings ? `${filtered.length} of ${findings.length}` : "Structures and symbols from the engine"
+        findings
+          ? `${filtered.length} shown${findings.length < total ? ` · ${total} in the ledger` : ""
+          }`
+          : "Structures and symbols from the engine"
       }
       icon={Braces}
       actions={

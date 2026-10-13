@@ -1,13 +1,12 @@
 "use client";
 
 import * as React from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   motion,
   useMotionTemplate,
   useMotionValue,
-  useReducedMotion,
   useSpring,
   useTransform,
   type MotionStyle,
@@ -323,32 +322,6 @@ export function EmptyState({
   );
 }
 
-export function TooltipIconButton({
-  label,
-  children,
-  className,
-  ...props
-}: React.ComponentProps<typeof Button> & { label: string }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={label}
-          className={cn("size-8 text-zinc-400 hover:text-zinc-100", className)}
-          {...props}
-        >
-          {children}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent className="border-zinc-700 bg-zinc-900 text-xs text-zinc-200">
-        {label}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 export function CopyButton({
   value,
   label,
@@ -505,85 +478,6 @@ export function TiltCard({
   );
 }
 
-const CUBE_FACES: { transform: (z: number) => string; label?: string }[] = [
-  { transform: (z) => `translateZ(${z}px)`, label: "REA" },
-  { transform: (z) => `rotateY(180deg) translateZ(${z}px)` },
-  { transform: (z) => `rotateY(90deg) translateZ(${z}px)`, label: "MCP" },
-  { transform: (z) => `rotateY(-90deg) translateZ(${z}px)`, label: "170" },
-  { transform: (z) => `rotateX(90deg) translateZ(${z}px)` },
-  { transform: (z) => `rotateX(-90deg) translateZ(${z}px)` },
-];
-
-/**
- * ReaCube — the floating REA core, pure CSS/HTML 3D cube.
- * Continuous Y rotation (~`spinDuration`s linear) with a slow X wobble.
- * Respects prefers-reduced-motion (renders a static tilted cube).
- */
-export function ReaCube({
-  size = 112,
-  spinDuration = 24,
-  className,
-}: {
-  size?: number;
-  spinDuration?: number;
-  className?: string;
-}) {
-  const reduced = useReducedMotion();
-  const half = size / 2;
-
-  return (
-    <div
-      className={cn("rea-perspective", className)}
-      style={{ width: size, height: size }}
-      aria-hidden
-    >
-      <motion.div
-        className="rea-preserve-3d relative size-full"
-        initial={{ rotateX: 8, rotateY: -18 }}
-        animate={
-          reduced
-            ? undefined
-            : { rotateY: [-18, 342], rotateX: [8, -8, 8] }
-        }
-        transition={
-          reduced
-            ? undefined
-            : {
-                rotateY: {
-                  duration: spinDuration,
-                  ease: "linear",
-                  repeat: Infinity,
-                },
-                rotateX: {
-                  duration: Math.max(8, spinDuration / 2),
-                  ease: "easeInOut",
-                  repeat: Infinity,
-                },
-              }
-        }
-        style={{ transformStyle: "preserve-3d" }}
-      >
-        {CUBE_FACES.map((face, i) => (
-          <div
-            key={i}
-            className="rea-cube-face"
-            style={{ transform: face.transform(half) }}
-          >
-            {face.label && (
-              <span
-                className="font-mono font-bold tracking-[0.3em] text-emerald-400/80"
-                style={{ fontSize: Math.max(10, size * 0.12) }}
-              >
-                {face.label}
-              </span>
-            )}
-          </div>
-        ))}
-      </motion.div>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Markdown
 // ---------------------------------------------------------------------------
@@ -636,14 +530,12 @@ function extractText(node: React.ReactNode): string {
   return "";
 }
 
-/** Terminal-flavoured markdown renderer for docs and assistant messages. */
-export function Markdown({ children, className }: { children: string; className?: string }) {
-  return (
-    <div className={cn("rea-markdown text-sm leading-relaxed text-zinc-300", className)}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          h1: (props) => <h1 className="mt-4 mb-2 border-b border-zinc-800 pb-1 text-lg font-semibold text-zinc-100" {...props} />,
+/**
+ * Module-level component map — recreated per render it would defeat memoized
+ * message bodies (every streamed delta re-parses every message otherwise).
+ */
+const MARKDOWN_COMPONENTS: Components = {
+  h1: (props) => <h1 className="mt-4 mb-2 border-b border-zinc-800 pb-1 text-lg font-semibold text-zinc-100" {...props} />,
           h2: (props) => <h2 className="mt-4 mb-2 text-base font-semibold text-zinc-100" {...props} />,
           h3: (props) => <h3 className="mt-3 mb-1 text-sm font-semibold text-emerald-400" {...props} />,
           p: (props) => <p className="mb-2 last:mb-0" {...props} />,
@@ -690,9 +582,14 @@ export function Markdown({ children, className }: { children: string; className?
           thead: (props) => <thead className="sticky top-0 z-10" {...props} />,
           th: (props) => <th className="border-b border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-semibold tracking-wide text-zinc-200 uppercase" {...props} />,
           td: (props) => <td className="border-b border-zinc-800/60 px-2.5 py-1.5 align-top text-zinc-300 [&:not(:last-child)]:border-r [&:not(:last-child)]:border-zinc-800/40" {...props} />,
-          hr: () => <hr className="my-3 border-zinc-800" />,
-        }}
-      >
+  hr: () => <hr className="my-3 border-zinc-800" />,
+};
+
+/** Terminal-flavoured markdown renderer for docs and assistant messages. */
+export function Markdown({ children, className }: { children: string; className?: string }) {
+  return (
+    <div className={cn("rea-markdown text-sm leading-relaxed text-zinc-300", className)}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
         {children}
       </ReactMarkdown>
     </div>

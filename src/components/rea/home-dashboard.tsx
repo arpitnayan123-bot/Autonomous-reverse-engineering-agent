@@ -5,7 +5,7 @@ import { FileUp, Github, SendHorizontal } from "lucide-react";
 
 import { useReaStore } from "@/store/rea-store";
 import { cn } from "@/lib/utils";
-import { MAX_MESSAGE_CHARS } from "@/components/rea/chat-limits";
+import { MAX_MESSAGE_CHARS, CHAR_COUNTER_AT } from "@/components/rea/chat-limits";
 import { SlashMenu, filterPrompts, slashTokenOf, type PromptEntry } from "@/components/rea/prompt-library";
 import { toastError } from "@/components/rea/shared";
 import { Textarea } from "@/components/ui/textarea";
@@ -90,6 +90,7 @@ export function HomeDashboard({
     setInput("");
     onSuggest(message);
   };
+  const sendBlocked = input.trim().length === 0 || input.length > MAX_MESSAGE_CHARS;
 
   const pickPrompt = React.useCallback((entry: PromptEntry) => {
     setInput(entry.prompt);
@@ -120,7 +121,8 @@ export function HomeDashboard({
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    // IME safety: Enter that CONFIRMS a CJK composition must not send.
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       send();
     }
@@ -164,6 +166,10 @@ export function HomeDashboard({
               rows={2}
               placeholder="Describe what you want to investigate…"
               aria-label="Start an investigation"
+              aria-expanded={slashOpen}
+              aria-controls={slashOpen ? "rea-prompt-listbox" : undefined}
+              aria-activedescendant={slashOpen ? `rea-prompt-opt-${slashIndex}` : undefined}
+              role={slashOpen ? "combobox" : undefined}
               className="max-h-[200px] resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-sm text-zinc-100 placeholder:text-zinc-600 focus-visible:ring-0"
             />
             <div className="flex items-center gap-2 px-3 pb-2.5">
@@ -179,14 +185,26 @@ export function HomeDashboard({
                   <span className="hidden sm:inline">Attach file</span>
                 </button>
               )}
-              <span className="ml-auto hidden font-mono text-[10px] text-zinc-600 sm:inline">
-                Enter to send · Shift+Enter for a new line
+              <span className="ml-auto flex items-center gap-2">
+                {!sendBlocked && input.length >= CHAR_COUNTER_AT && (
+                  <span
+                    className={cn(
+                      "font-mono text-[10px] tabular-nums",
+                      input.length > MAX_MESSAGE_CHARS ? "text-rose-400" : "text-amber-400/80"
+                    )}
+                  >
+                    {input.length}/{MAX_MESSAGE_CHARS}
+                  </span>
+                )}
+                <span className="hidden font-mono text-[10px] text-zinc-600 sm:inline">
+                  Enter to send · Shift+Enter for a new line
+                </span>
               </span>
               <Button
                 type="button"
                 size="sm"
                 onClick={send}
-                disabled={!input.trim() || input.length > MAX_MESSAGE_CHARS}
+                disabled={sendBlocked}
                 aria-label="Start the investigation"
                 className="h-7 gap-1.5 bg-emerald-600 px-3 text-xs text-white hover:bg-emerald-500 disabled:opacity-40"
               >

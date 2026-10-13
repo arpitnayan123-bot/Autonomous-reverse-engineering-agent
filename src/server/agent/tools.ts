@@ -347,8 +347,25 @@ const reaTool: AgentTool = {
         return formatReaResult(tool, res);
       }
       const abs = absoluteStoredPath(ctx.target.storedPath);
+      // Inject the stored path ONLY for tools whose input schema declares a
+      // `path` property — the engine validates strictly and rejects unknown
+      // keys (e.g. binary_overview after open_binary). Most session tools are
+      // already bound to the opened target.
+      let toolArgs: Record<string, unknown> = { ...cleanArgs, path: abs };
+      try {
+        const defs = await rea.listTools();
+        const def = defs.find((d) => d.name === tool);
+        const props = def?.inputSchema?.["properties"] as
+          | Record<string, unknown>
+          | undefined;
+        if (props && !("path" in props)) {
+          toolArgs = cleanArgs;
+        }
+      } catch {
+        /* catalog unavailable — keep the always-inject fallback */
+      }
       const res = await rea.withTarget(abs, () =>
-        rea.callTool(tool, { ...cleanArgs, path: abs }, CHAT_TOOL_TIMEOUT_MS)
+        rea.callTool(tool, toolArgs, CHAT_TOOL_TIMEOUT_MS)
       );
       return formatReaResult(tool, res);
     } catch (err) {
