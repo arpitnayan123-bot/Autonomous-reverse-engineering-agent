@@ -93,6 +93,7 @@ export async function GET(req: Request) {
         tokensIn: m.tokensIn,
         tokensOut: m.tokensOut,
         durationMs: m.durationMs,
+        modelId: m.modelId,
         createdAt: m.createdAt,
       })),
       pinned: session.pinned,
@@ -390,7 +391,7 @@ export async function POST(req: Request) {
             targetId: session!.targetId,
           });
           if (userMessage) send({ type: "user_saved", messageId: userMessage.id });
-          const { content, usage, durationMs } = await runAgentLoop({
+          const { content, usage, durationMs, modelId } = await runAgentLoop({
             sessionId: session!.id,
             target: target ?? null,
             userId: user.id,
@@ -409,7 +410,13 @@ export async function POST(req: Request) {
               shouldCancel: () => closed || req.signal.aborted,
             },
           });
-          send({ type: "usage", tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, durationMs });
+          send({
+            type: "usage",
+            tokensIn: usage.tokensIn,
+            tokensOut: usage.tokensOut,
+            durationMs,
+            modelId,
+          });
           send({ type: "assistant", content });
         } catch (err) {
           send({

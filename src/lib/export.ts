@@ -88,6 +88,7 @@ export function buildChatMarkdown(
       const who = m.role === "assistant" ? "## REA Agent" : "## You";
       const meta: string[] = [];
       if (m.role === "assistant") {
+        if (m.modelId) meta.push(`model: ${m.modelId}`);
         if (m.tokensIn != null || m.tokensOut != null) {
           meta.push(
             `tokens: ↑${m.tokensIn ?? "?"} ↓${m.tokensOut ?? "?"}`

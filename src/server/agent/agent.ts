@@ -55,6 +55,12 @@ export interface AgentLoopResult {
   usage: { tokensIn: number | null; tokensOut: number | null };
   /** Wall-clock duration of the whole agent turn in ms. */
   durationMs: number;
+  /**
+   * Canonical model id that produced this turn ("openai/gpt-4o-mini" for
+   * BYOK, "glm-platform" for the platform fallback) — persisted per row so
+   * history keeps the true per-turn model even after the provider changes.
+   */
+  modelId: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,13 +225,20 @@ export async function runAgentLoop(opts: {
         tokensIn: usage.tokensIn,
         tokensOut: usage.tokensOut,
         durationMs,
+        modelId: llmModelId(llm),
       },
     });
   } catch {
     /* persistence failure must not break the stream */
   }
 
-  return { content: final, toolCalls: toolTrace, usage, durationMs };
+  return { content: final, toolCalls: toolTrace, usage, durationMs, modelId: llmModelId(llm) };
+}
+
+/** Canonical per-turn model id: "openai/gpt-4o-mini" (BYOK) or "glm-platform". */
+function llmModelId(llm: ResolvedLlm): string {
+  if (llm.source === "platform" || llm.provider === llm.model) return llm.model;
+  return `${llm.provider}/${llm.model}`;
 }
 
 /**

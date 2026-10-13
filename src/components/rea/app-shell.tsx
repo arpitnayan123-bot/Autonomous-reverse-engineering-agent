@@ -1048,6 +1048,47 @@ function SidebarBody(p: SidebarBodyProps) {
     );
   };
 
+  /** Cursor-style time grouping (only when NOT filtering — search stays flat). */
+  const chatBuckets = (() => {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const startOfYesterday = new Date(startOfToday);
+    startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+    const startOf7d = new Date(startOfToday);
+    startOf7d.setDate(startOf7d.getDate() - 7);
+    const buckets = [
+      { label: "Today", items: [] as SessionSummary[] },
+      { label: "Yesterday", items: [] as SessionSummary[] },
+      { label: "Previous 7 days", items: [] as SessionSummary[] },
+      { label: "Older", items: [] as SessionSummary[] },
+    ];
+    for (const s of shownChats) {
+      const d = new Date(s.updatedAt);
+      if (d >= startOfToday) buckets[0].items.push(s);
+      else if (d >= startOfYesterday) buckets[1].items.push(s);
+      else if (d >= startOf7d) buckets[2].items.push(s);
+      else buckets[3].items.push(s);
+    }
+    return buckets.filter((b) => b.items.length > 0);
+  })();
+  const showTimeGroups = !q && chatBuckets.length > 1;
+  const chatsBody = showTimeGroups ? (
+    chatBuckets.map((b) => (
+      <div key={b.label} className="mb-1">
+        <div className="flex items-center gap-2 px-2 pt-2.5 pb-1">
+          <span className="font-mono text-[9px] tracking-widest text-zinc-600 uppercase">
+            {b.label}
+          </span>
+          <span aria-hidden className="h-px flex-1 bg-zinc-800/60" />
+          <span className="font-mono text-[9px] text-zinc-700 tabular-nums">{b.items.length}</span>
+        </div>
+        {b.items.map(renderSessionRow)}
+      </div>
+    ))
+  ) : (
+    shownChats.map(renderSessionRow)
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* New chat */}
@@ -1112,7 +1153,7 @@ function SidebarBody(p: SidebarBodyProps) {
               no chats match “{search.trim()}”
             </p>
           ) : (
-            shownChats.map(renderSessionRow)
+            chatsBody
           )}
         </SidebarSection>
 

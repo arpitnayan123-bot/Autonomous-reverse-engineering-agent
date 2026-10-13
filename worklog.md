@@ -352,3 +352,27 @@ Stage Summary:
 - API: NEW GET /api/chat/search?q= (auth, rate-limited 30/min, audited).
 - Contracts: MessageSearchHit; store +{jumpToMessageId, shortcutsOpen}; Markdown component now remark-gfm.
 - Next candidates: streaming tool-arg preview while pending (live args), per-message model id persisted on ChatMessageRow (cost accuracy when provider changes mid-session), chat folders/tags, file compare view, i18n, provider pricing refresh date surfaced in UI.
+
+---
+Task ID: 12 (cron review round 7 — QA + per-turn model persistence + trace timer + time groups)
+Agent: main agent (webDevReview)
+Task: Assess status, QA via agent-browser, fix bugs / add features + styling details.
+
+Work Log:
+- Status assessment: dev server healthy, tsc clean (src/), lint clean, git at round-6 commit. Live QA pass (fresh browser): auth gate minimal ✓, demo login ✓, free chat streaming ✓, quota/tok/cost chips ✓ → phase STABLE, proceeded to bug + features.
+- BUG FIXED (QA): assistant message meta rendered the model as "glm-platform/glm-platform" (provider and model are identical for the platform fallback). Added a label-dedupe helper (collapses when model equals the provider or already carries the provider prefix) used in BOTH the message meta chip and the thinking indicator. Verified live: chip now reads a single "glm-platform".
+- Feature 1 — Per-message model id persisted (round-6 candidate):
+  - Prisma: ChatMessage.modelId String? (canonical id, e.g. "openai/gpt-4o-mini" BYOK or "glm-platform" platform) — db:push OK, data preserved.
+  - agent.ts: llmModelId() helper; AgentLoopResult gains modelId; assistant row persists it.
+  - /api/chat: history rows include modelId; the SSE usage event carries modelId (final, authoritative per turn).
+  - Client: ChatMessageRow/ChatEntry +modelId; usage handler stores it; MessageMeta now prefers entry.modelId for the model chip AND the cost estimate (accurate when the provider changes mid-session); chip tooltip discloses provider · source (your API key / platform model). Markdown export includes "model: <id>" on assistant turns. Older rows (pre-persistence) honestly show no chip; cost falls back to the active provider model (labeled est.).
+- Feature 2 — Live elapsed timer on pending tool trace rows: TraceStep gains startedAt (client timestamp at tool_call); pending rows tick "running X.Xs" (amber chip, tabular-nums, 100ms interval, cleaned up on completion/unmount). Video-verified at 30fps: the pending spinner variant renders; note local tools (read_hex/strings on tiny files) execute in <100ms so the window is 1–2 frames — the chip is meaningful exactly where it matters (slow REA MCP tools).
+- Feature 3 — Cursor-style sidebar time grouping: Chats section buckets non-pinned sessions into Today / Yesterday / Previous 7 days / Older (uppercase mono hairline headers with per-group counts, tabular-nums). Groups render only when >1 bucket and never during active filtering (search stays flat). Live-verified by backdating one session 2 days: "TODAY 20" + "PREVIOUS 7 DAYS 1" headers appeared, then reverted the backdate.
+- INFRA INCIDENT (root-caused, recovered): first dev-server restart after db:push silently failed with EADDRINUSE — the previous server still held port 3000 with the STALE Prisma client, so new assistant rows were silently dropped (persistence catch swallows; symptom: streamed answer shows, "1 msg" in sidebar, no DB row). Fix: kill the old next/next-server processes, restart via the system entrypoint, re-run E2E. RULE: after any prisma db push, verify the restart actually bound the port (grep the restart log for EADDRINUSE) before trusting persistence tests.
+- QA verification (fresh browser sessions): deduped chip on live stream AND after reload from history ✓; modelId="glm-platform" confirmed in sqlite for the new turn ✓; tool trace + evidence-graded file-chat answer ✓ (16.5k in-tokens incl. tool result, $0.004 est); time groups ✓; mobile 390×844 layout + streaming + touch-visible meta with truncated chip ✓; fresh-session console 0 errors/warnings ✓; tsc clean (src/) ✓; eslint 0 problems ✓.
+
+Stage Summary:
+- Platform gained: truthful per-turn model attribution (DB→SSE→UI→export) with correct cost estimates across provider switches, a model label dedupe fix, live elapsed timers on running tool rows, and Cursor-style chat time grouping.
+- Contracts: ChatMessage.modelId column; GET history rows + modelId; SSE usage event + modelId; export adds "model:" meta.
+- Infra rules: post-db:push restarts MUST be verified for port binding (EADDRINUSE check); eval-polling before Enter is the reliable way to catch sub-second UI states on video/eval.
+- Next candidates: chat folders/tags on top of time groups, file compare view, i18n, streaming tool-arg preview (args already shown; could stream partial JSON), provider pricing refresh date surfaced in UI, per-session cumulative cost in session list rows.

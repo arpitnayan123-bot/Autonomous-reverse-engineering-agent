@@ -122,6 +122,8 @@ export interface ChatMessageRow {
   tokensOut?: number | null;
   /** Wall-clock agent turn duration in ms (assistant rows). */
   durationMs?: number | null;
+  /** Canonical model id for this turn ("openai/gpt-4o-mini" | "glm-platform"). */
+  modelId?: string | null;
   createdAt: string;
 }
 
@@ -217,6 +219,8 @@ export type ChatStreamEvent =
       tokensIn: number | null;
       tokensOut: number | null;
       durationMs: number;
+      /** Canonical model id that produced this turn (persisted server-side). */
+      modelId?: string;
     }
   | { type: "assistant"; content: string }
   | { type: "error"; error: string }

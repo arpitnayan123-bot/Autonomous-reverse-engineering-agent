@@ -126,6 +126,12 @@ model ChatMessage {
   tokensOut  Int?
   /** Wall-clock duration of the whole agent turn, in ms (assistant rows). */
   durationMs Int?
+  /**
+   * Canonical model id that produced this assistant row, e.g.
+   * "openai/gpt-4o-mini" (BYOK) or "glm-platform" — kept per message so cost
+   * estimates and model chips stay correct when the provider changes mid-session.
+   */
+  modelId    String?
   createdAt  DateTime    @default(now())
 
   @@index([sessionId, createdAt])

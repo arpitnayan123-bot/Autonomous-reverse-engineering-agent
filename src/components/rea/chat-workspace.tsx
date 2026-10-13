@@ -70,6 +70,8 @@ interface TraceStep {
   args?: unknown;
   preview?: string | null;
   pending: boolean;
+  /** Client timestamp when the tool call started (drives the live elapsed timer). */
+  startedAt?: number;
 }
 
 interface ChatEntry {
@@ -84,6 +86,15 @@ interface ChatEntry {
   tokensOut?: number | null;
   /** Wall-clock agent turn duration in ms (assistant). */
   durationMs?: number | null;
+  /** Canonical model id for this turn ("openai/gpt-4o-mini" | "glm-platform"). */
+  modelId?: string | null;
+}
+
+/** Display label for a provider+model pair — collapses redundant prefixes.
+ *  "glm-platform" + "glm-platform" → "glm-platform"; "openai" + "openai/gpt-4o" → "openai/gpt-4o". */
+function modelLabel(provider: string, model: string): string {
+  if (!provider || model === provider || model.startsWith(`${provider}/`)) return model;
+  return `${provider}/${model}`;
 }
 
 interface ModelInfo {
@@ -353,7 +364,7 @@ export function ChatWorkspace({
             ...e,
             trace: [
               ...e.trace,
-              { id: nextId(), tool: ev.tool, args: ev.args, pending: true },
+              { id: nextId(), tool: ev.tool, args: ev.args, pending: true, startedAt: Date.now() },
             ],
           }));
           break;
@@ -377,6 +388,7 @@ export function ChatWorkspace({
             tokensIn: ev.tokensIn,
             tokensOut: ev.tokensOut,
             durationMs: ev.durationMs,
+            modelId: ev.modelId ?? e.modelId ?? null,
           }));
           break;
         case "assistant":
@@ -770,6 +782,7 @@ function rowToEntry(m: ChatMessageRow): ChatEntry {
     tokensIn: m.tokensIn ?? null,
     tokensOut: m.tokensOut ?? null,
     durationMs: m.durationMs ?? null,
+    modelId: m.modelId ?? null,
     createdAt: m.createdAt,
   };
 }
@@ -1023,10 +1036,17 @@ function MessageMeta({
   const copyLabel =
     entry.role === "assistant" ? "Copy assistant message" : "Copy your message";
   const hasUsage = entry.tokensIn != null || entry.tokensOut != null;
-  // Cost estimate: prefer the model that streamed this turn, else the active
-  // provider's model (history rows don't carry their own model id).
+  // Cost + model chip: the model that actually produced THIS turn (persisted
+  // per row), falling back to the live stream info, then the active provider
+  // (older rows pre-date per-turn model persistence).
   const providerActive = useReaStore((s) => s.providerActive);
-  const costModel = model?.model ?? providerActive?.model ?? null;
+  const costModel = entry.modelId ?? model?.model ?? providerActive?.model ?? null;
+  const modelChip =
+    entry.modelId ??
+    (model ? modelLabel(model.provider, model.model) : null);
+  const modelTooltip = model
+    ? `${modelLabel(model.provider, model.model)} · ${model.source === "byok" ? "your API key" : "platform model"}`
+    : modelChip ?? "model";
   const costEstimate =
     entry.role === "assistant"
       ? estimateCostUsd(costModel, entry.tokensIn, entry.tokensOut)
@@ -1042,9 +1062,12 @@ function MessageMeta({
           })}
         </time>
       )}
-      {entry.role === "assistant" && model && (
-        <span className="truncate font-mono text-[10px] text-zinc-700">
-          {model.provider}/{model.model}
+      {entry.role === "assistant" && modelChip && (
+        <span
+          className="truncate font-mono text-[10px] text-zinc-700"
+          title={modelTooltip}
+        >
+          {modelChip}
         </span>
       )}
       {entry.role === "assistant" && (hasUsage || entry.durationMs != null) && (
@@ -1100,7 +1123,7 @@ function ThinkingIndicator({ modelInfo }: { modelInfo: ModelInfo | null }) {
         ))}
       </span>
       <span className="font-mono text-[10px] text-zinc-600">
-        {modelInfo ? `${modelInfo.provider}/${modelInfo.model}` : "agent"} · working…
+        {modelInfo ? `${modelLabel(modelInfo.provider, modelInfo.model)} · working…` : "agent · working…"}
       </span>
     </div>
   );
@@ -1120,6 +1143,18 @@ function argsPreview(args: unknown): string {
 
 function TraceRow({ step }: { step: TraceStep }) {
   const preview = argsPreview(step.args);
+  // Live elapsed timer while the tool is running (Cursor-style "running 1.2s").
+  const [elapsed, setElapsed] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    if (!step.pending || !step.startedAt) {
+      setElapsed(null);
+      return;
+    }
+    const tick = () => setElapsed((Date.now() - step.startedAt!) / 1000);
+    tick();
+    const iv = window.setInterval(tick, 100);
+    return () => window.clearInterval(iv);
+  }, [step.pending, step.startedAt]);
   return (
     <Collapsible>
       <CollapsibleTrigger
@@ -1137,8 +1172,19 @@ function TraceRow({ step }: { step: TraceStep }) {
           <span className={step.pending ? "text-amber-200" : "text-zinc-300"}>{step.tool}</span>
           {preview && <span className="ml-1.5 text-zinc-600">{preview}</span>}
         </span>
-        <span className="ml-auto flex items-center gap-1 text-[9px] uppercase tracking-wider text-zinc-600">
-          {step.pending ? "running" : "done"}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[9px] tracking-wider text-zinc-600 uppercase">
+          {step.pending ? (
+            <>
+              running
+              {elapsed != null && (
+                <span className="rounded bg-amber-500/10 px-1 py-px font-mono text-[9px] text-amber-300/90 tabular-nums">
+                  {elapsed < 10 ? elapsed.toFixed(1) : Math.round(elapsed)}s
+                </span>
+              )}
+            </>
+          ) : (
+            "done"
+          )}
           <ChevronDown className="size-3 transition-transform group-data-[state=open]:rotate-180" aria-hidden />
         </span>
       </CollapsibleTrigger>
