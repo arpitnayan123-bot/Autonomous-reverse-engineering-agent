@@ -500,3 +500,39 @@ Stage Summary:
 - Commits: 106439e (server hardening), 5def6d1 (UI fixes + a11y + perf), be19fd8 (agent auto-route + QA).
 - Remaining known limitations (honest): native REA providers (Hopper/Ghidra/IDA) are BYO desktop apps → absent in this sandbox (engine fails closed with clear diagnostics — surfaced in UI); sessions remain stateless (logout does not revoke a stolen token — tokenVersion revocation deferred, needs schema migration); cmdk palette shows max 8 chats; message-search cap 8 with honest labeling; TTS endpoint wav-only.
 - Next candidates: session revocation (tokenVersion), pagination for >400-message chats, per-message TTS cache, chat folders/tags, i18n.
+
+---
+Task ID: 14
+Agent: Z.ai Code (lead engineer + product designer + security auditor + QA)
+Task: Four-role mandate — audit everything, implement highest-impact upgrades (security / coding-agent / reliability), verify live, keep honest reporting.
+
+Work Log:
+- AUDIT: re-read worklog (17 prior rounds); verified tsc (only pre-existing skills/ errors) + eslint clean; confirmed dev server healthy; re-read auth.ts, agent loop, tools registry, chat route, security route/view, chat-workspace internals. Chose three highest-impact gaps flagged as "next candidates" by round 17: session revocation, agent planning, history pagination.
+- SECURITY — revocable sessions (was: stateless HMAC tokens, logout could not revoke a stolen token):
+  - New AuthSession table (additive db:push, no data loss); token payload now carries sid; every request validates sid against live (unrevoked, unexpired) rows.
+  - login/register/demo persist ip+userAgent on the session row; logout revokes the current session + purges stale rows.
+  - POST /api/security {signOutOthers:true} revokes every live session except the caller's (rate-limited 6/min, audited); GET returns sessions list.
+  - Security view: "Active sessions" card — device labels parsed from UA (Chrome/Firefox/Edge/Safari · macOS/Windows/Android/iOS/Linux), "this device" badge, "Sign out other sessions" button (shown only when >1 session).
+  - Migration note: all old cookies were invalidated by design (pre-revocation tokens untrustworthy) → one re-login.
+- AGENT — update_plan planning tool (coding-agent planning, Claude-Code-TodoWrite analog):
+  - tools.ts: planTool + parsePlanTasks (2–8 tasks, title/status validation, ≤1 in_progress) + applyPlanUpdate (pure, no target needed).
+  - agent.ts: free-chat loop special-cases update_plan (works without a target; all other tools still redirect).
+  - prompts.ts: planning section in the target system prompt (call FIRST on 3+ step tasks, re-emit FULL list on every state change); free-chat prompt updated with the single-allowed-tool exception + example block.
+  - chat-workspace.tsx: extractPlan(trace) → PlanCard checklist (done ✓ strikethrough / in_progress spinner / pending hollow dot, done/total counter, "Plan complete" state); update_plan trace rows hidden when the card renders, fall back to trace rows if malformed; persisted per message → survives reload.
+- RELIABILITY — transcript windowing:
+  - GET /api/chat?sessionId now serves the NEWEST 80 messages with {total, hasMore}; all=1 serves newest 400. Fixed latent bug: asc take served the OLDEST rows on >400-message sessions (agent context + edit/regenerate operated on stale turns) — POST now slices desc→reverse.
+  - Client: "Load earlier messages (N)" button prepends with scroll anchoring (scrollTop = newHeight − prevHeight + prevTop); historyMeta resets on draft nav; count clamped ≥0; search-jump auto-loads full history once when the hit lies outside the window.
+- A11Y BUG: CommandDialog rendered its sr-only DialogHeader as a SIBLING of DialogContent → Radix could not wire aria-describedby → console warning on every palette open. Header moved inside; verified aria-describedby now set.
+- QA (agent-browser, desktop 1280 + mobile 390×844):
+  - Old cookie correctly rejected after deploy (forced re-login, expected).
+  - Dev-server restart required: HMR kept the pre-migration Prisma client singleton (db.authSession undefined → demo login 500) — same known behavior as the bridge singleton; restarted cleanly.
+  - Sessions: two live sessions listed (Chrome · macOS "this device" + Firefox · Linux); "Sign out other sessions" → row removed, toast, and the OTHER cookie immediately returns user:null from /api/auth/me (stolen-token scenario verified end-to-end); logout revokes the current row (DB-verified) and returns to the auth screen.
+  - Plan: free chat "step-by-step APK workflow" → live PlanCard with 6 steps (spinner on in_progress), counter 0/6; reload → card re-renders from persisted toolCalls.
+  - Windowing: seeded 94-message session (scripts/seed-long-chat.ts, idempotent) → 80 loaded, button "Load earlier messages (14)", click → all 94, first row = oldest, scroll anchor preserved (gap 609px before/after); mobile: no horizontal overflow, drawer + button + transcript clean.
+  - Console: no page errors; palette a11y warning gone. tsc + eslint clean. QA chats deleted from sidebar afterwards.
+- Commit: 24b62c3-ish → "feat(security+agent+ui): revocable sessions, update_plan agent tool, history windowing" (16 files, +770/−59).
+
+Stage Summary:
+- Three known deferred gaps from round 17 are closed and browser-verified: revocable sessions (with a real session-management UI), agent planning with visible task tracking (also in free chats), and newest-window history pagination with honest counts.
+- Honest limitations: /api/auth/me still answers 200 {user:null} for unauthenticated (pre-existing client contract); search-jump beyond the 400-row server cap cannot flash (hit content still visible in palette); sessions list caps at 20 rows.
+- Next candidates: per-message TTS cache, token sliding-renewal (extend expiry on activity), export sessions list to audit view, i18n, optional plan persistence per session (cross-turn sticky plan header).
