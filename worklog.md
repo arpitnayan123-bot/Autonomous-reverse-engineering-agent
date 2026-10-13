@@ -167,3 +167,25 @@ Stage Summary:
 - UX now: sign-in (minimal) → chat-first workspace (Cursor-like). Free chat = no tools, honest label "free chat · no tools". File chats run real REA tools. API key via top-bar model chip / sidebar / user menu. Engine+security tucked into System dialog.
 - Contracts: GET/POST/DELETE /api/chat reshaped (breaking vs v1 — old targetId-unique upsert gone); SSE first event = session_saved.
 - Open items: file compare view, report export,用量 limit display, i18n, per-message token accounting.
+
+---
+Task ID: 6 (cron review round 1 — QA + features)
+Agent: main agent (webDevReview)
+Task: Assess status post-redesign-v2, QA via agent-browser, then add features + styling details.
+
+Work Log:
+- QA regression: auth gate ✓, demo login ✓, workspace boot ✓, 0 console errors — stable.
+- Backend: PATCH /api/chat (rename, ownership-checked, 1–120 chars); POST /api/chat now returns X-RateLimit-Limit/Remaining headers on the SSE response.
+- api-client: apiPatch, renameChatSession, streamChat → { rateLimitRemaining } (parsed from headers).
+- store: chatQuota {limit, remaining} | null.
+- New src/lib/export.ts: downloadMarkdown + exportChat (transcript w/ tool-call <details>) + exportTargetReport (identity + findings tables + evidence ledger + AI docs).
+- app-shell: inline session rename (pencil → input, Enter/Esc/check/X), top-bar "Export chat as Markdown" (visible when a session is active), inspector-header "Export investigation report" download, status-bar quota chip (amber ≤3 remaining, rose 0).
+- chat-workspace: scroll-to-bottom floating button (autoscroll only while pinned to bottom; onScroll distance<80), framer-motion fade/slide on message entries, CopyButton on tool output pre.
+- BUG FIXED: GET /api/chat returned toolCalls as parsed object while ChatMessageRow types it string → history tool traces disappeared after reload and chat exports skipped them. Route now returns raw string (client already parses defensively).
+- BUG FIXED: report export crashed on (f.meta ?? "-").replace — findings API returns meta as parsed object (by design, target-panel prettyJson handles it). export.ts now stringifies non-string meta defensively.
+- Verified in browser: rename ✓ (sidebar shows new title), chat export ✓ (9.1KB md w/ 8 details blocks), report export ✓ (demo.db-report.md w/ findings tables), quota chip ✓ ("quota: 19/20 msgs · 5 min"), scroll-to-bottom ✓ (appeared after real scroll event, jump restores distance 0), history traces after reload ✓ (22 DONE rows), console clean ✓, tsc clean ✓, lint 0 problems ✓.
+
+Stage Summary:
+- Platform gained: session rename, two Markdown exports (chat + investigation report), live quota feedback, chat UX polish (jump-to-latest, message animations, copyable tool output).
+- Known type-lie left as-is: api-client Finding.meta typed string|null but findings route returns parsed object (pre-existing; target-panel handles both; export.ts now defensive).
+- Next candidates: file-compare view, per-message token accounting, i18n, streaming token-by-token (SSE deltas), keyboard shortcut palette (Cmd+K).
