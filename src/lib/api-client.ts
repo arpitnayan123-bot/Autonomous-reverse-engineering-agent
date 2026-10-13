@@ -368,6 +368,8 @@ export function apiUpload<T>(
  * - `sessionId`  → continue an existing session.
  * - `targetId`   → start a NEW chat bound to that target (no sessionId).
  * - neither      → start a NEW free chat.
+ * - `editMessageId` → edit-and-resend that user turn (truncates after it).
+ * - `regenerate`    → re-run the last user turn (drops the last reply).
  * Frames are `data: {json}\n\n`; the buffer is split on `\n\n` and every
  * `data: ` line is JSON-parsed and forwarded to `onEvent`.
  * Resolves with the message quota remaining (from X-RateLimit-Remaining).
@@ -377,15 +379,23 @@ export async function streamChat(
     sessionId?: string | null;
     targetId?: string | null;
     message: string;
+    editMessageId?: string | null;
+    regenerate?: boolean;
     onEvent: (event: ChatStreamEvent) => void;
   },
   signal?: AbortSignal
 ): Promise<{ rateLimitRemaining: number | null }> {
-  const { sessionId, targetId, message, onEvent } = opts;
+  const { sessionId, targetId, message, editMessageId, regenerate, onEvent } = opts;
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId: sessionId ?? undefined, targetId: targetId ?? undefined, message }),
+    body: JSON.stringify({
+      sessionId: sessionId ?? undefined,
+      targetId: targetId ?? undefined,
+      message,
+      editMessageId: editMessageId ?? undefined,
+      regenerate: regenerate || undefined,
+    }),
     signal,
   });
   const rateLimitRemaining = Number(res.headers.get("X-RateLimit-Remaining"));

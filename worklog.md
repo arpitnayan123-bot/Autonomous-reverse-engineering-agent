@@ -219,7 +219,7 @@ Styling details (mandatory):
 - EmptyState: keyboard-hints row (⌘K palette · ⌘B sidebar · ⌘I inspector · ⌘⇧O new chat) in kbd chips under a hairline divider.
 
 Bugs fixed this round:
-- Stale Turbopack CSS cache served a malformed utility from a discarded first-draft palette class (`[&_[cmdk-input-wrapper]:border-0]:hidden`) → "Parsing CSS source code failed" build error; class no longer exists in source; touched globals.css to force recompile; fresh load has 0 console errors.
+- Stale Turbopack CSS cache served a malformed utility from a discarded first-draft palette class (a stale cmdk utility class string — redacted: Tailwind scans this log and regenerated the broken CSS) → "Parsing CSS source code failed" build error; class no longer exists in source; touched globals.css to force recompile; fresh load has 0 console errors.
 - z-ai SDK stream chunks are raw SSE bytes, not parsed deltas (first implementation produced "Model stream produced no content" + silent non-streamed fallback) → SseDeltaParser; platform model now streams truly token-by-token (verified: mid-stream screenshots show caret + partial markdown; dev.log no longer logs stream failures).
 
 Verification: bunx tsc --noEmit clean; bun run lint 0 problems; browser E2E: palette open/search/select ✓, ⌘B toggle ✓ (sidebar collapses + chat reflows), free-chat streaming w/ caret + Stop ✓, code-block header w/ copy ✓, file-chat streaming w/ 5 REA tools & no JSON flash ✓, history traces after reload ✓ (5 DONE rows), hover copy meta ✓, mobile 390×844 ✓, console 0 errors ✓.

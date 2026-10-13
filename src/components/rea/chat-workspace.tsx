@@ -5,11 +5,14 @@ import { motion } from "framer-motion";
 import {
   ArrowDown,
   Binary,
+  Check,
   ChevronDown,
   CircleAlert,
   KeyRound,
   Loader2,
   PanelRightOpen,
+  Pencil,
+  RotateCcw,
   SendHorizontal,
   Square,
   Wrench,
@@ -123,6 +126,9 @@ export function ChatWorkspace({
   const [streaming, setStreaming] = React.useState(false);
   const [modelInfo, setModelInfo] = React.useState<ModelInfo | null>(null);
   const [input, setInput] = React.useState("");
+  /** Id of the user message being edited inline (edit-and-resend). */
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [editValue, setEditValue] = React.useState("");
   /** False while the user scrolled up — suppresses autoscroll + shows the jump button. */
   const [atBottom, setAtBottom] = React.useState(true);
 
@@ -203,18 +209,23 @@ export function ChatWorkspace({
   }, [input]);
 
   // ---- Streaming ----------------------------------------------------------
-  /** Sends with the live event handler wired to the assistant entry. */
-  const sendWithEvents = async (raw: string) => {
-    const message = raw.trim();
-    if (!message || streaming) return;
-
+  /**
+   * Core turn runner shared by send / edit-and-resend / regenerate.
+   * `commit` transforms the local transcript BEFORE the fresh assistant entry
+   * is appended (append the user entry, truncate at the edited turn, …).
+   */
+  const runTurn = async (opts: {
+    message: string;
+    editMessageId?: string;
+    regenerate?: boolean;
+    /** Local id of a just-appended user entry — renamed when user_saved arrives. */
+    localUserId?: string;
+    commit: (prev: ChatEntry[]) => ChatEntry[];
+  }) => {
     const sessionId = activeSessionId;
     const targetId = boundTarget?.id ?? draftTargetId ?? null;
-
-    const userEntry: ChatEntry = { id: nextId(), role: "user", content: message, trace: [] };
     const assistantEntry: ChatEntry = { id: nextId(), role: "assistant", content: "", trace: [] };
-    setEntries((prev) => [...prev, userEntry, assistantEntry]);
-    setInput("");
+    setEntries((prev) => [...opts.commit(prev), assistantEntry]);
     setStreaming(true);
 
     const controller = new AbortController();
@@ -247,6 +258,16 @@ export function ChatWorkspace({
           }
           break;
         }
+        case "user_saved":
+          // Swap the optimistic local id for the persisted one so an
+          // immediate edit-and-resend addresses a real server row.
+          if (opts.localUserId) {
+            const localId = opts.localUserId;
+            setEntries((prev) =>
+              prev.map((e) => (e.id === localId ? { ...e, id: ev.messageId } : e))
+            );
+          }
+          break;
         case "model":
           setModelInfo({ source: ev.source, provider: ev.provider, model: ev.model });
           break;
@@ -308,7 +329,14 @@ export function ChatWorkspace({
 
     try {
       const { rateLimitRemaining } = await streamChat(
-        { sessionId, targetId, message, onEvent },
+        {
+          sessionId,
+          targetId,
+          message: opts.message,
+          editMessageId: opts.editMessageId,
+          regenerate: opts.regenerate,
+          onEvent,
+        },
         controller.signal
       );
       if (rateLimitRemaining !== null) {
@@ -326,6 +354,60 @@ export function ChatWorkspace({
       onSessionsChanged?.();
       onTargetsChanged?.();
     }
+  };
+
+  /** Normal send: append the user turn and stream the answer. */
+  const sendWithEvents = (raw: string) => {
+    const message = raw.trim();
+    if (!message || streaming) return;
+    const userEntry: ChatEntry = { id: nextId(), role: "user", content: message, trace: [] };
+    setInput("");
+    void runTurn({
+      message,
+      localUserId: userEntry.id,
+      commit: (prev) => [...prev, userEntry],
+    });
+  };
+
+  /** Edit-and-resend: replace a user turn server-side, drop later turns, re-stream. */
+  const submitEdit = (entryId: string) => {
+    const content = editValue.trim();
+    if (!content || streaming || !activeSessionId) return;
+    setEditingId(null);
+    void runTurn({
+      message: content,
+      editMessageId: entryId,
+      commit: (prev) => {
+        const idx = prev.findIndex((e) => e.id === entryId);
+        if (idx < 0) return prev; // server replies 404 → error surfaces on the entry
+        const edited: ChatEntry = { ...prev[idx], content, trace: [], error: undefined };
+        return [...prev.slice(0, idx), edited];
+      },
+    });
+  };
+
+  /** Regenerate: drop the last assistant reply and re-run the last user turn. */
+  const regenerateLast = () => {
+    if (streaming || !activeSessionId) return;
+    void runTurn({
+      message: "",
+      regenerate: true,
+      commit: (prev) => {
+        const last = prev[prev.length - 1];
+        return last && last.role === "assistant" ? prev.slice(0, -1) : prev;
+      },
+    });
+  };
+
+  const startEdit = (entry: ChatEntry) => {
+    if (streaming) return;
+    setEditingId(entry.id);
+    setEditValue(entry.content);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditValue("");
   };
 
   const stop = () => {
@@ -413,6 +495,19 @@ export function ChatWorkspace({
                     entry={entry}
                     streaming={streaming && idx === entries.length - 1}
                     model={modelInfo}
+                    editing={editingId === entry.id}
+                    editValue={editValue}
+                    onEditValue={setEditValue}
+                    onEditSubmit={() => submitEdit(entry.id)}
+                    onEditCancel={cancelEdit}
+                    onEditStart={() => startEdit(entry)}
+                    onRegenerate={regenerateLast}
+                    canRegenerate={
+                      !streaming &&
+                      !!activeSessionId &&
+                      entry.role === "assistant" &&
+                      idx === entries.length - 1
+                    }
                   />
                 </motion.div>
               ))}
@@ -458,7 +553,9 @@ export function ChatWorkspace({
             </button>
           )}
 
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 shadow-lg shadow-black/20 transition-colors focus-within:border-zinc-700">
+          <div
+            className="rounded-xl border border-zinc-800 bg-zinc-900/60 shadow-lg shadow-black/20 transition-all duration-200 focus-within:border-emerald-500/30 focus-within:shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_12px_32px_-16px_rgba(16,185,129,0.25)]"
+          >
             <Textarea
               ref={textareaRef}
               value={input}
@@ -560,24 +657,108 @@ function MessageRow({
   entry,
   streaming,
   model,
+  editing,
+  editValue,
+  onEditValue,
+  onEditSubmit,
+  onEditCancel,
+  onEditStart,
+  onRegenerate,
+  canRegenerate,
 }: {
   entry: ChatEntry;
   streaming?: boolean;
   model?: ModelInfo | null;
+  editing?: boolean;
+  editValue?: string;
+  onEditValue?: (v: string) => void;
+  onEditSubmit?: () => void;
+  onEditCancel?: () => void;
+  onEditStart?: () => void;
+  onRegenerate?: () => void;
+  canRegenerate?: boolean;
 }) {
   if (entry.role === "user") {
     return (
       <div className="group flex items-start gap-2.5">
-        <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border border-zinc-800 bg-zinc-900 font-mono text-[10px] text-zinc-400">
+        <span
+          className={cn(
+            "mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border font-mono text-[10px]",
+            editing
+              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+              : "border-zinc-800 bg-zinc-900 text-zinc-400"
+          )}
+        >
           ›_
         </span>
         <div className="min-w-0 flex-1">
-          <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/50 px-3.5 py-2.5">
-            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-200">
-              {entry.content}
-            </p>
-          </div>
-          <MessageMeta entry={entry} model={null} />
+          {editing ? (
+            <div className="rounded-lg border border-emerald-500/40 bg-zinc-900/80 shadow-lg shadow-black/30">
+              <textarea
+                autoFocus
+                value={editValue ?? ""}
+                onChange={(e) => onEditValue?.(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    onEditSubmit?.();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    onEditCancel?.();
+                  }
+                }}
+                rows={Math.min(8, Math.max(2, (editValue ?? "").split("\n").length))}
+                aria-label="Edit your message"
+                className="w-full resize-none border-0 bg-transparent px-3.5 py-2.5 text-sm leading-relaxed text-zinc-100 placeholder:text-zinc-600 focus-visible:outline-none"
+              />
+              <div className="flex items-center gap-1.5 border-t border-zinc-800/80 px-2.5 py-1.5">
+                <span className="font-mono text-[10px] text-zinc-600">
+                  editing · later turns will be re-run
+                </span>
+                <span className="ml-auto" />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={onEditCancel}
+                  aria-label="Cancel editing"
+                  className="h-6 gap-1 px-2 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                >
+                  <X className="size-3" aria-hidden />
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={onEditSubmit}
+                  disabled={!(editValue ?? "").trim()}
+                  aria-label="Save and resend this message"
+                  className="h-6 gap-1 bg-emerald-600 px-2 text-[11px] text-white hover:bg-emerald-500 disabled:opacity-40"
+                >
+                  <Check className="size-3" aria-hidden />
+                  Save & resend
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div
+              className={cn(
+                "rounded-lg border bg-zinc-900/50 px-3.5 py-2.5 transition-colors",
+                "border-zinc-800/80 group-hover:border-zinc-700/90"
+              )}
+            >
+              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-200">
+                {entry.content}
+              </p>
+            </div>
+          )}
+          <MessageMeta entry={entry} model={null}>
+            {!editing && (
+              <MetaButton label={`Edit and resend: ${entry.content.slice(0, 40)}`} onClick={onEditStart}>
+                <Pencil className="size-3" aria-hidden />
+              </MetaButton>
+            )}
+          </MessageMeta>
         </div>
       </div>
     );
@@ -612,7 +793,17 @@ function MessageRow({
             {streaming && <StreamingCaret />}
           </div>
         )}
-        <MessageMeta entry={entry} model={model} />
+        <MessageMeta entry={entry} model={model}>
+          {canRegenerate && (
+            <MetaButton
+              label="Regenerate this response"
+              onClick={onRegenerate}
+              hoverClass="hover:text-emerald-400"
+            >
+              <RotateCcw className="size-3" aria-hidden />
+            </MetaButton>
+          )}
+        </MessageMeta>
       </div>
     </div>
   );
@@ -628,13 +819,43 @@ function StreamingCaret() {
   );
 }
 
-/** Hover meta row: timestamp + copy (+ provider/model for assistant turns). */
+/** Small icon button in the hover meta row (edit / regenerate). */
+function MetaButton({
+  label,
+  onClick,
+  children,
+  hoverClass = "hover:text-zinc-200",
+}: {
+  label: string;
+  onClick?: () => void;
+  children: React.ReactNode;
+  hoverClass?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={cn(
+        "grid size-5 place-items-center rounded text-zinc-600 transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none",
+        hoverClass
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Hover meta row: timestamp + actions + copy (+ provider/model for assistant turns). */
 function MessageMeta({
   entry,
   model,
+  children,
 }: {
   entry: ChatEntry;
   model?: ModelInfo | null;
+  children?: React.ReactNode;
 }) {
   const copyLabel =
     entry.role === "assistant" ? "Copy assistant message" : "Copy your message";
@@ -653,7 +874,8 @@ function MessageMeta({
           {model.provider}/{model.model}
         </span>
       )}
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-1">
+        {children}
         <CopyButton value={entry.content} label={copyLabel} small />
       </div>
     </div>
@@ -788,6 +1010,7 @@ function EmptyState({
         <div className="mt-8 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 border-t border-zinc-800/60 pt-4">
           <KbdHint keys="⌘K" label="command palette" />
           <KbdHint keys="⌘B" label="toggle sidebar" />
+          <KbdHint keys="⌘F" label="filter" />
           <KbdHint keys="⌘I" label="inspector" />
           <KbdHint keys="⌘⇧O" label="new chat" />
         </div>

@@ -10,6 +10,8 @@ export const maxDuration = 300;
 const MAX_MESSAGE_CHARS = 8000;
 const HISTORY_TURNS = 20;
 const MAX_SESSIONS_PER_USER = 100;
+/** Upper bound of messages inspected for edit/regenerate truncation. */
+const MAX_SESSION_MESSAGES = 400;
 
 /** Shape of a chat session row as returned by the list endpoint. */
 function toSessionSummary(
@@ -182,14 +184,33 @@ export async function POST(req: Request) {
       sessionId?: unknown;
       targetId?: unknown;
       message?: unknown;
+      /** Edit-and-resend: replace this user message and drop everything after it. */
+      editMessageId?: unknown;
+      /** Re-run the last user turn (drops trailing assistant messages). */
+      regenerate?: unknown;
     } | null;
     const rawSessionId = typeof body?.sessionId === "string" ? body.sessionId : "";
     const rawTargetId = typeof body?.targetId === "string" ? body.targetId : "";
+    const rawEditId = typeof body?.editMessageId === "string" ? body.editMessageId : "";
+    const regenerate = body?.regenerate === true;
     let message = typeof body?.message === "string" ? body.message : "";
     message = message.slice(0, MAX_MESSAGE_CHARS).trim();
-    if (!message) {
+
+    if (regenerate && message) {
+      return NextResponse.json(
+        { ok: false, error: "regenerate takes no message" },
+        { status: 400 }
+      );
+    }
+    if (!regenerate && !message) {
       return NextResponse.json(
         { ok: false, error: "message is required (≤ 8000 chars)" },
+        { status: 400 }
+      );
+    }
+    if ((regenerate || rawEditId) && !rawSessionId) {
+      return NextResponse.json(
+        { ok: false, error: "sessionId is required for edit/regenerate" },
         { status: 400 }
       );
     }
@@ -198,6 +219,9 @@ export async function POST(req: Request) {
     }
     if (rawTargetId && !isSafeId(rawTargetId)) {
       return NextResponse.json({ ok: false, error: "Invalid target id" }, { status: 400 });
+    }
+    if (rawEditId && !isSafeId(rawEditId)) {
+      return NextResponse.json({ ok: false, error: "Invalid message id" }, { status: 400 });
     }
 
     // ---- Resolve or create the session -----------------------------------
@@ -247,29 +271,78 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Target not found" }, { status: 404 });
     }
 
-    const historyRows = await db.chatMessage.findMany({
+    // ---- History / edit / regenerate -------------------------------------
+    const allRows = await db.chatMessage.findMany({
       where: { sessionId: session.id },
-      orderBy: { createdAt: "desc" },
-      take: HISTORY_TURNS,
+      orderBy: { createdAt: "asc" },
+      take: MAX_SESSION_MESSAGES,
     });
-    historyRows.reverse();
-    if (historyRows.length === 0) {
-      await db.chatSession
-        .update({
-          where: { id: session.id },
-          data: { title: message.slice(0, 60) || "New investigation" },
-        })
-        .catch(() => undefined);
+
+    /** The turn the agent answers (new or existing user text). */
+    let turnMessage = message;
+    let historyRows: { role: string; content: string }[];
+    /** Whether a fresh user row must be persisted for this turn. */
+    let createUserRow = true;
+
+    if (regenerate) {
+      // Drop trailing assistant rows (completed runs), then the turn re-runs
+      // from the last user message. Also acts as retry after a failed turn
+      // (which leaves no assistant row at all).
+      const trailing: string[] = [];
+      for (let i = allRows.length - 1; i >= 0; i--) {
+        if (allRows[i].role === "assistant") trailing.push(allRows[i].id);
+        else break;
+      }
+      const lastIdx = allRows.length - 1 - trailing.length;
+      if (lastIdx < 0 || allRows[lastIdx].role !== "user") {
+        return NextResponse.json(
+          { ok: false, error: "Nothing to regenerate" },
+          { status: 400 }
+        );
+      }
+      turnMessage = allRows[lastIdx].content.slice(0, MAX_MESSAGE_CHARS);
+      if (trailing.length > 0) {
+        await db.chatMessage.deleteMany({ where: { id: { in: trailing } } });
+      }
+      historyRows = allRows.slice(0, lastIdx).slice(-HISTORY_TURNS);
+      createUserRow = false;
+    } else if (rawEditId) {
+      // Edit-and-resend: drop the edited user turn and everything after it,
+      // then run a fresh turn with the new text.
+      const editIdx = allRows.findIndex((m) => m.id === rawEditId);
+      if (editIdx < 0 || allRows[editIdx].role !== "user") {
+        return NextResponse.json({ ok: false, error: "Message not found" }, { status: 404 });
+      }
+      const ids = allRows.slice(editIdx).map((m) => m.id);
+      await db.chatMessage.deleteMany({ where: { id: { in: ids } } });
+      historyRows = allRows.slice(0, editIdx).slice(-HISTORY_TURNS);
+      if (editIdx === 0) {
+        await db.chatSession
+          .update({ where: { id: session.id }, data: { title: message.slice(0, 60) } })
+          .catch(() => undefined);
+      }
+    } else {
+      historyRows = allRows.slice(-HISTORY_TURNS);
+      if (allRows.length === 0) {
+        await db.chatSession
+          .update({
+            where: { id: session.id },
+            data: { title: message.slice(0, 60) || "New investigation" },
+          })
+          .catch(() => undefined);
+      }
     }
 
-    const userMessage = await db.chatMessage.create({
-      data: { sessionId: session.id, role: "user", content: message },
-    });
+    const userMessage = createUserRow
+      ? await db.chatMessage.create({
+          data: { sessionId: session.id, role: "user", content: message },
+        })
+      : null;
 
     await audit("chat.message", {
       userId: user.id,
       ip: clientIp(req),
-      detail: `session=${session.id} target=${session.targetId ?? "free"} chars=${message.length}`,
+      detail: `session=${session.id} target=${session.targetId ?? "free"} chars=${turnMessage.length}${rawEditId ? " edit" : ""}${regenerate ? " regenerate" : ""}`,
     });
 
     const encoder = new TextEncoder();
@@ -296,12 +369,12 @@ export async function POST(req: Request) {
             title: message.slice(0, 60) || "New investigation",
             targetId: session!.targetId,
           });
-          send({ type: "user_saved", messageId: userMessage.id });
+          if (userMessage) send({ type: "user_saved", messageId: userMessage.id });
           const { content } = await runAgentLoop({
             sessionId: session!.id,
             target: target ?? null,
             userId: user.id,
-            userMessage: message,
+            userMessage: turnMessage,
             history: historyRows.map((m) => ({
               role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
               content: m.content.slice(0, 4000),

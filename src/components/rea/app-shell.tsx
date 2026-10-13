@@ -209,6 +209,13 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
       } else if (key === "o" && e.shiftKey) {
         e.preventDefault();
         s.newFreeChat();
+      } else if (key === "f" && !e.shiftKey) {
+        // ⌘F — focus the sidebar quick filter (Cursor-style).
+        e.preventDefault();
+        if (!s.sidebarOpen) s.setSidebarOpen(true);
+        requestAnimationFrame(() => {
+          document.getElementById("rea-sidebar-filter")?.focus();
+        });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -717,10 +724,24 @@ interface SidebarBodyProps {
 }
 
 function SidebarBody(p: SidebarBodyProps) {
+  /** Client-side filter for chats + files (Cursor-style quick search). */
+  const [search, setSearch] = React.useState("");
+  const q = search.trim().toLowerCase();
+  const shownSessions = q
+    ? p.sessions.filter(
+        (s) =>
+          (s.title || "new chat").toLowerCase().includes(q) ||
+          (s.targetName ?? "").toLowerCase().includes(q)
+      )
+    : p.sessions;
+  const shownTargets = q
+    ? p.targets.filter((t) => t.originalName.toLowerCase().includes(q))
+    : p.targets;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* New chat */}
-      <div className="p-2">
+      <div className="p-2 pb-1">
         <Button
           type="button"
           onClick={p.onNewChat}
@@ -732,9 +753,34 @@ function SidebarBody(p: SidebarBodyProps) {
         </Button>
       </div>
 
+      {/* Quick filter (chats & files) */}
+      <div className="px-2 pb-1">
+        <div className="group relative">
+          <SearchIcon
+            className="pointer-events-none absolute top-1/2 left-2 size-3 -translate-y-1/2 text-zinc-600 transition-colors group-focus-within:text-emerald-500/80"
+            aria-hidden
+          />
+          <input
+            id="rea-sidebar-filter"
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setSearch("");
+              }
+            }}
+            placeholder="Filter chats & files…"
+            aria-label="Filter chats and files"
+            className="h-7 w-full rounded-md border border-zinc-800/80 bg-zinc-900/50 pr-2 pl-7 font-mono text-[11px] text-zinc-200 transition-colors placeholder:text-zinc-600 focus:border-emerald-500/40 focus:bg-zinc-900 focus:outline-none [&::-webkit-search-cancel-button]:hidden"
+          />
+        </div>
+      </div>
+
       <div className="min-h-0 flex-1 overflow-y-auto rea-scroll">
         {/* Chats */}
-        <SidebarSection icon={MessagesSquare} label="Chats">
+        <SidebarSection icon={MessagesSquare} label={`Chats${q ? ` (${shownSessions.length})` : ""}`}>
           {!p.sessionsLoaded ? (
             <div className="space-y-1.5 px-2 py-1">
               <div className="h-6 animate-pulse rounded bg-zinc-900" />
@@ -744,8 +790,12 @@ function SidebarBody(p: SidebarBodyProps) {
             <p className="px-2 py-1 text-[11px] leading-relaxed text-zinc-600">
               No chats yet. Ask anything, or pick a file below.
             </p>
+          ) : shownSessions.length === 0 ? (
+            <p className="px-2 py-1 font-mono text-[10px] text-zinc-600">
+              no chats match “{search.trim()}”
+            </p>
           ) : (
-            p.sessions.map((s) => {
+            shownSessions.map((s) => {
               const active = s.id === p.activeSessionId && !p.draftTargetId;
               const renaming = p.renamingSession?.id === s.id;
               return (
@@ -756,6 +806,14 @@ function SidebarBody(p: SidebarBodyProps) {
                     active ? "bg-zinc-800/80" : "hover:bg-zinc-900"
                   )}
                 >
+                  {/* Active accent (VSCode-style left bar) */}
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "absolute top-1 bottom-1 left-0 w-0.5 rounded-full transition-opacity",
+                      active ? "bg-emerald-500 opacity-90" : "opacity-0"
+                    )}
+                  />
                   {renaming ? (
                     <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-1">
                       <input
@@ -854,7 +912,10 @@ function SidebarBody(p: SidebarBodyProps) {
         </SidebarSection>
 
         {/* Files */}
-        <SidebarSection icon={Binary} label="Files" action={
+        <SidebarSection
+          icon={Binary}
+          label={`Files${q ? ` (${shownTargets.length})` : ""}`}
+          action={
           <button
             type="button"
             onClick={p.onUpload}
@@ -873,8 +934,12 @@ function SidebarBody(p: SidebarBodyProps) {
             <p className="px-2 py-1 text-[11px] leading-relaxed text-zinc-600">
               Upload a binary, database or app bundle to investigate it with the REA engine.
             </p>
+          ) : shownTargets.length === 0 ? (
+            <p className="px-2 py-1 font-mono text-[10px] text-zinc-600">
+              no files match “{search.trim()}”
+            </p>
           ) : (
-            p.targets.map((t) => (
+            shownTargets.map((t) => (
               <div
                 key={t.id}
                 className={cn(

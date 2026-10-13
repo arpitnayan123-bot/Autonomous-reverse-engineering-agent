@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import "tailwindcss" source("../");
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
@@ -118,6 +118,11 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+  /* Emerald selection tint (matches the REA terminal palette). */
+  ::selection {
+    background: rgba(16, 185, 129, 0.28);
+    color: inherit;
   }
 }
 
@@ -396,3 +401,5 @@ body {
 }
 
 /* rea: theme touch */
+
+/* rea: cache reset */
