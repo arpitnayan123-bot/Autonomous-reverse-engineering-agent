@@ -228,3 +228,27 @@ Stage Summary:
 - Platform gained: true token streaming for all 6 BYOK providers + platform model (with honest degradation), ⌘K palette, ⌘B/⌘I/⌘⇧O shortcuts, collapsible sidebar, IDE-style code blocks, message hover meta/copy, Claude-Code-style working indicator + caret, kbd-hint empty state.
 - SSE protocol: added turn_start/delta events (additive, backward compatible — final assistant event still authoritative).
 - Next candidates: per-message token accounting (usage from provider responses), message edit & resend / regenerate, chat search API (server-side), file compare view, i18n.
+
+---
+Task ID: 8 (cron review round 3 — P0 fix + Cursor-grade chat interactions)
+Agent: main agent (webDevReview)
+Task: Assess status, QA via agent-browser, fix bugs / add features + styling details.
+
+Work Log:
+- P0 BUG FOUND & ROOT-CAUSED: fresh dev-server boots still 500'd with the old malformed cmdk CSS parse error even though the class was absent from src/. Real cause: Tailwind 4 automatic source detection scans every non-gitignored text file at project root — worklog.md (which quotes the stale class string verbatim) and tool-results/*.txt (persisted read output containing the same) regenerated the broken utility on every compile. Round 2's "touched globals.css" fix was a false positive.
+  - Fix: `@import "tailwindcss" source("../")` in globals.css (scan src/ only), redacted the literal class string from worklog.md, deleted the stale tool-results txt.
+  - Server remediation: dev server had died mid-recompile; restarted via the system entrypoint `.zscripts/dev.sh` (setsid, detached). Verified stable across multiple minutes; GET / = 200.
+  - RULE for future agents: never paste raw Tailwind arbitrary class strings into worklog.md or other root-level text files, and keep tool-results/ out of Tailwind's scan path.
+- QA regression (agent-browser): auth gate minimal ✓, demo login ✓, workspace boot ✓, free-chat streaming ✓ (caret + final answer), file-chat with REA evidence grading ✓ (DERIVED/INFERRED + evidence table row), ⌘K palette ✓, mobile 390×844 ✓, 0 console errors → stable, proceeded to features.
+- Feature 1 — Edit & resend: POST /api/chat accepts `editMessageId` (isSafeId-checked) → server deletes the edited user turn + everything after it, re-titles the session if it was message #1, runs a fresh agent turn; history window = messages before the edited index (last 20). Client: hover a user message → pencil → inline textarea (Enter=submit, Esc=cancel) with "Save & resend"/Cancel; local transcript truncates optimistically; `user_saved` event now swaps the optimistic local message id for the persisted id so immediate edits address a real server row.
+- Feature 2 — Regenerate: POST /api/chat accepts `regenerate:true` (no message) → server drops trailing assistant rows and re-runs the last user turn (history = everything before it). Also works as retry-after-failure because a failed turn persists no assistant row. Client: hover the LAST assistant message → rotate-ccw button; 400 "Nothing to regenerate" guarded client-side (button only renders when a session is active, not streaming, and the entry is the last assistant).
+- Both share one refactored `runTurn()` client path (send / edit / regenerate differ only in local transcript commit + request params) — the streaming event machinery is no longer duplicated.
+- Feature 3 — Sidebar quick filter: input under "New chat" filters chats (title + file name) and files (name) with live match counts in section headers ("Chats (3)"), mono no-match hints, Esc clears, ⌘F focuses it (auto-opens the sidebar on desktop). Empty-state kbd hints now include ⌘F.
+- Styling details: VSCode-style emerald accent bar on the active chat row; composer gains emerald focus glow (border tint + soft outer shadow on focus-within); message bubbles lift border brightness on hover; global `::selection` emerald tint; edit state gets an emerald-accented shell with "editing · later turns will be re-run" hint; MetaButton hover-action component for edit/regenerate in the message meta row.
+- Verification: bunx tsc --noEmit clean (src/), bun run lint 0 problems; browser E2E: regenerate re-streamed a different answer (old row provably deleted), edit&resend replaced text + re-titled session + truncated later turns, both PERSIST after reload (server-side), filter narrows both sections with counts, ⌘F focuses the input, 0 page errors throughout.
+
+Stage Summary:
+- Platform gained: Cursor-parity conversation controls (edit&resend, regenerate, retry-after-error), sidebar quick filter with ⌘F, active-chat accent, composer focus glow, emerald selection tint.
+- SSE/API: POST /api/chat body now supports `editMessageId` and `regenerate` (backward compatible; both ownership-checked, ids validated, truncation bounded by MAX_SESSION_MESSAGES=400).
+- Infra note: dev server must be (re)started via `.zscripts/dev.sh`; tailwindcss source detection is now scoped to src/ so markdown/log artifacts can never poison the build again.
+- Next candidates: per-message token accounting (provider usage), chat search API (server-side, for >100 sessions), file compare view, i18n, branch-from-message (fork a chat at any turn).
