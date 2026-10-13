@@ -38,6 +38,7 @@ import {
   StatusBadge,
   EmptyState,
   SectionCard,
+  TiltCard,
   TooltipIconButton,
   humanBytes,
   timeAgo,
@@ -187,40 +188,47 @@ export function DashboardView() {
         ].map((stat, i) => (
           <motion.div
             key={stat.label}
-            initial={{ opacity: 0, y: 10 }}
+            initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25, delay: i * 0.06, ease: "easeOut" }}
+            transition={{ type: "spring", stiffness: 260, damping: 24, delay: i * 0.06 }}
           >
-            <Card className="border-zinc-800 bg-zinc-900/60">
-              <CardContent className="flex items-start justify-between gap-3">
-                <div className="min-w-0 space-y-1">
-                  <p className="text-[11px] font-medium tracking-widest text-zinc-500 uppercase">
-                    {stat.label}
-                  </p>
-                  {stat.value === null ? (
-                    <Skeleton className="h-7 w-20 bg-zinc-800" />
-                  ) : (
-                    <p
-                      className={
-                        "truncate font-mono text-xl font-semibold " +
-                        (stat.tone === "ok"
-                          ? "text-emerald-400"
-                          : stat.tone === "warn"
-                            ? "text-amber-400"
-                            : "text-zinc-100")
-                      }
-                    >
-                      {stat.value}
-                    </p>
-                  )}
-                  <p className="truncate text-xs text-zinc-500">{stat.hint}</p>
-                </div>
-                <stat.icon
-                  className={"size-5 shrink-0 " + (stat.tone === "warn" ? "text-amber-400" : "text-emerald-400")}
+            <TiltCard maxTilt={5} className="h-full">
+              <Card className="group relative h-full overflow-hidden border-zinc-800 bg-zinc-900/60 transition-colors hover:border-emerald-500/30">
+                {/* Thin animated emerald top-accent bar (slides in on hover) */}
+                <span
                   aria-hidden
+                  className="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 bg-gradient-to-r from-emerald-500 via-emerald-400 to-teal-400 transition-transform duration-500 ease-out group-hover:scale-x-100"
                 />
-              </CardContent>
-            </Card>
+                <CardContent className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-1 [transform:translateZ(18px)]">
+                    <p className="text-[11px] font-medium tracking-widest text-zinc-500 uppercase">
+                      {stat.label}
+                    </p>
+                    {stat.value === null ? (
+                      <Skeleton className="h-7 w-20 bg-zinc-800" />
+                    ) : (
+                      <p
+                        className={
+                          "truncate font-mono text-xl font-semibold tabular-nums " +
+                          (stat.tone === "ok"
+                            ? "text-emerald-400"
+                            : stat.tone === "warn"
+                              ? "text-amber-400"
+                              : "text-zinc-100")
+                        }
+                      >
+                        {stat.value}
+                      </p>
+                    )}
+                    <p className="truncate text-xs text-zinc-500">{stat.hint}</p>
+                  </div>
+                  <stat.icon
+                    className={"size-5 shrink-0 [transform:translateZ(24px)] " + (stat.tone === "warn" ? "text-amber-400" : "text-emerald-400")}
+                    aria-hidden
+                  />
+                </CardContent>
+              </Card>
+            </TiltCard>
           </motion.div>
         ))}
       </div>
@@ -240,14 +248,15 @@ export function DashboardView() {
           >
             <div className="flex flex-wrap gap-2">
               {SUPPORTED.map(({ label, icon: Icon }) => (
-                <Badge
-                  key={label}
-                  variant="outline"
-                  className="gap-1.5 border-zinc-800 bg-zinc-950 px-2.5 py-1 text-xs text-zinc-300"
-                >
-                  <Icon className="size-3.5 text-emerald-400" aria-hidden />
-                  {label}
-                </Badge>
+                <TiltCard key={label} maxTilt={8} glow={false}>
+                  <Badge
+                    variant="outline"
+                    className="gap-1.5 border-zinc-800 bg-zinc-950 px-2.5 py-1 text-xs text-zinc-300 transition-colors hover:border-emerald-500/40 hover:text-emerald-300"
+                  >
+                    <Icon className="size-3.5 text-emerald-400" aria-hidden />
+                    {label}
+                  </Badge>
+                </TiltCard>
               ))}
             </div>
           </SectionCard>
@@ -384,7 +393,7 @@ function UploadCard({ onUploaded }: { onUploaded: () => void }) {
         className={
           "flex cursor-pointer flex-col items-center justify-center gap-3 rounded-b-lg border border-dashed px-6 py-10 text-center transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500/60 focus-visible:outline-none " +
           (dragging
-            ? "border-emerald-500/60 bg-emerald-500/5"
+            ? "rea-dash-anim bg-emerald-500/5"
             : "border-zinc-700 bg-zinc-950/60 hover:border-emerald-500/40 hover:bg-zinc-900/60")
         }
       >

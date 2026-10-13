@@ -190,3 +190,207 @@ body {
 .rea-markdown > :first-child {
   margin-top: 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Premium 3D redesign utilities (Task 3-b — appended, nothing above replaced).
+   Depth system: perspective containers, glass panels, aurora backdrop,
+   emerald glow, card sheen, marching dashed drop zone.
+--------------------------------------------------------------------------- */
+
+/* 3D scene primitives ----------------------------------------------------- */
+.rea-perspective {
+  perspective: 1200px;
+}
+.rea-preserve-3d {
+  transform-style: preserve-3d;
+}
+/* Faces of the reusable REA cube (positioning done inline per face). */
+.rea-cube-face {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgb(16 185 129 / 0.3); /* emerald-500/30 */
+  background: linear-gradient(135deg, oklch(0.21 0.006 285.885), rgb(6 78 59 / 0.4));
+  /* emerald-950/40 */
+  backface-visibility: visible;
+  display: grid;
+  place-items: center;
+}
+
+/* Glass panel -------------------------------------------------------------- */
+.rea-glass {
+  background-image: linear-gradient(
+    160deg,
+    rgb(24 24 27 / 0.8),
+    /* zinc-900/80 */ rgb(9 9 11 / 0.4) 60%,
+    /* zinc-950/40 */ rgb(39 39 42 / 0.45)
+  ); /* zinc-700/45 */
+  border: 1px solid rgb(255 255 255 / 0.05);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.06),
+    0 20px 45px -25px rgb(0 0 0 / 0.8);
+}
+
+/* Emerald glow ------------------------------------------------------------- */
+.rea-glow-emerald {
+  box-shadow:
+    0 0 18px rgb(16 185 129 / 0.28),
+    0 0 42px rgb(16 185 129 / 0.14);
+}
+
+/* Diagonal sheen sweep on hover (compose with relative + overflow-hidden) -- */
+.rea-card-shine {
+  position: relative;
+  overflow: hidden;
+}
+.rea-card-shine::after {
+  content: "";
+  position: absolute;
+  inset: -60% auto auto -80%;
+  width: 45%;
+  height: 220%;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgb(255 255 255 / 0.045) 45%,
+    rgb(16 185 129 / 0.07) 55%,
+    transparent 100%
+  );
+  transform: translateX(-120%) rotate(8deg);
+  transition: transform 0.9s ease;
+}
+.rea-card-shine:hover::after {
+  transform: translateX(420%) rotate(8deg);
+}
+
+/* Aurora backdrop ----------------------------------------------------------
+   Use as an absolutely-positioned, pointer-events-none layer. The element
+   itself paints the emerald core; ::before adds amber, ::after adds teal.
+   Drifts on 20-30s alternate loops (GPU-friendly translate3d/scale only). */
+.rea-aurora {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: radial-gradient(
+    42% 38% at 22% 28%,
+    rgb(16 185 129 / 0.1) 0%,
+    transparent 70%
+  );
+  animation: rea-aurora-a 26s ease-in-out infinite alternate;
+}
+.rea-aurora::before,
+.rea-aurora::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.rea-aurora::before {
+  background: radial-gradient(
+    38% 42% at 78% 22%,
+    rgb(245 158 11 / 0.06) 0%,
+    transparent 70%
+  );
+  animation: rea-aurora-b 22s ease-in-out infinite alternate;
+}
+.rea-aurora::after {
+  background: radial-gradient(
+    45% 40% at 60% 85%,
+    rgb(20 184 166 / 0.06) 0%,
+    transparent 70%
+  );
+  animation: rea-aurora-c 30s ease-in-out infinite alternate;
+}
+@keyframes rea-aurora-a {
+  from {
+    transform: translate3d(-4%, -3%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(5%, 4%, 0) scale(1.15);
+  }
+}
+@keyframes rea-aurora-b {
+  from {
+    transform: translate3d(3%, 5%, 0) scale(1.1);
+  }
+  to {
+    transform: translate3d(-5%, -4%, 0) scale(0.95);
+  }
+}
+@keyframes rea-aurora-c {
+  from {
+    transform: translate3d(0, 4%, 0) scale(0.9);
+  }
+  to {
+    transform: translate3d(-4%, -6%, 0) scale(1.2);
+  }
+}
+
+/* Marching dashed border for the upload drop zone (applied while dragging) - */
+.rea-dash-anim {
+  border-color: transparent !important;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      rgb(16 185 129 / 0.9) 0 10px,
+      transparent 10px 20px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgb(16 185 129 / 0.9) 0 10px,
+      transparent 10px 20px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgb(16 185 129 / 0.9) 0 10px,
+      transparent 10px 20px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgb(16 185 129 / 0.9) 0 10px,
+      transparent 10px 20px
+    );
+  background-size:
+    20px 2px,
+    20px 2px,
+    2px 20px,
+    2px 20px;
+  background-position:
+    0 0,
+    0 100%,
+    0 0,
+    100% 0;
+  background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+  animation: rea-dash-march 0.5s linear infinite;
+}
+@keyframes rea-dash-march {
+  to {
+    background-position:
+      20px 0,
+      -20px 100%,
+      0 -20px,
+      100% 20px;
+  }
+}
+
+/* Respect users who prefer reduced motion: freeze aurora + tilt/floats ----- */
+@media (prefers-reduced-motion: reduce) {
+  .rea-aurora,
+  .rea-aurora::before,
+  .rea-aurora::after {
+    animation: none;
+  }
+  .rea-tilt {
+    transform: none !important;
+  }
+  .rea-dash-anim {
+    animation: none;
+    border-color: rgb(16 185 129 / 0.6) !important;
+    background-image: none;
+  }
+  .rea-card-shine::after {
+    display: none;
+  }
+}

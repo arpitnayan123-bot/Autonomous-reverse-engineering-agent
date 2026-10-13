@@ -5,6 +5,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Binary,
   BookOpen,
+  Heart,
+  KeyRound,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -15,13 +17,19 @@ import {
   Terminal,
 } from "lucide-react";
 
-import { apiGet, apiPost, type ReaUser } from "@/lib/api-client";
+import {
+  apiGet,
+  apiPost,
+  type ProviderCatalog,
+  type ReaUser,
+} from "@/lib/api-client";
 import { useReaStore, type ReaView } from "@/store/rea-store";
 import { AuthView } from "@/components/rea/auth-view";
 import { CapabilitiesView } from "@/components/rea/capabilities-view";
 import { ChatView } from "@/components/rea/chat-view";
 import { DashboardView } from "@/components/rea/dashboard-view";
 import { DocsView } from "@/components/rea/docs-view";
+import { ProviderOnboarding, ProviderSettings } from "@/components/rea/provider-view";
 import { SecurityView } from "@/components/rea/security-view";
 import { WorkspaceView } from "@/components/rea/workspace-view";
 import { toastError } from "@/components/rea/shared";
@@ -41,13 +49,15 @@ const NAV_ITEMS: { view: ReaView; label: string; icon: typeof LayoutDashboard }[
   { view: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { view: "workspace", label: "Workspace", icon: Binary },
   { view: "chat", label: "Chat", icon: MessageSquareText },
+  { view: "provider", label: "AI Model", icon: KeyRound },
   { view: "capabilities", label: "Capabilities", icon: PlugZap },
   { view: "security", label: "Security", icon: ShieldCheck },
   { view: "docs", label: "Docs", icon: BookOpen },
 ];
 
 export function ReaApp() {
-  const { booted, user, view, setView, setUser } = useReaStore();
+  const { booted, user, view, onboarding, hasProviderKey, setView, setUser, setOnboarding } =
+    useReaStore();
 
   // Resolve the session once on boot.
   React.useEffect(() => {
@@ -67,6 +77,34 @@ export function ReaApp() {
       cancelled = true;
     };
   }, [setUser]);
+
+  // Load provider status once per session: drives the first-run onboarding
+  // overlay (no key yet → 'provider-setup') and the nav "platform" badge.
+  React.useEffect(() => {
+    const store = useReaStore.getState();
+    if (!user) {
+      store.setHasProviderKey(null);
+      store.setProviderLoaded(false);
+      store.setOnboarding("none");
+      return;
+    }
+    let cancelled = false;
+    apiGet<ProviderCatalog>("/api/provider")
+      .then((res) => {
+        if (cancelled) return;
+        const s = useReaStore.getState();
+        s.setProviderLoaded(true);
+        s.setHasProviderKey(res.active !== null);
+        if (res.active === null) s.setOnboarding("provider-setup");
+      })
+      .catch(() => {
+        // Provider endpoint unavailable — platform mode stays unknown.
+        if (!cancelled) useReaStore.getState().setProviderLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   const logout = async () => {
     try {
@@ -105,18 +143,21 @@ export function ReaApp() {
         onLogout={() => void logout()}
       />
 
-      <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-6 md:px-6">
+      <main className="relative isolate mx-auto w-full max-w-[1600px] flex-1 px-4 py-6 md:px-6">
+        {/* Aurora backdrop — dashboard only, decorative */}
+        {view === "dashboard" && <div className="rea-aurora -z-10" aria-hidden />}
         <AnimatePresence mode="wait">
           <motion.div
             key={view}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
+            initial={{ opacity: 0, y: 16, scale: 0.985 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -12, scale: 0.99 }}
+            transition={{ type: "spring", stiffness: 260, damping: 26 }}
           >
             {view === "dashboard" && <DashboardView />}
             {view === "workspace" && <WorkspaceView />}
             {view === "chat" && <ChatView />}
+            {view === "provider" && <ProviderSettings />}
             {view === "capabilities" && <CapabilitiesView />}
             {view === "security" && <SecurityView />}
             {view === "docs" && <DocsView />}
@@ -124,12 +165,32 @@ export function ReaApp() {
         </AnimatePresence>
       </main>
 
+      {/* First-run BYOK onboarding overlay (above everything) */}
+      <AnimatePresence>
+        {onboarding === "provider-setup" && (
+          <ProviderOnboarding
+            onDone={() => setOnboarding("none")}
+            onSkip={() => setOnboarding("none")}
+          />
+        )}
+      </AnimatePresence>
+
       <footer className="mt-auto border-t border-zinc-800 bg-zinc-950">
         <div className="mx-auto flex w-full max-w-[1600px] flex-col items-center justify-between gap-2 px-4 py-4 text-xs text-zinc-500 sm:flex-row md:px-6">
           <p className="text-center sm:text-left">
             REA Platform — Reverse Engineer Anything ·{" "}
             <span className="font-mono text-zinc-600">Engine: rea-agents v6.4.0</span> ·{" "}
-            <span className="text-emerald-500/80">Evidence-first analysis</span>
+            <span className="text-emerald-500/80">Evidence-first analysis</span> ·{" "}
+            <span className="inline-flex items-center gap-1">
+              crafted with
+              <Heart
+                className="size-3 text-rose-500"
+                fill="currentColor"
+                aria-hidden
+              />
+              <span className="sr-only">love</span>
+              for reverse engineers
+            </span>
           </p>
           <nav aria-label="Footer" className="flex items-center gap-4">
             <button
@@ -165,6 +226,7 @@ function Header({
   onLogout: () => void;
 }) {
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const hasProviderKey = useReaStore((s) => s.hasProviderKey);
 
   const initials = user.name
     .split(/\s+/)
@@ -173,6 +235,15 @@ function Header({
     .slice(0, 2)
     .join("")
     .toUpperCase();
+
+  /** Amber dot on "AI Model" while running in platform mode (no key yet). */
+  const navDot = (itemView: ReaView) =>
+    itemView === "provider" && hasProviderKey === false ? (
+      <span
+        className="size-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.8)]"
+        aria-hidden
+      />
+    ) : null;
 
   return (
     <header className="sticky top-0 z-40 border-b border-zinc-800 bg-zinc-950/85 backdrop-blur">
@@ -210,6 +281,7 @@ function Header({
             >
               <Icon className="size-3.5" aria-hidden />
               {label}
+              {navDot(itemView)}
             </button>
           ))}
         </nav>
@@ -231,9 +303,29 @@ function Header({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52 border-zinc-800 bg-zinc-900">
               <DropdownMenuLabel className="space-y-0.5">
-                <p className="truncate text-xs text-zinc-200">{user.name}</p>
+                <p className="flex items-center gap-1.5 truncate text-xs text-zinc-200">
+                  {user.name}
+                  {user.isDemo && (
+                    <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 font-mono text-[9px] tracking-wider text-emerald-400">
+                      DEMO
+                    </span>
+                  )}
+                </p>
                 <p className="truncate font-mono text-[11px] text-zinc-500">{user.email}</p>
               </DropdownMenuLabel>
+              <DropdownMenuSeparator className="bg-zinc-800" />
+              <DropdownMenuItem
+                onClick={() => onNavigate("provider")}
+                className="gap-2"
+              >
+                <KeyRound className="size-3.5" aria-hidden />
+                AI Model settings
+                {hasProviderKey === false && (
+                  <span className="ml-auto font-mono text-[9px] tracking-wider text-amber-400">
+                    PLATFORM
+                  </span>
+                )}
+              </DropdownMenuItem>
               <DropdownMenuSeparator className="bg-zinc-800" />
               <DropdownMenuItem
                 onClick={onLogout}
@@ -278,6 +370,7 @@ function Header({
                   >
                     <Icon className="size-4" aria-hidden />
                     {label}
+                    {navDot(itemView)}
                   </button>
                 ))}
               </nav>

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { motion } from "framer-motion";
 import {
   BookOpen,
   Braces,
@@ -37,6 +38,7 @@ import {
   Markdown,
   SectionCard,
   StatusBadge,
+  TiltCard,
   humanBytes,
   humanDuration,
   parseJsonSafe,
@@ -69,6 +71,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const HEX_PAGE_BYTES = 256; // 16 bytes × 16 rows
 const STRINGS_PAGE_SIZE = 100;
+
+const WORKSPACE_TABS = [
+  { value: "overview", label: "Overview" },
+  { value: "hex", label: "Hex" },
+  { value: "strings", label: "Strings" },
+  { value: "findings", label: "Findings" },
+  { value: "evidence", label: "Evidence" },
+  { value: "docs", label: "Docs" },
+];
 
 function isRunActive(status: string | null | undefined): boolean {
   return status === "running" || status === "queued" || status === "analyzing";
@@ -275,12 +286,19 @@ export function WorkspaceView() {
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="h-auto w-full flex-wrap justify-start gap-1 bg-zinc-950 max-md:grid max-md:grid-cols-3">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="hex">Hex</TabsTrigger>
-          <TabsTrigger value="strings">Strings</TabsTrigger>
-          <TabsTrigger value="findings">Findings</TabsTrigger>
-          <TabsTrigger value="evidence">Evidence</TabsTrigger>
-          <TabsTrigger value="docs">Docs</TabsTrigger>
+          {WORKSPACE_TABS.map((t) => (
+            <TabsTrigger key={t.value} value={t.value} className="relative">
+              {t.label}
+              {tab === t.value && (
+                <motion.span
+                  layoutId="ws-tab-underline"
+                  transition={{ type: "spring", stiffness: 380, damping: 30 }}
+                  className="absolute inset-x-2 -bottom-[3px] h-0.5 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.55)]"
+                  aria-hidden
+                />
+              )}
+            </TabsTrigger>
+          ))}
         </TabsList>
 
         <TabsContent value="overview" className="mt-4">
@@ -350,7 +368,8 @@ function OverviewTab({ target, latestRun }: { target: TargetDetail; latestRun: R
 
   return (
     <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-      <SectionCard title="Format detection" description="Magic-byte analysis performed on upload" icon={TargetIcon}>
+      <TiltCard maxTilt={3} className="h-full">
+        <SectionCard title="Format detection" description="Magic-byte analysis performed on upload" icon={TargetIcon} className="h-full">
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <FormatBadge format={target.detectedFormat} label={target.formatLabel ?? undefined} />
@@ -370,8 +389,10 @@ function OverviewTab({ target, latestRun }: { target: TargetDetail; latestRun: R
           </p>
         </div>
       </SectionCard>
+      </TiltCard>
 
-      <SectionCard title="Latest run" description={latestRun ? `Run ${latestRun.id.slice(0, 8)} · started ${timeAgo(latestRun.createdAt)}` : "No analysis run yet"} icon={Zap}>
+      <TiltCard maxTilt={3} className="h-full">
+        <SectionCard title="Latest run" description={latestRun ? `Run ${latestRun.id.slice(0, 8)} · started ${timeAgo(latestRun.createdAt)}` : "No analysis run yet"} icon={Zap} className="h-full">
         {latestRun ? (
           <div className="space-y-3">
             <div className="flex items-center justify-between text-xs">
@@ -406,8 +427,10 @@ function OverviewTab({ target, latestRun }: { target: TargetDetail; latestRun: R
           </p>
         )}
       </SectionCard>
+      </TiltCard>
 
-      <SectionCard title="Findings by type" description="Quick counts from the findings ledger" icon={Braces}>
+      <TiltCard maxTilt={3} className="h-full">
+        <SectionCard title="Findings by type" description="Quick counts from the findings ledger" icon={Braces} className="h-full">
         {counts === null ? (
           <div className="flex flex-wrap gap-2">
             {Array.from({ length: 4 }).map((_, i) => (
@@ -427,8 +450,10 @@ function OverviewTab({ target, latestRun }: { target: TargetDetail; latestRun: R
           </div>
         )}
       </SectionCard>
+      </TiltCard>
 
-      <SectionCard title="Analysis limitations" description="Honest boundaries of what the engine could establish" icon={Eye}>
+      <TiltCard maxTilt={3} className="h-full">
+        <SectionCard title="Analysis limitations" description="Honest boundaries of what the engine could establish" icon={Eye} className="h-full">
         {limitations.length > 0 ? (
           <ul className="list-disc space-y-1.5 pl-4 text-xs leading-relaxed text-zinc-400">
             {limitations.map((l, i) => (
@@ -445,6 +470,7 @@ function OverviewTab({ target, latestRun }: { target: TargetDetail; latestRun: R
           </p>
         )}
       </SectionCard>
+      </TiltCard>
     </div>
   );
 }
@@ -531,9 +557,16 @@ function HexTab({ targetId }: { targetId: string }) {
           <p className="p-6 text-center text-xs text-zinc-500">No hex content available.</p>
         ) : (
           <table className="w-full border-collapse font-mono text-xs">
+            <thead className="sticky top-0 z-10 bg-zinc-900 shadow-[0_1px_0_0_rgba(39,39,42,1)]">
+              <tr>
+                <th scope="col" className="w-24 px-3 py-1.5 text-right font-medium text-zinc-500">Offset</th>
+                <th scope="col" className="px-3 py-1.5 text-left font-medium text-zinc-500">Hex bytes</th>
+                <th scope="col" className="w-40 px-3 py-1.5 text-left font-medium text-zinc-500">ASCII</th>
+              </tr>
+            </thead>
             <tbody>
               {page.hex.map((row) => (
-                <tr key={row.offset} className="border-b border-zinc-900/80 hover:bg-zinc-900/50">
+                <tr key={row.offset} className="border-b border-zinc-900/80 transition-colors hover:bg-zinc-800/60">
                   <td className="w-24 px-3 py-1 text-right text-zinc-600 select-all">
                     {row.offset.toString(16).padStart(8, "0")}
                   </td>
@@ -894,7 +927,7 @@ function EvidenceTab({ targetId }: { targetId: string }) {
         {evidence.map((row) => {
           const kind = (row.kind ?? "unknown").toLowerCase();
           return (
-            <Card key={row.id} className={"border-zinc-800 border-l-2 bg-zinc-900/60 " + (KIND_BORDER[kind] ?? "border-l-zinc-600")}>
+            <Card key={row.id} className={"border-zinc-800 border-l-4 bg-zinc-900/60 transition-colors hover:bg-zinc-900 " + (KIND_BORDER[kind] ?? "border-l-zinc-600")}>
               <CardContent className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <EvidenceKindBadge kind={row.kind} />

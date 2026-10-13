@@ -3,6 +3,15 @@
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import {
+  motion,
+  useMotionTemplate,
+  useMotionValue,
+  useReducedMotion,
+  useSpring,
+  useTransform,
+  type MotionStyle,
+} from "framer-motion";
+import {
   Boxes,
   Check,
   CircuitBoard,
@@ -366,6 +375,189 @@ export function CopyButton({
         {copied ? "Copied" : label ?? "Copy"}
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 3D motion primitives (premium redesign, Task 3-b)
+// ---------------------------------------------------------------------------
+
+/**
+ * True when the device can render pointer-driven tilt: fine pointer
+ * (mouse/trackpad) and the user has not asked for reduced motion.
+ * Re-evaluated live so e.g. a mouse being attached enables tilt.
+ */
+export function useTiltEnabled(disabled?: boolean): boolean {
+  const [enabled, setEnabled] = React.useState(false);
+  React.useEffect(() => {
+    if (disabled) {
+      setEnabled(false);
+      return;
+    }
+    const fine = window.matchMedia("(pointer: fine)");
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setEnabled(fine.matches && !reduced.matches);
+    update();
+    fine.addEventListener?.("change", update);
+    reduced.addEventListener?.("change", update);
+    return () => {
+      fine.removeEventListener?.("change", update);
+      reduced.removeEventListener?.("change", update);
+    };
+  }, [disabled]);
+  return enabled;
+}
+
+/**
+ * TiltCard — pointer-reactive 3D tilt wrapper.
+ *
+ * rotateX/rotateY spring toward the cursor (max ±`maxTilt`deg) with a soft
+ * shadow that shifts with the tilt. Children can pop out of the surface by
+ * adding `[transform:translateZ(24px)]` (the card sets preserve-3d and its
+ * own perspective). Falls back to a plain div for touch devices and
+ * prefers-reduced-motion users.
+ */
+export function TiltCard({
+  children,
+  className,
+  maxTilt = 6,
+  glow = true,
+  disabled,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  maxTilt?: number;
+  glow?: boolean;
+  disabled?: boolean;
+}) {
+  const enabled = useTiltEnabled(disabled);
+  const rotateX = useSpring(useMotionValue(0), { stiffness: 220, damping: 20, mass: 0.6 });
+  const rotateY = useSpring(useMotionValue(0), { stiffness: 220, damping: 20, mass: 0.6 });
+
+  // Shadow follows the tilt like a fixed overhead light.
+  const shadowX = useTransform(rotateY, (v) => -v * 1.4);
+  const shadowY = useTransform(rotateX, (v) => v * 1.4);
+  const shadow = useMotionTemplate`${shadowX}px ${shadowY}px 34px -16px rgb(0 0 0 / 0.65)${
+    glow ? ", 0 0 0 1px rgb(16 185 129 / 0)" : ""
+  }`;
+
+  const onMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!enabled) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / rect.width - 0.5;
+    const py = (e.clientY - rect.top) / rect.height - 0.5;
+    rotateY.set(px * maxTilt * 2);
+    rotateX.set(-py * maxTilt * 2);
+  };
+  const reset = () => {
+    rotateX.set(0);
+    rotateY.set(0);
+  };
+
+  if (!enabled) {
+    return (
+      <div className={className} data-tilt="off">
+        {children}
+      </div>
+    );
+  }
+
+  const style: MotionStyle = {
+    rotateX,
+    rotateY,
+    transformPerspective: 900,
+    transformStyle: "preserve-3d",
+    boxShadow: shadow,
+  };
+  return (
+    <motion.div
+      data-tilt="on"
+      className={cn("rea-tilt will-change-transform", className)}
+      style={style}
+      onMouseMove={onMouseMove}
+      onMouseLeave={reset}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+const CUBE_FACES: { transform: (z: number) => string; label?: string }[] = [
+  { transform: (z) => `translateZ(${z}px)`, label: "REA" },
+  { transform: (z) => `rotateY(180deg) translateZ(${z}px)` },
+  { transform: (z) => `rotateY(90deg) translateZ(${z}px)`, label: "MCP" },
+  { transform: (z) => `rotateY(-90deg) translateZ(${z}px)`, label: "170" },
+  { transform: (z) => `rotateX(90deg) translateZ(${z}px)` },
+  { transform: (z) => `rotateX(-90deg) translateZ(${z}px)` },
+];
+
+/**
+ * ReaCube — the floating REA core, pure CSS/HTML 3D cube.
+ * Continuous Y rotation (~`spinDuration`s linear) with a slow X wobble.
+ * Respects prefers-reduced-motion (renders a static tilted cube).
+ */
+export function ReaCube({
+  size = 112,
+  spinDuration = 24,
+  className,
+}: {
+  size?: number;
+  spinDuration?: number;
+  className?: string;
+}) {
+  const reduced = useReducedMotion();
+  const half = size / 2;
+
+  return (
+    <div
+      className={cn("rea-perspective", className)}
+      style={{ width: size, height: size }}
+      aria-hidden
+    >
+      <motion.div
+        className="rea-preserve-3d relative size-full"
+        initial={{ rotateX: 8, rotateY: -18 }}
+        animate={
+          reduced
+            ? undefined
+            : { rotateY: [-18, 342], rotateX: [8, -8, 8] }
+        }
+        transition={
+          reduced
+            ? undefined
+            : {
+                rotateY: {
+                  duration: spinDuration,
+                  ease: "linear",
+                  repeat: Infinity,
+                },
+                rotateX: {
+                  duration: Math.max(8, spinDuration / 2),
+                  ease: "easeInOut",
+                  repeat: Infinity,
+                },
+              }
+        }
+        style={{ transformStyle: "preserve-3d" }}
+      >
+        {CUBE_FACES.map((face, i) => (
+          <div
+            key={i}
+            className="rea-cube-face"
+            style={{ transform: face.transform(half) }}
+          >
+            {face.label && (
+              <span
+                className="font-mono font-bold tracking-[0.3em] text-emerald-400/80"
+                style={{ fontSize: Math.max(10, size * 0.12) }}
+              >
+                {face.label}
+              </span>
+            )}
+          </div>
+        ))}
+      </motion.div>
+    </div>
   );
 }
 

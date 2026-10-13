@@ -14,6 +14,39 @@ export interface ReaUser {
   email: string;
   name: string;
   role: string;
+  isDemo?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// BYOK AI provider types
+// ---------------------------------------------------------------------------
+
+export interface ProviderModelInfo {
+  id: string;
+  label: string;
+  note?: string;
+}
+
+export interface ProviderInfo {
+  id: string;
+  label: string;
+  vendor: string;
+  docsHint: string;
+  models: ProviderModelInfo[];
+}
+
+export interface ProviderActive {
+  provider: string;
+  model: string;
+  keyLast4?: string;
+  keyMasked?: string;
+  verified?: boolean;
+  updatedAt?: string;
+}
+
+export interface ProviderCatalog {
+  providers: ProviderInfo[];
+  active: ProviderActive | null;
 }
 
 export interface RunSummary {
@@ -146,6 +179,7 @@ export interface AuditEvent {
 }
 
 export type ChatStreamEvent =
+  | { type: "model"; source: string; provider: string; model: string }
   | { type: "tool_call"; tool: string; args?: unknown }
   | { type: "tool_result"; tool: string; preview?: string }
   | { type: "assistant"; content: string }

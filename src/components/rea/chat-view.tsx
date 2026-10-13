@@ -4,10 +4,12 @@ import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronDown,
+  KeyRound,
   Loader2,
   MessageSquareText,
   Send,
   Sparkles,
+  Square,
   Wrench,
 } from "lucide-react";
 
@@ -57,6 +59,13 @@ interface TraceStep {
   args?: unknown;
   preview?: string | null;
   pending: boolean;
+  cancelled?: boolean;
+}
+
+interface ModelInfo {
+  source: string;
+  provider: string;
+  model: string;
 }
 
 interface ChatEntry {
@@ -110,6 +119,8 @@ export function ChatView() {
   const [loadingHistory, setLoadingHistory] = React.useState(false);
   const [streaming, setStreaming] = React.useState(false);
   const [input, setInput] = React.useState("");
+  const [modelInfo, setModelInfo] = React.useState<ModelInfo | null>(null);
+  const abortRef = React.useRef<AbortController | null>(null);
   const bottomRef = React.useRef<HTMLDivElement>(null);
 
   // Default the chat target to the active workspace target when present.
@@ -126,6 +137,7 @@ export function ChatView() {
     }
     let cancelled = false;
     setLoadingHistory(true);
+    setModelInfo(null);
     apiGet<{ session: ChatSession | null; messages: ChatMessageRow[] }>("/api/chat", {
       targetId: chatTargetId,
     })
@@ -169,65 +181,107 @@ export function ChatView() {
       setEntries((prev) => [...prev, userEntry, assistantEntry]);
       setStreaming(true);
 
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       try {
-        await streamChat(chatTargetId, message, (event) => {
-          if (event.type === "tool_call") {
-            const step: TraceStep = {
-              id: nextId(),
-              tool: String(event.tool ?? "tool"),
-              args: event.args,
-              pending: true,
-            };
-            setEntries((prev) =>
-              prev.map((e) => (e.id === assistantEntry.id ? { ...e, trace: [...e.trace, step] } : e))
-            );
-          } else if (event.type === "tool_result") {
-            const preview = typeof event.preview === "string" ? event.preview : JSON.stringify(event.preview ?? null);
-            setEntries((prev) =>
-              prev.map((e) => {
-                if (e.id !== assistantEntry.id) return e;
-                const trace = [...e.trace];
-                const pendingIdx = trace.findIndex((t) => t.pending && t.tool === String(event.tool ?? "tool"));
-                if (pendingIdx >= 0) {
-                  trace[pendingIdx] = { ...trace[pendingIdx], pending: false, preview };
-                } else {
-                  trace.push({ id: nextId(), tool: String(event.tool ?? "tool"), preview, pending: false });
-                }
-                return { ...e, trace };
-              })
-            );
-          } else if (event.type === "assistant") {
-            const chunk = typeof event.content === "string" ? event.content : "";
-            setEntries((prev) =>
-              prev.map((e) => (e.id === assistantEntry.id ? { ...e, content: e.content + chunk } : e))
-            );
-          } else if (event.type === "error") {
-            toastError(new Error(String(event.error ?? "Engine error")), "Chat error");
-            setEntries((prev) =>
-              prev.map((e) =>
-                e.id === assistantEntry.id
-                  ? { ...e, content: e.content || "_The engine reported an error. See the toast for details._" }
-                  : e
-              )
-            );
-          }
-          // 'done' and any extra event types (e.g. user_saved) need no UI.
-        });
-      } catch (err) {
-        toastError(err, "Chat failed");
-        setEntries((prev) =>
-          prev.map((e) =>
-            e.id === assistantEntry.id
-              ? { ...e, content: e.content || "_The assistant could not be reached._" }
-              : e
-          )
+        await streamChat(
+          chatTargetId,
+          message,
+          (event) => {
+            if (event.type === "model") {
+              // Which model handled this conversation (BYOK vs platform).
+              setModelInfo({
+                source: String(event.source ?? "platform"),
+                provider: String(event.provider ?? "glm-platform"),
+                model: String(event.model ?? "glm-platform"),
+              });
+            } else if (event.type === "tool_call") {
+              const step: TraceStep = {
+                id: nextId(),
+                tool: String(event.tool ?? "tool"),
+                args: event.args,
+                pending: true,
+              };
+              setEntries((prev) =>
+                prev.map((e) =>
+                  e.id === assistantEntry.id ? { ...e, trace: [...e.trace, step] } : e
+                )
+              );
+            } else if (event.type === "tool_result") {
+              const preview =
+                typeof event.preview === "string" ? event.preview : JSON.stringify(event.preview ?? null);
+              setEntries((prev) =>
+                prev.map((e) => {
+                  if (e.id !== assistantEntry.id) return e;
+                  const trace = [...e.trace];
+                  const pendingIdx = trace.findIndex(
+                    (t) => t.pending && t.tool === String(event.tool ?? "tool")
+                  );
+                  if (pendingIdx >= 0) {
+                    trace[pendingIdx] = { ...trace[pendingIdx], pending: false, preview };
+                  } else {
+                    trace.push({ id: nextId(), tool: String(event.tool ?? "tool"), preview, pending: false });
+                  }
+                  return { ...e, trace };
+                })
+              );
+            } else if (event.type === "assistant") {
+              const chunk = typeof event.content === "string" ? event.content : "";
+              setEntries((prev) =>
+                prev.map((e) => (e.id === assistantEntry.id ? { ...e, content: e.content + chunk } : e))
+              );
+            } else if (event.type === "error") {
+              toastError(new Error(String(event.error ?? "Engine error")), "Chat error");
+              setEntries((prev) =>
+                prev.map((e) =>
+                  e.id === assistantEntry.id
+                    ? { ...e, content: e.content || "_The engine reported an error. See the toast for details._" }
+                    : e
+                )
+              );
+            }
+            // 'done' and any extra event types (e.g. user_saved) need no UI.
+          },
+          controller.signal
         );
+      } catch (err) {
+        if (controller.signal.aborted) {
+          // User pressed Stop — mark pending tool rows cancelled.
+          setEntries((prev) =>
+            prev.map((e) =>
+              e.id === assistantEntry.id
+                ? {
+                    ...e,
+                    trace: e.trace.map((t) =>
+                      t.pending ? { ...t, pending: false, cancelled: true } : t
+                    ),
+                    content: e.content || "_Stopped before the analyst could answer._",
+                  }
+                : e
+            )
+          );
+        } else {
+          toastError(err, "Chat failed");
+          setEntries((prev) =>
+            prev.map((e) =>
+              e.id === assistantEntry.id
+                ? { ...e, content: e.content || "_The assistant could not be reached._" }
+                : e
+            )
+          );
+        }
       } finally {
+        abortRef.current = null;
         setStreaming(false);
       }
     },
     [chatTargetId, streaming]
   );
+
+  const stopStreaming = React.useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
 
   const targetName =
     targets.find((t) => t.id === chatTargetId)?.originalName ?? session?.title ?? null;
@@ -314,6 +368,34 @@ export function ChatView() {
             </div>
           ) : (
             <div className="rea-scroll h-full max-h-[62vh] space-y-4 overflow-y-auto p-4">
+              {modelInfo && (
+                <div
+                  role="status"
+                  className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-800/80 bg-zinc-900/60 px-3 py-2 text-[11px] text-zinc-500"
+                >
+                  <Sparkles className="size-3.5 shrink-0 text-emerald-500" aria-hidden />
+                  <span>
+                    Investigating with{" "}
+                    {modelInfo.source === "byok" ? (
+                      <span className="font-mono text-zinc-300">
+                        {modelInfo.provider} {modelInfo.model}
+                      </span>
+                    ) : (
+                      <span className="font-mono text-zinc-300">
+                        platform {modelInfo.provider} {modelInfo.model}
+                      </span>
+                    )}{" "}
+                    ({modelInfo.source === "byok" ? "your key" : "no key configured"})
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className="ml-auto gap-1 border-emerald-500/30 bg-emerald-500/10 font-mono text-[9px] tracking-widest text-emerald-400 uppercase"
+                  >
+                    <KeyRound className="size-2.5" aria-hidden />
+                    {modelInfo.source === "byok" ? "BYOK" : "platform"}
+                  </Badge>
+                </div>
+              )}
               {entries.length === 0 && (
                 <EmptyState
                   icon={Sparkles}
@@ -362,15 +444,27 @@ export function ChatView() {
               rows={2}
               className="min-h-0 flex-1 resize-none border-zinc-800 bg-zinc-950 text-sm"
             />
-            <Button
-              type="submit"
-              size="icon"
-              aria-label="Send message"
-              disabled={streaming || !input.trim() || !chatTargetId}
-              className="size-9 shrink-0 bg-emerald-600 text-white hover:bg-emerald-500"
-            >
-              {streaming ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Send className="size-4" aria-hidden />}
-            </Button>
+            {streaming ? (
+              <Button
+                type="button"
+                size="icon"
+                aria-label="Stop generating"
+                onClick={stopStreaming}
+                className="size-9 shrink-0 border border-rose-500/40 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 hover:text-rose-300"
+              >
+                <Square className="size-3.5 fill-current" aria-hidden />
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                size="icon"
+                aria-label="Send message"
+                disabled={!input.trim() || !chatTargetId}
+                className="size-9 shrink-0 bg-emerald-600 text-white hover:bg-emerald-500"
+              >
+                <Send className="size-4" aria-hidden />
+              </Button>
+            )}
           </form>
         </div>
       </section>
@@ -399,12 +493,13 @@ function MessageBubble({ entry }: { entry: ChatEntry }) {
           </div>
         )}
         {entry.content ? (
-          <div className="rounded-lg rounded-bl-sm border border-zinc-800 bg-zinc-950/80 px-3 py-2">
+          <div className="rea-glass rounded-lg rounded-bl-sm px-3 py-2 transition-[border-color,box-shadow] duration-300 hover:border-emerald-500/30 hover:shadow-[0_0_24px_rgba(16,185,129,0.12)]">
             <Markdown>{entry.content}</Markdown>
           </div>
         ) : (
-          <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950/80 px-3 py-2 text-xs text-zinc-500">
-            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          <div className="rea-glass flex items-center gap-2.5 rounded-lg rounded-bl-sm px-3 py-2 text-xs text-zinc-500">
+            <TypingDots />
+            <span className="sr-only">Assistant is thinking</span>
             Thinking…
           </div>
         )}
@@ -416,6 +511,21 @@ function MessageBubble({ entry }: { entry: ChatEntry }) {
   );
 }
 
+/** Three bouncing dots — assistant-is-working indicator. */
+function TypingDots() {
+  return (
+    <span className="flex items-center gap-1" aria-hidden>
+      {[0, 150, 300].map((delay) => (
+        <span
+          key={delay}
+          className="size-1.5 animate-bounce rounded-full bg-emerald-400/80"
+          style={{ animationDelay: `${delay}ms` }}
+        />
+      ))}
+    </span>
+  );
+}
+
 function ToolTraceRow({ step }: { step: TraceStep }) {
   const [open, setOpen] = React.useState(false);
   if (step.pending) {
@@ -423,16 +533,24 @@ function ToolTraceRow({ step }: { step: TraceStep }) {
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        className="flex items-center gap-2 rounded-md border border-emerald-500/25 bg-emerald-500/5 px-2.5 py-1.5 font-mono text-[11px] text-emerald-400"
+        className="flex items-center gap-2 rounded-md border border-zinc-800 border-l-2 border-l-amber-400/80 bg-amber-500/5 px-2.5 py-1.5 font-mono text-[11px] text-amber-300"
       >
         <Loader2 className="size-3.5 animate-spin" aria-hidden />
         calling REA tool {step.tool}…
       </motion.div>
     );
   }
+  if (step.cancelled) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-zinc-800 border-l-2 border-l-rose-500/70 bg-zinc-950/80 px-2.5 py-1.5 font-mono text-[11px] text-zinc-500">
+        <Square className="size-3 fill-current text-rose-400" aria-hidden />
+        cancelled — {step.tool}
+      </div>
+    );
+  }
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="rounded-md border border-zinc-800 bg-zinc-950/80">
+      <div className="rounded-md border border-zinc-800 border-l-2 border-l-emerald-500/70 bg-zinc-950/80">
         <CollapsibleTrigger asChild>
           <button
             type="button"

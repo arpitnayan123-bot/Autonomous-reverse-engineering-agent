@@ -5,7 +5,7 @@ import { Info, PlugZap, Puzzle, Search, Wrench } from "lucide-react";
 
 import { apiGet, type Capabilities as CapabilitiesData } from "@/lib/api-client";
 import { useReaStore } from "@/store/rea-store";
-import { SectionCard, toastError } from "@/components/rea/shared";
+import { SectionCard, TiltCard, toastError } from "@/components/rea/shared";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -82,53 +82,58 @@ export function CapabilitiesView() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <SectionCard
-          title="Engine health"
-          description="rea-agents MCP stdio server"
-          icon={PlugZap}
-        >
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge
-                variant="outline"
-                className={
-                  capabilities.engine.healthy
-                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-                    : "border-rose-500/30 bg-rose-500/10 text-rose-400"
-                }
-              >
-                <span className={"size-1.5 rounded-full " + (capabilities.engine.healthy ? "bg-emerald-400" : "bg-rose-400")} aria-hidden />
-                {capabilities.engine.healthy ? "Healthy" : "Unhealthy"}
-              </Badge>
-              <span className="font-mono text-xs text-zinc-400">v{capabilities.engine.version}</span>
-              <span className="font-mono text-xs text-zinc-500">
-                {capabilities.engine.toolCount} tools
-              </span>
+        <TiltCard maxTilt={3} className="h-full">
+          <SectionCard
+            title="Engine health"
+            description="rea-agents MCP stdio server"
+            icon={PlugZap}
+            className="h-full"
+          >
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={
+                    capabilities.engine.healthy
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400 rea-glow-emerald"
+                      : "border-rose-500/30 bg-rose-500/10 text-rose-400"
+                  }
+                >
+                  <span className={"size-1.5 rounded-full " + (capabilities.engine.healthy ? "bg-emerald-400" : "bg-rose-400")} aria-hidden />
+                  {capabilities.engine.healthy ? "Healthy" : "Unhealthy"}
+                </Badge>
+                <span className="font-mono text-xs text-zinc-400">v{capabilities.engine.version}</span>
+                <span className="font-mono text-xs text-zinc-500 tabular-nums">
+                  {capabilities.engine.toolCount} tools
+                </span>
+              </div>
+              {capabilities.engine.detail && (
+                <p className="text-xs leading-relaxed text-zinc-500">{capabilities.engine.detail}</p>
+              )}
             </div>
-            {capabilities.engine.detail && (
-              <p className="text-xs leading-relaxed text-zinc-500">{capabilities.engine.detail}</p>
-            )}
-          </div>
-        </SectionCard>
+          </SectionCard>
+        </TiltCard>
 
-        <SectionCard title="Host tools" description="External analyzers the host machine provides to the engine" icon={Wrench}>
-          <div className="flex flex-wrap gap-2">
-            {capabilities.hostTools.map((tool) => (
-              <Badge
-                key={tool.name}
-                variant="outline"
-                className={
-                  tool.available
-                    ? "gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-                    : "gap-1 border-zinc-700 bg-zinc-800/60 text-zinc-500 line-through"
-                }
-              >
-                {tool.name}
-                <span className="text-[10px]">{tool.available ? "available" : "missing"}</span>
-              </Badge>
-            ))}
-          </div>
-        </SectionCard>
+        <TiltCard maxTilt={3} className="h-full">
+          <SectionCard title="Host tools" description="External analyzers the host machine provides to the engine" icon={Wrench} className="h-full">
+            <div className="flex flex-wrap gap-2">
+              {capabilities.hostTools.map((tool) => (
+                <Badge
+                  key={tool.name}
+                  variant="outline"
+                  className={
+                    tool.available
+                      ? "gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                      : "gap-1 border-zinc-700 bg-zinc-800/60 text-zinc-500 line-through"
+                  }
+                >
+                  {tool.name}
+                  <span className="text-[10px]">{tool.available ? "available" : "missing"}</span>
+                </Badge>
+              ))}
+            </div>
+          </SectionCard>
+        </TiltCard>
       </div>
 
       <Alert className="border-amber-500/30 bg-amber-500/5">
