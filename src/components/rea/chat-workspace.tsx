@@ -37,6 +37,8 @@ import {
 import { useReaStore } from "@/store/rea-store";
 import { CopyButton, Markdown, humanBytes, humanDuration, humanTokens, toastError } from "@/components/rea/shared";
 import { HomeDashboard } from "@/components/rea/home-dashboard";
+import { ParticleField } from "@/components/rea/particle-field";
+import { getChatMood, setChatMood } from "@/components/rea/chat-mood";
 import { MAX_MESSAGE_CHARS, CHAR_COUNTER_AT } from "@/components/rea/chat-limits";
 import { SlashMenu, filterPrompts, slashTokenOf, type PromptEntry } from "@/components/rea/prompt-library";
 import { SpeakButton } from "@/components/rea/speak-button";
@@ -413,6 +415,8 @@ export function ChatWorkspace({
     setStreaming(true);
     rawTurnRef.current = "";
     setToolIntent(null);
+    // Ambient layer: spiral convergence while the model thinks.
+    setChatMood("thinking");
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -475,6 +479,7 @@ export function ChatWorkspace({
             // The model started writing a tool block: freeze the prose and
             // preview the pending call from the partial JSON.
             turnBecameToolRef.current = true;
+            setChatMood("tool");
             const intent = parsePartialToolBlock(raw);
             const next = intent ?? null;
             setToolIntent((prev) => (sameIntent(prev, next) ? prev : next));
@@ -482,12 +487,14 @@ export function ChatWorkspace({
             applyAssistant((e) => (e.content === prose ? e : { ...e, content: prose }));
           } else {
             applyAssistant((e) => (e.content === raw ? e : { ...e, content: raw }));
+            if (getChatMood() === "thinking") setChatMood("streaming");
           }
           break;
         }
         case "tool_call":
           turnBecameToolRef.current = true;
           setToolIntent(null); // the real row replaces the live preview
+          setChatMood("tool");
           applyAssistant((e) => ({
             ...e,
             trace: [
@@ -505,6 +512,8 @@ export function ChatWorkspace({
                 break;
               }
             }
+            // All tools resolved → tokens (or the next thought) may resume.
+            if (!trace.some((s) => s.pending)) setChatMood("streaming");
             return { ...e, trace };
           });
           break;
@@ -529,6 +538,7 @@ export function ChatWorkspace({
         case "error":
           rawTurnRef.current = "";
           setToolIntent(null);
+          setChatMood("idle");
           applyAssistant((e) => ({ ...e, error: ev.error }));
           toastError(new Error(ev.error), "Agent error");
           break;
@@ -555,12 +565,15 @@ export function ChatWorkspace({
     } catch (err) {
       if (!controller.signal.aborted) {
         const msg = err instanceof Error ? err.message : "Chat failed";
+        setChatMood("idle");
         applyAssistant((e) => ({ ...e, error: msg }));
         toastError(err, "Chat failed");
       }
     } finally {
       setStreaming(false);
       abortRef.current = null;
+      // Ambient layer celebrates a completed turn, then settles to drift.
+      setChatMood("done");
       onSessionsChanged?.();
       // File-bound turns can change analysis state; free chats cannot, so
       // skip the targets refetch (two avoided GETs on every free message).
@@ -760,11 +773,26 @@ export function ChatWorkspace({
   /** Home view owns its own prominent composer — the docked one would duplicate it. */
   const homeOwnsComposer = showEmptyState && !boundTarget;
 
+  // Navigating between chats resets the ambient field to its idle drift.
+  React.useEffect(() => {
+    setChatMood("idle");
+  }, [activeSessionId, draftTargetId]);
+
   return (
     <section className={cn("relative flex min-h-0 flex-col bg-zinc-950", className)} aria-label="Chat">
+      {/* Living backdrop — particle field + aurora + grain + vignette.
+          Purely ambient (pointer-events-none, aria-hidden); sits under the
+          content via z-0, content layers above via z-10. */}
+      <div aria-hidden className="rea-fade-in pointer-events-none absolute inset-0 z-0 overflow-hidden">
+        <ParticleField className="absolute inset-0" />
+        <div className="rea-aurora absolute inset-0 opacity-80" />
+        <div className="rea-noise absolute inset-0" />
+        <div className="rea-vignette absolute inset-0" />
+      </div>
+
       {/* Context strip (only when a file is attached) */}
       {boundTarget && (
-        <div className="flex h-9 shrink-0 items-center gap-2 border-b border-zinc-800/60 px-3 text-xs text-zinc-500">
+        <div className="relative z-10 flex h-9 shrink-0 items-center gap-2 border-b border-zinc-800/60 px-3 text-xs text-zinc-500">
           <Binary className="size-3.5 text-emerald-500/80" aria-hidden />
           <span className="truncate text-zinc-300">{boundTarget.originalName}</span>
           <span className="font-mono text-[10px] text-zinc-600">
@@ -813,7 +841,7 @@ export function ChatWorkspace({
         onScroll={onMessagesScroll}
         role="log"
         aria-label="Conversation"
-        className="relative min-h-0 flex-1 overflow-y-auto rea-scroll"
+        className="rea-scroll relative z-10 min-h-0 flex-1 overflow-y-auto"
       >
         {historyLoading ? (
           <div className="mx-auto w-full max-w-3xl space-y-4 px-4 py-8">
@@ -920,11 +948,10 @@ export function ChatWorkspace({
 
       {/* Composer — hidden while the Home dashboard's own composer is showing */}
       {!homeOwnsComposer && (
-      <div className="shrink-0 px-3 pb-3 pt-1 sm:px-4 sm:pb-4" id="rea-composer">
+      <div className="relative z-10 shrink-0 px-3 pb-3 pt-1 sm:px-4 sm:pb-4" id="rea-composer">
         <div className="mx-auto w-full max-w-3xl">
-          <div
-            className="relative rounded-xl border border-zinc-800 bg-zinc-900/60 shadow-lg shadow-black/20 transition-all duration-200 focus-within:border-emerald-500/30 focus-within:shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_12px_32px_-16px_rgba(16,185,129,0.25)]"
-          >
+          <div className="rea-beam rounded-2xl">
+          <div className="rea-glass rounded-[15px]">
             <SlashMenu
               visible={slashOpen}
               entries={slashEntries}
@@ -1014,6 +1041,7 @@ export function ChatWorkspace({
                 </Button>
               )}
             </div>
+          </div>
           </div>
           <p className="mt-1.5 text-center font-mono text-[10px] text-zinc-700">
             Enter to send · Shift+Enter new line · <span className="text-zinc-600">/</span> prompts
@@ -1629,7 +1657,7 @@ function ThinkingIndicator({ modelInfo }: { modelInfo: ModelInfo | null }) {
           />
         ))}
       </span>
-      <span className="font-mono text-[10px] text-zinc-600">
+      <span className="rea-shimmer-text font-mono text-[10px]">
         {modelInfo ? `${modelLabel(modelInfo.provider, modelInfo.model)} · working…` : "agent · working…"}
       </span>
     </div>
@@ -1764,9 +1792,14 @@ function EmptyState({
   return (
     <div className="flex min-h-full flex-col items-center justify-center px-4 py-12">
       <div className="w-full max-w-xl text-center">
-        <span className="mx-auto mb-4 grid size-11 place-items-center rounded-lg border border-emerald-500/30 bg-emerald-500/5">
+        <motion.span
+          initial={{ opacity: 0, scale: 0.85 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.45, ease: [0.21, 0.47, 0.32, 0.98] }}
+          className="rea-glass mx-auto mb-4 grid size-12 place-items-center rounded-xl shadow-[0_0_36px_-8px_rgba(16,185,129,0.45)]"
+        >
           <Binary className="size-5 text-emerald-400" aria-hidden />
-        </span>
+        </motion.span>
         <h2 className="text-lg font-semibold text-zinc-100">
           What do you want to know about{" "}
           <span className="font-mono text-emerald-300">{boundTarget.originalName}</span>?
@@ -1777,15 +1810,18 @@ function EmptyState({
         </p>
 
         <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-          {suggestions.map((s) => (
-            <button
+          {suggestions.map((s, i) => (
+            <motion.button
               key={s}
               type="button"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.15 + i * 0.06, ease: "easeOut" }}
               onClick={() => onSuggest(s)}
-              className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-200 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+              className="rea-card-shine rounded-full border border-zinc-800/80 bg-zinc-900/40 px-3 py-1.5 text-xs text-zinc-400 backdrop-blur-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-500/30 hover:bg-zinc-900/70 hover:text-zinc-200 hover:shadow-[0_10px_28px_-14px_rgba(16,185,129,0.45)] focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
             >
               {s}
-            </button>
+            </motion.button>
           ))}
         </div>
 

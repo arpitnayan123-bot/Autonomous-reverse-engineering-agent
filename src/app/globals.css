@@ -460,3 +460,143 @@ body {
     opacity: 1 !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Living-home premium layer (Task 15 — appended, nothing above replaced).
+   Layered morphisms: animated beam-border composer (glassmorphism core),
+   shimmering hero text, film-grain noise, radial vignette, entrance fades.
+   The motion layer proper is the canvas ParticleField (particle-field.tsx).
+--------------------------------------------------------------------------- */
+
+/* Animated gradient text (hero keyword) — emerald↔teal sweep --------------- */
+.rea-hero-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    #34d399 0%,
+    #10b981 30%,
+    #5eead4 52%,
+    #10b981 74%,
+    #34d399 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: rea-shimmer 7s ease-in-out infinite;
+}
+@keyframes rea-shimmer {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+/* Beam border — a 1px animated gradient frame for the composer. The inner
+   glass panel covers the fill; only the rim glows. Ignites on focus-within
+   (gradient flows slowly), rests as a quiet zinc ring. ---------------------- */
+.rea-beam {
+  padding: 1px;
+  border-radius: 1rem;
+  background-image: linear-gradient(
+    120deg,
+    rgb(63 63 70 / 0.9) 0%,
+    rgb(16 185 129 / 0.55) 30%,
+    rgb(45 212 191 / 0.5) 50%,
+    rgb(16 185 129 / 0.55) 70%,
+    rgb(63 63 70 / 0.9) 100%
+  );
+  background-size: 300% 100%;
+  background-position: 0% 50%;
+  opacity: 0.7;
+  box-shadow:
+    0 14px 34px -22px rgb(0 0 0 / 0.85),
+    inset 0 0 0 0 rgb(16 185 129 / 0);
+  transition:
+    opacity 0.35s ease,
+    box-shadow 0.35s ease;
+}
+.rea-beam:focus-within {
+  opacity: 1;
+  animation: rea-beam-flow 3.4s linear infinite;
+  box-shadow:
+    0 0 0 1px rgb(16 185 129 / 0.22),
+    0 18px 50px -22px rgb(16 185 129 / 0.45),
+    0 12px 30px -18px rgb(0 0 0 / 0.8);
+}
+@keyframes rea-beam-flow {
+  to {
+    background-position: 300% 50%;
+  }
+}
+
+/* Film-grain noise overlay (SVG turbulence tile) — kills flat-color banding - */
+.rea-noise {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  opacity: 0.05;
+}
+
+/* Radial vignette — keeps edges dark so floating content reads first ------- */
+.rea-vignette {
+  background: radial-gradient(
+    120% 85% at 50% 40%,
+    transparent 52%,
+    rgb(0 0 0 / 0.5) 100%
+  );
+}
+
+/* "Working…" indicator text — zinc→emerald shimmer sweep -------------------- */
+.rea-shimmer-text {
+  background-image: linear-gradient(
+    100deg,
+    #71717a 0%,
+    #d4d4d8 42%,
+    #34d399 55%,
+    #71717a 82%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: rea-shimmer 2.6s ease-in-out infinite;
+}
+
+/* One-shot entrance fade for the ambient backdrop -------------------------- */
+.rea-fade-in {
+  animation: rea-fade-in 1.1s ease-out both;
+}
+@keyframes rea-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Reduced motion: freeze every new ambient animation ------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  .rea-hero-shimmer,
+  .rea-shimmer-text {
+    animation: none;
+    background-image: none;
+    -webkit-background-clip: unset;
+    background-clip: unset;
+  }
+  .rea-hero-shimmer {
+    color: var(--color-emerald-400);
+  }
+  .rea-shimmer-text {
+    color: var(--color-zinc-500);
+  }
+  .rea-beam,
+  .rea-beam:focus-within {
+    animation: none;
+    transition: none;
+  }
+  .rea-fade-in {
+    animation: none;
+  }
+}
