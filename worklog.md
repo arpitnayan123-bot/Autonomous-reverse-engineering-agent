@@ -402,3 +402,28 @@ Stage Summary:
 - The app now has a real homepage: a live, fully-wired dashboard instead of a plain prompt screen — every tile navigates, all numbers are store-derived (never stale), and the REA upstream repo is credited in the dashboard, status bar and docs.
 - Files: NEW src/components/rea/home-dashboard.tsx; chat-workspace.tsx (EmptyState branch + autoscroll fix + send re-pin); app-shell.tsx (brand button, status-bar credit); docs-view.tsx (credits card); globals.css (home ambient bg).
 - Next candidates: folders/tags for chats, file-compare view, i18n, streaming tool-arg preview polish (partial JSON), per-session cumulative cost column in sidebar rows, pricing-refresh date surfaced in UI.
+
+---
+Task ID: 14 (cron review round 9 — read-aloud TTS + slash prompt library)
+Agent: main agent (webDevReview)
+Task: Standard round — assess → QA → features (mandatory: styling details + new functionality).
+
+Work Log:
+- Status assessment: git at round-8 (+ one auto-commit touching only db/custom.db — runtime artifact, no code); dev server healthy; tsc clean (src/); lint 0; Home dashboard renders with live data (23 chats / 63 messages). Live QA: free-chat streaming round-trip ✓ → phase STABLE → features.
+- FEATURE 1 — Read-aloud (TTS) on assistant messages, full stack:
+  - NEW POST /api/tts: auth (getSessionUser) + rate limit (10/min/user+ip, Retry-After header) + text bounds (1..1000 chars, whitespace-collapsed; SDK hard limit is 1024) → zai.audio.tts.create (voice "jam", speed 1.0, response_format "wav", stream false) → returns audio/wav bytes; audited `tts.speak`.
+  - COMPAT NOTE (root-caused): the first implementation used response_format "mp3" per skill docs — the deployed endpoint rejects it with code 1214 "不支持当前response_format值" (HTTP 400 → surfaced as 500). Verified "wav" works via a direct SDK probe (RIFF header + 122KB for a test sentence) before re-wiring. Future TTS work in this sandbox: use wav, non-streaming.
+  - NEW src/components/rea/speak-button.tsx: module-singleton <audio> (only one message speaks at a time; starting another or unmounting stops the previous), state machine idle→loading→playing→idle, markdown→speech prose stripper (code fences → "code block omitted", links/images collapse to label, headings/quotes/lists/tables flatten, emphasis stripped), text frozen at click time (streaming-safe), blob URL revoked on end, errors surface via toast.
+  - Wire-in: MessageMeta gains `streaming` prop; assistant rows show the speaker button only when content exists and the message is NOT still streaming. Button renders: idle = Volume2 icon, loading = spinner (disabled, no duplicate requests), playing = three animated equalizer bars (.rea-eq-bar keyframes in globals.css, reduced-motion static).
+- FEATURE 2 — Slash-command prompt library in the composer (Cursor-style):
+  - NEW src/components/rea/prompt-library.tsx: 8 curated prompts with scope ("file" 5 / "free" 3), icon, label, full prompt text, hint; slashTokenOf() detects an active "/…token" (no space/newline yet); filterPrompts() matches label+prompt+hint.
+  - Composer integration: typing "/" opens the menu above the composer (role=listbox); ArrowUp/Down cycle, Enter/Tab insert the prompt (replaces the slash token), Esc closes, hover syncs the active row; scope-aware — file chats see file prompts (Explain this file, Format deep-dive, Interesting strings, Is it safe?, Write documentation), free chats see free prompts (Explain a concept…, Compare formats, Getting started); live filtering while typing.
+  - Discoverability: composer hint line now reads "Enter to send · Shift+Enter new line · / prompts · file chats run real REA tools".
+- Styling details: prompt-menu header (mono uppercase + kbd legend), emerald active row with ↵ kbd chip, truncated prompt previews; equalizer bars with staggered delays; composer container became `relative` to anchor the menu.
+- QA verification (fresh passes): "/" opens menu in free chat with exactly the 3 free prompts ✓; file chat (drop-test.txt) shows file prompts ✓; ArrowDown+Enter inserted "Compare ELF, PE and Mach-O…" into the composer ✓; TTS state machine polled at 200ms → LLL PPPPPP - (loading → playing → natural end) ✓; audio/wav 200 in ~0.7s in dev log ✓; stop/unmount path verified (idle restore) ✓; mobile 390×844: menu anchored above composer, entries truncate, speaker icon touch-visible ✓; old mp3-format errors in dev.log are pre-fix only, no new errors after ✓; tsc clean (src/) ✓; eslint 0 ✓. Commit 6dbd7fc.
+
+Stage Summary:
+- Platform gained: voice read-aloud for any assistant answer (server TTS via platform SDK, WAV) and a "/" prompt library that makes the engine's capabilities discoverable without typing from scratch.
+- API: NEW POST /api/tts (auth, 10/min rate limit, audited, wav only).
+- Sandbox rule: this deployment's TTS endpoint rejects mp3/pcm-with-stream:false combos beyond wav — stick to response_format "wav", stream:false.
+- Next candidates: voice INPUT (ASR mic button in composer — pairs with read-aloud), per-message TTS cache (same text → same audio id), chat folders/tags, file compare view, i18n, prompt library user-editable/custom prompts.
