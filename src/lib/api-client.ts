@@ -202,6 +202,8 @@ export type ChatStreamEvent =
   | { type: "session_saved"; sessionId: string; title: string; targetId: string | null }
   | { type: "user_saved"; messageId: string }
   | { type: "model"; source: string; provider: string; model: string }
+  | { type: "turn_start"; turn: number }
+  | { type: "delta"; text: string }
   | { type: "tool_call"; tool: string; args?: unknown }
   | { type: "tool_result"; tool: string; preview?: string }
   | { type: "assistant"; content: string }

@@ -189,3 +189,42 @@ Stage Summary:
 - Platform gained: session rename, two Markdown exports (chat + investigation report), live quota feedback, chat UX polish (jump-to-latest, message animations, copyable tool output).
 - Known type-lie left as-is: api-client Finding.meta typed string|null but findings route returns parsed object (pre-existing; target-panel handles both; export.ts now defensive).
 - Next candidates: file-compare view, per-message token accounting, i18n, streaming token-by-token (SSE deltas), keyboard shortcut palette (Cmd+K).
+
+---
+Task ID: 7 (cron review round 2 — QA + Cursor-grade interactions)
+Agent: main agent (webDevReview)
+Task: Assess status post-round-1, QA via agent-browser, then implement next feature set: token streaming, ⌘K palette, keyboard shortcuts, styling details.
+
+Work Log:
+- QA first: dev.log clean (only prisma noise), tsc clean, lint clean. Live browser pass: auth gate ✓, demo login ✓, free chat ✓, file chat with evidence-graded answer ✓, tool trace rows expand w/ copyable output ✓, inspector Overview ✓, system dialog (Engine healthy v6.4.0 · 170 tools) ✓, mobile inspector sheet ✓, 0 page errors — golden path stable → proceeded to new features per round mandate.
+
+Feature 1 — Token-by-token streaming (SSE deltas):
+- providers.ts: readProviderSse() minimal SSE line reader; openAiCompatibleStream (OpenAI/DeepSeek/Kimi/GLM), anthropicStream (content_block_delta), geminiStream (streamGenerateContent?alt=sse); providerChatStream dispatcher; ResolvedLlm gains optional callLLMStream(messages,onDelta,opts).
+- platform-llm.ts: zaiPlatformChatStream + SseDeltaParser — SDK `stream:true` yields RAW SSE Uint8Array frames (probed via /tmp script: standard OpenAI delta JSON); parser decodes bytes→text, splits data: lines across chunk boundaries, extracts choices[0].delta.content; handles parsed-chunk + full-completion shapes and falls back to non-streamed call.
+- agent.ts: AgentEventHandlers.onTurnStart/onAssistantDelta; callTurn() streams when available (one non-streamed retry on stream failure, logged); synthesis turn also streams.
+- /api/chat POST: new SSE events `turn_start {turn}` and `delta {text}`; final `assistant` event stays authoritative (client replaces draft verbatim).
+- api-client: ChatStreamEvent union extended with turn_start/delta.
+- chat-workspace: turnBecameToolRef — on delta append, if content contains ``` the fence index cuts content to prose preamble and drops the rest of that turn's deltas → **raw tool JSON never flashes** (verified live in a file chat with 5 tool calls); turn_start resets the draft; assistant final replaces.
+
+Feature 2 — ⌘K command palette + shortcuts:
+- command-palette.tsx NEW (cmdk/shadcn CommandDialog, dark): Actions (new chat ⌘⇧O, upload, toggle sidebar ⌘B, open/close inspector ⌘I, export chat, export report), Recent chats (msg count + timeAgo), Files (chat about / inspect), Settings (API key, engine, sign out); fuzzy filter verified ("demo" → 3 chats + file actions).
+- app-shell: global keydown (⌘/Ctrl) K palette · B sidebar · I inspector · ⇧O new chat; top-bar ⌘K chip button; status-bar ⌘K chip; palette mounted with upload/export/logout action callbacks.
+- store: sidebarOpen (desktop aside now collapsible via ⌘B, aria-hidden when closed), paletteOpen.
+
+Styling details (mandatory):
+- Markdown code blocks now render an IDE-style shell: language label (uppercased mono) + compact copy button header over dark body (CodeBlockShell + extractText in shared.tsx); non-highlighted blocks unchanged.
+- CopyButton gained `small` variant (size-5/size-3 icons).
+- MessageRow: group hover meta row — timestamp (HH:MM), provider/model on assistant turns, small copy button (Copy assistant/your message); streaming assistant shows emerald block caret after content.
+- ThinkingIndicator: 3 staggered bouncing emerald dots + "provider/model · working…" (aria-live polite); only rendered while nothing visible happens (no streamed text, no pending tool row).
+- EmptyState: keyboard-hints row (⌘K palette · ⌘B sidebar · ⌘I inspector · ⌘⇧O new chat) in kbd chips under a hairline divider.
+
+Bugs fixed this round:
+- Stale Turbopack CSS cache served a malformed utility from a discarded first-draft palette class (`[&_[cmdk-input-wrapper]:border-0]:hidden`) → "Parsing CSS source code failed" build error; class no longer exists in source; touched globals.css to force recompile; fresh load has 0 console errors.
+- z-ai SDK stream chunks are raw SSE bytes, not parsed deltas (first implementation produced "Model stream produced no content" + silent non-streamed fallback) → SseDeltaParser; platform model now streams truly token-by-token (verified: mid-stream screenshots show caret + partial markdown; dev.log no longer logs stream failures).
+
+Verification: bunx tsc --noEmit clean; bun run lint 0 problems; browser E2E: palette open/search/select ✓, ⌘B toggle ✓ (sidebar collapses + chat reflows), free-chat streaming w/ caret + Stop ✓, code-block header w/ copy ✓, file-chat streaming w/ 5 REA tools & no JSON flash ✓, history traces after reload ✓ (5 DONE rows), hover copy meta ✓, mobile 390×844 ✓, console 0 errors ✓.
+
+Stage Summary:
+- Platform gained: true token streaming for all 6 BYOK providers + platform model (with honest degradation), ⌘K palette, ⌘B/⌘I/⌘⇧O shortcuts, collapsible sidebar, IDE-style code blocks, message hover meta/copy, Claude-Code-style working indicator + caret, kbd-hint empty state.
+- SSE protocol: added turn_start/delta events (additive, backward compatible — final assistant event still authoritative).
+- Next candidates: per-message token accounting (usage from provider responses), message edit & resend / regenerate, chat search API (server-side), file compare view, i18n.

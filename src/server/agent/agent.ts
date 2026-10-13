@@ -29,6 +29,10 @@ export interface AgentEventHandlers {
   onToolResult?: (tool: string, result: string) => void;
   /** Called when the LLM source is resolved (for SSE surfacing). */
   onModelResolved?: (info: { source: string; provider: string; model: string }) => void;
+  /** A new LLM turn began (0-based). Lets the client reset its draft buffer. */
+  onTurnStart?: (turn: number) => void;
+  /** Incremental assistant text for the live-typing effect. */
+  onAssistantDelta?: (text: string, turn: number) => void;
   /** Cooperative cancellation: checked between iterations. */
   shouldCancel?: () => boolean;
 }
@@ -140,7 +144,8 @@ export async function runAgentLoop(opts: {
       final = "**Investigation cancelled by user.** No further tools were run after cancellation; any findings above are partial.";
       break;
     }
-    const text = await llm.callLLM(messages);
+    events?.onTurnStart?.(i);
+    const text = await callTurn(llm, messages, i, events);
     const action = parseToolAction(text);
     if (!action) {
       final = text;
@@ -169,11 +174,13 @@ export async function runAgentLoop(opts: {
 
   if (final === null) {
     // Iteration budget exhausted: force a synthesis turn with no tools.
+    const synthesisTurn = MAX_CHAT_ITERATIONS;
+    events?.onTurnStart?.(synthesisTurn);
     messages.push({
       role: "user",
       content: `You have used the maximum number of tool iterations (${MAX_CHAT_ITERATIONS}). Do not emit any more tool blocks. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown.`,
     });
-    final = await llm.callLLM(messages);
+    final = await callTurn(llm, messages, synthesisTurn, events);
   }
 
   try {
@@ -190,6 +197,30 @@ export async function runAgentLoop(opts: {
   }
 
   return { content: final, toolCalls: toolTrace };
+}
+
+/**
+ * One LLM turn — streamed when the resolved provider supports it (falling
+ * back to a single-shot call whose text is emitted as one delta).
+ */
+async function callTurn(
+  llm: ResolvedLlm,
+  messages: LlmMessage[],
+  turn: number,
+  events?: AgentEventHandlers
+): Promise<string> {
+  const sink = (delta: string) => events?.onAssistantDelta?.(delta, turn);
+  if (llm.callLLMStream) {
+    try {
+      return await llm.callLLMStream(messages, sink);
+    } catch (err) {
+      // A failed stream must not kill the loop — retry once non-streamed.
+      console.error("agent stream turn failed, retrying non-streamed:", err);
+    }
+  }
+  const text = await llm.callLLM(messages);
+  sink(text);
+  return text;
 }
 
 // ---------------------------------------------------------------------------

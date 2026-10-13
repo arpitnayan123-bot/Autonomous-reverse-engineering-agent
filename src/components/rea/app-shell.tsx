@@ -17,6 +17,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  SearchIcon,
   Settings2,
   Trash2,
   Upload,
@@ -41,6 +42,7 @@ import { exportChat, exportTargetReport } from "@/lib/export";
 import { useReaStore } from "@/store/rea-store";
 import { refreshProviderInStore } from "@/components/rea/rea-app";
 import { ChatWorkspace } from "@/components/rea/chat-workspace";
+import { CommandPalette } from "@/components/rea/command-palette";
 import { SettingsDialog } from "@/components/rea/settings-dialog";
 import { SystemDialog } from "@/components/rea/system-dialog";
 import { TargetPanel } from "@/components/rea/target-panel";
@@ -116,6 +118,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
   const [renameValue, setRenameValue] = React.useState("");
   const [exportingChat, setExportingChat] = React.useState(false);
   const [exportingReport, setExportingReport] = React.useState(false);
+  const sidebarOpen = useReaStore((s) => s.sidebarOpen);
 
   const activeSession = React.useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -176,6 +179,41 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     onLogout?.();
     window.location.reload();
   };
+
+  // ---- Global keyboard shortcuts (Cursor-style) ---------------------------
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      const s = useReaStore.getState();
+      if (key === "k") {
+        e.preventDefault();
+        s.setPaletteOpen(!s.paletteOpen);
+      } else if (key === "b" && !e.shiftKey) {
+        e.preventDefault();
+        s.toggleSidebar();
+      } else if (key === "i" && !e.shiftKey) {
+        e.preventDefault();
+        if (s.inspectorOpen) {
+          s.closeInspector();
+        } else {
+          const st = useReaStore.getState();
+          const tid =
+            st.inspectorTargetId ??
+            st.sessions.find((x) => x.id === st.activeSessionId)?.targetId ??
+            st.draftTargetId ??
+            null;
+          if (tid) st.openInspector(tid);
+        }
+      } else if (key === "o" && e.shiftKey) {
+        e.preventDefault();
+        s.newFreeChat();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // ---- Upload flow: upload → auto-analyze → draft chat on the new file ---
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -350,6 +388,18 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
         {/* Context title */}
         <span className="min-w-0 flex-1 truncate text-sm text-zinc-300">{topBarTitle}</span>
 
+        {/* ⌘K command palette trigger */}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => useReaStore.getState().setPaletteOpen(true)}
+          aria-label="Open command palette (Command K)"
+          className="hidden h-7 gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/60 px-2 font-mono text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 md:inline-flex"
+        >
+          <SearchIcon className="size-3" aria-hidden />
+          <span>⌘K</span>
+        </Button>
+
         {/* Model chip → settings */}
         <ModelChip />
 
@@ -438,8 +488,14 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
 
       {/* ============================ Body row ============================== */}
       <div className="flex min-h-0 flex-1">
-        {/* Desktop sidebar */}
-        <aside className="hidden w-64 shrink-0 border-r border-zinc-800/80 bg-zinc-950 md:flex md:flex-col">
+        {/* Desktop sidebar (collapsible via ⌘B) */}
+        <aside
+          aria-hidden={!sidebarOpen}
+          className={cn(
+            "w-64 shrink-0 border-r border-zinc-800/80 bg-zinc-950",
+            sidebarOpen ? "hidden md:flex md:flex-col" : "hidden"
+          )}
+        >
           <SidebarBody
             sessions={sessions}
             sessionsLoaded={sessionsLoaded}
@@ -531,6 +587,16 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
 
       {/* ============================ Status bar ============================ */}
       <StatusBar />
+
+      {/* ========================= Command palette ========================== */}
+      <CommandPalette
+        actions={{
+          onUpload: onPickFile,
+          onExportChat: () => void onExportChat(),
+          onExportReport: () => void onExportReport(),
+          onLogout: () => void doLogout(),
+        }}
+      />
 
       {/* ============================== Dialogs ============================= */}
       <SettingsDialog
@@ -935,6 +1001,14 @@ function StatusBar() {
       <span className="hidden md:inline">{targets.length} files</span>
       <span className="hidden md:inline">{sessions.length} chats</span>
       <span className="ml-auto hidden sm:inline text-zinc-600">evidence-first analysis</span>
+      <button
+        type="button"
+        onClick={() => useReaStore.getState().setPaletteOpen(true)}
+        aria-label="Open command palette"
+        className="hidden rounded border border-zinc-800 bg-zinc-900/60 px-1.5 text-[9px] text-zinc-500 transition-colors hover:text-zinc-300 sm:inline"
+      >
+        ⌘K
+      </button>
       {user?.isDemo && (
         <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 text-emerald-400">
           DEMO

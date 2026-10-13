@@ -341,10 +341,13 @@ export function CopyButton({
   value,
   label,
   className,
+  small,
 }: {
   value: string;
   label?: string;
   className?: string;
+  /** Compact variant for inline meta rows. */
+  small?: boolean;
 }) {
   const [copied, setCopied] = React.useState(false);
 
@@ -366,9 +369,17 @@ export function CopyButton({
           size="icon"
           aria-label={label ?? "Copy to clipboard"}
           onClick={onCopy}
-          className={cn("size-7 text-zinc-500 hover:text-zinc-100", className)}
+          className={cn(
+            small ? "size-5" : "size-7",
+            "text-zinc-500 hover:text-zinc-100",
+            className
+          )}
         >
-          {copied ? <Check className="size-3.5 text-emerald-400" /> : <Copy className="size-3.5" />}
+          {copied ? (
+            <Check className={small ? "size-3 text-emerald-400" : "size-3.5 text-emerald-400"} />
+          ) : (
+            <Copy className={small ? "size-3" : "size-3.5"} />
+          )}
         </Button>
       </TooltipTrigger>
       <TooltipContent className="border-zinc-700 bg-zinc-900 text-xs text-zinc-200">
@@ -565,6 +576,54 @@ export function ReaCube({
 // Markdown
 // ---------------------------------------------------------------------------
 
+/**
+ * Chat/IDE-style code block: language label + copy button header over a
+ * dark body. Falls back to a plain <pre> for non-highlighted blocks.
+ */
+function CodeBlockShell({ children }: { children: React.ReactNode }) {
+  let language = "";
+  let code = "";
+  let isBlock = false;
+  const child = Array.isArray(children) ? children[0] : children;
+  if (React.isValidElement(child)) {
+    const cls =
+      ((child.props as { className?: string } | null)?.className as string | undefined) ?? "";
+    const m = /language-([\w-]+)/.exec(cls);
+    if (m) {
+      isBlock = true;
+      language = m[1];
+      code = extractText((child.props as { children?: React.ReactNode }).children);
+    }
+  }
+  if (!isBlock) {
+    return <pre className="mb-2">{children}</pre>;
+  }
+  return (
+    <div className="mb-2 overflow-hidden rounded-md border border-zinc-800 bg-zinc-950">
+      <div className="flex h-7 items-center border-b border-zinc-800/80 bg-zinc-900/60 px-2.5">
+        <span className="font-mono text-[9px] uppercase tracking-wider text-zinc-500">
+          {language}
+        </span>
+        <span className="ml-auto">
+          <CopyButton value={code} label={`Copy ${language} code`} small />
+        </span>
+      </div>
+      <pre className="overflow-x-auto">{children}</pre>
+    </div>
+  );
+}
+
+/** Recursively extract plain text from React children (for copy values). */
+function extractText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (React.isValidElement(node)) {
+    return extractText((node.props as { children?: React.ReactNode }).children);
+  }
+  return "";
+}
+
 /** Terminal-flavoured markdown renderer for docs and assistant messages. */
 export function Markdown({ children, className }: { children: string; className?: string }) {
   return (
@@ -586,7 +645,7 @@ export function Markdown({ children, className }: { children: string; className?
             if (isBlock) {
               return (
                 <code
-                  className={cn("block overflow-x-auto rounded-md border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs text-zinc-200 rea-scroll", cls)}
+                  className={cn("block overflow-x-auto p-3 font-mono text-xs text-zinc-200 rea-scroll", cls)}
                   {...rest}
                 >
                   {kids}
@@ -599,7 +658,9 @@ export function Markdown({ children, className }: { children: string; className?
               </code>
             );
           },
-          pre: (props) => <pre className="mb-2" {...props} />,
+          pre: ({ children }) => (
+            <CodeBlockShell>{children}</CodeBlockShell>
+          ),
           table: (props) => (
             <div className="rea-scroll mb-2 max-h-80 overflow-auto rounded-md border border-zinc-800">
               <table className="w-full border-collapse text-xs" {...props} />

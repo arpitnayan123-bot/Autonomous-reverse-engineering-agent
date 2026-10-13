@@ -31,6 +31,11 @@ interface ReaState {
   inspectorTargetId: string | null;
   inspectorOpen: boolean;
 
+  /** Desktop sidebar visibility (⌘B). */
+  sidebarOpen: boolean;
+  /** ⌘K command palette. */
+  paletteOpen: boolean;
+
   capabilities: Capabilities | null;
 
   /** Global dialogs. */
@@ -62,6 +67,10 @@ interface ReaState {
   closeInspector: () => void;
   setInspectorOpen: (open: boolean) => void;
 
+  setSidebarOpen: (open: boolean) => void;
+  toggleSidebar: () => void;
+  setPaletteOpen: (open: boolean) => void;
+
   setCapabilities: (capabilities: Capabilities | null) => void;
 
   setDialog: (dialog: ReaDialog) => void;
@@ -84,6 +93,9 @@ export const useReaStore = create<ReaState>((set) => ({
   targetsLoaded: false,
   inspectorTargetId: null,
   inspectorOpen: false,
+
+  sidebarOpen: true,
+  paletteOpen: false,
 
   capabilities: null,
 
@@ -112,6 +124,10 @@ export const useReaStore = create<ReaState>((set) => ({
     set({ inspectorTargetId, inspectorOpen: true }),
   closeInspector: () => set({ inspectorOpen: false }),
   setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
+
+  setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
+  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
 
   setCapabilities: (capabilities) => set({ capabilities }),
 

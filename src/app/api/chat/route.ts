@@ -308,6 +308,8 @@ export async function POST(req: Request) {
             })),
             events: {
               onModelResolved: (info) => send({ type: "model", ...info }),
+              onTurnStart: (turn) => send({ type: "turn_start", turn }),
+              onAssistantDelta: (text) => send({ type: "delta", text }),
               onToolCall: (tool, args) => send({ type: "tool_call", tool, args }),
               onToolResult: (tool, result) =>
                 send({ type: "tool_result", tool, preview: result.slice(0, 1000) }),

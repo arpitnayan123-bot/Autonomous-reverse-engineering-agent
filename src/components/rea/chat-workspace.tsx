@@ -135,6 +135,11 @@ export function ChatWorkspace({
    * overwrite the live transcript in that case.
    */
   const skipHistoryLoadRef = React.useRef(false);
+  /**
+   * True once the streaming turn revealed a ```tool fence — later deltas of
+   * that turn are dropped so raw tool JSON never flashes in the transcript.
+   */
+  const turnBecameToolRef = React.useRef(false);
 
   // ---- Load history when switching sessions / clearing to a draft ---------
   React.useEffect(() => {
@@ -245,7 +250,28 @@ export function ChatWorkspace({
         case "model":
           setModelInfo({ source: ev.source, provider: ev.provider, model: ev.model });
           break;
+        case "turn_start":
+          // A fresh LLM turn began — reset the live draft buffer.
+          turnBecameToolRef.current = false;
+          applyAssistant((e) => ({ ...e, content: "" }));
+          break;
+        case "delta": {
+          if (turnBecameToolRef.current) break; // tool JSON — never render
+          applyAssistant((e) => {
+            let content = e.content + ev.text;
+            const fence = content.indexOf("```");
+            if (fence >= 0) {
+              // The model started emitting a tool block — keep only the
+              // prose preamble and stop accepting this turn's deltas.
+              turnBecameToolRef.current = true;
+              content = content.slice(0, fence).trimEnd();
+            }
+            return { ...e, content };
+          });
+          break;
+        }
         case "tool_call":
+          turnBecameToolRef.current = true;
           applyAssistant((e) => ({
             ...e,
             trace: [
@@ -267,6 +293,8 @@ export function ChatWorkspace({
           });
           break;
         case "assistant":
+          // Authoritative final text — replaces the streamed draft verbatim.
+          turnBecameToolRef.current = false;
           applyAssistant((e) => ({ ...e, content: ev.content }));
           break;
         case "error":
@@ -374,22 +402,27 @@ export function ChatWorkspace({
         ) : (
           <div className="mx-auto w-full max-w-3xl px-4 py-6">
             <div className="flex flex-col gap-5">
-              {entries.map((entry) => (
+              {entries.map((entry, idx) => (
                 <motion.div
                   key={entry.id}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.18, ease: "easeOut" }}
                 >
-                  <MessageRow entry={entry} />
+                  <MessageRow
+                    entry={entry}
+                    streaming={streaming && idx === entries.length - 1}
+                    model={modelInfo}
+                  />
                 </motion.div>
               ))}
-              {streaming && (
-                <div className="flex items-center gap-2 font-mono text-[10px] text-zinc-600">
-                  <Loader2 className="size-3 animate-spin" aria-hidden />
-                  {modelInfo ? `${modelInfo.provider}/${modelInfo.model} · thinking…` : "working…"}
-                </div>
-              )}
+              {streaming && (() => {
+                const last = entries[entries.length - 1];
+                // Indicator only while nothing visible is happening yet
+                // (no streamed text, no pending tool row).
+                if (last?.content || last?.trace.some((t) => t.pending)) return null;
+                return <ThinkingIndicator modelInfo={modelInfo} />;
+              })()}
             </div>
           </div>
         )}
@@ -523,24 +556,35 @@ function rowToEntry(m: ChatMessageRow): ChatEntry {
   };
 }
 
-function MessageRow({ entry }: { entry: ChatEntry }) {
+function MessageRow({
+  entry,
+  streaming,
+  model,
+}: {
+  entry: ChatEntry;
+  streaming?: boolean;
+  model?: ModelInfo | null;
+}) {
   if (entry.role === "user") {
     return (
-      <div className="flex items-start gap-2.5">
+      <div className="group flex items-start gap-2.5">
         <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border border-zinc-800 bg-zinc-900 font-mono text-[10px] text-zinc-400">
           ›_
         </span>
-        <div className="min-w-0 flex-1 rounded-lg border border-zinc-800/80 bg-zinc-900/50 px-3.5 py-2.5">
-          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-200">
-            {entry.content}
-          </p>
+        <div className="min-w-0 flex-1">
+          <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/50 px-3.5 py-2.5">
+            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-zinc-200">
+              {entry.content}
+            </p>
+          </div>
+          <MessageMeta entry={entry} model={null} />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex items-start gap-2.5">
+    <div className="group flex items-start gap-2.5">
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border border-emerald-500/30 bg-emerald-500/10">
         <Binary className="size-3 text-emerald-400" aria-hidden />
       </span>
@@ -565,9 +609,73 @@ function MessageRow({ entry }: { entry: ChatEntry }) {
         {entry.content && (
           <div className="rea-markdown text-sm leading-relaxed text-zinc-200">
             <Markdown>{entry.content}</Markdown>
+            {streaming && <StreamingCaret />}
           </div>
         )}
+        <MessageMeta entry={entry} model={model} />
       </div>
+    </div>
+  );
+}
+
+/** Blinking block caret shown while assistant text is streaming in. */
+function StreamingCaret() {
+  return (
+    <span
+      aria-hidden
+      className="ml-0.5 inline-block h-3.5 w-[7px] translate-y-[2px] animate-pulse rounded-[2px] bg-emerald-400/90"
+    />
+  );
+}
+
+/** Hover meta row: timestamp + copy (+ provider/model for assistant turns). */
+function MessageMeta({
+  entry,
+  model,
+}: {
+  entry: ChatEntry;
+  model?: ModelInfo | null;
+}) {
+  const copyLabel =
+    entry.role === "assistant" ? "Copy assistant message" : "Copy your message";
+  return (
+    <div className="mt-1 flex h-5 items-center gap-2 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+      {entry.createdAt && (
+        <time className="font-mono text-[10px] text-zinc-600" dateTime={entry.createdAt}>
+          {new Date(entry.createdAt).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </time>
+      )}
+      {entry.role === "assistant" && model && (
+        <span className="truncate font-mono text-[10px] text-zinc-700">
+          {model.provider}/{model.model}
+        </span>
+      )}
+      <div className="ml-auto">
+        <CopyButton value={entry.content} label={copyLabel} small />
+      </div>
+    </div>
+  );
+}
+
+/** Claude-Code-style working indicator with animated dots. */
+function ThinkingIndicator({ modelInfo }: { modelInfo: ModelInfo | null }) {
+  return (
+    <div className="flex items-center gap-2.5 pl-8.5" aria-live="polite">
+      <span className="flex items-end gap-[3px]" aria-hidden>
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="size-[4px] animate-bounce rounded-full bg-emerald-500/80"
+            style={{ animationDelay: `${i * 140}ms`, animationDuration: "900ms" }}
+          />
+        ))}
+      </span>
+      <span className="font-mono text-[10px] text-zinc-600">
+        {modelInfo ? `${modelInfo.provider}/${modelInfo.model}` : "agent"} · working…
+      </span>
     </div>
   );
 }
@@ -675,7 +783,26 @@ function EmptyState({
             </button>
           ))}
         </div>
+
+        {/* Keyboard hints (Cursor-style) */}
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 border-t border-zinc-800/60 pt-4">
+          <KbdHint keys="⌘K" label="command palette" />
+          <KbdHint keys="⌘B" label="toggle sidebar" />
+          <KbdHint keys="⌘I" label="inspector" />
+          <KbdHint keys="⌘⇧O" label="new chat" />
+        </div>
       </div>
     </div>
+  );
+}
+
+function KbdHint({ keys, label }: { keys: string; label: string }) {
+  return (
+    <span className="flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
+      <kbd className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-400">
+        {keys}
+      </kbd>
+      {label}
+    </span>
   );
 }

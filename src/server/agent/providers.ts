@@ -128,6 +128,41 @@ interface CallOpts {
   maxTokens?: number;
 }
 
+/** Receives incremental text as it is produced by the provider. */
+export type DeltaSink = (text: string) => void;
+
+/**
+ * Minimal SSE reader for provider streams. Calls `onEvent` for every `data:`
+ * frame; returns when the stream (or `[DONE]`) ends.
+ */
+async function readProviderSse(
+  res: Response,
+  onEvent: (data: string) => void
+): Promise<void> {
+  const body = res.body;
+  if (!body) throw new Error("Provider stream returned no body");
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf("\n");
+    while (boundary !== -1) {
+      const line = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 1);
+      boundary = buffer.indexOf("\n");
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data) continue;
+      onEvent(data);
+    }
+  }
+  const tail = buffer.trim();
+  if (tail.startsWith("data:")) onEvent(tail.slice(5).trim());
+}
+
 /** OpenAI-compatible chat completion (openai, deepseek, kimi, glm). */
 async function openAiCompatibleChat(
   baseUrl: string,
@@ -167,6 +202,55 @@ async function openAiCompatibleChat(
       ?.choices?.[0]?.message?.content ?? "";
   if (!content.trim()) throw new Error("Provider returned an empty completion");
   return content;
+}
+
+/** OpenAI-compatible streaming chat completion. Returns the full text. */
+async function openAiCompatibleStream(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  messages: LlmMessage[],
+  opts: CallOpts,
+  onDelta: DeltaSink
+): Promise<string> {
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: opts.maxTokens ?? 4096,
+      stream: true,
+    }),
+    signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      scrubSecrets(`Provider HTTP ${res.status}: ${text.slice(0, 300)}`)
+    );
+  }
+  let full = "";
+  await readProviderSse(res, (data) => {
+    if (data === "[DONE]") return;
+    try {
+      const json = JSON.parse(data) as {
+        choices?: Array<{ delta?: { content?: string } }>;
+      };
+      const delta = json?.choices?.[0]?.delta?.content;
+      if (typeof delta === "string" && delta) {
+        full += delta;
+        onDelta(delta);
+      }
+    } catch {
+      /* ignore malformed frame */
+    }
+  });
+  if (!full.trim()) throw new Error("Provider returned an empty completion");
+  return full;
 }
 
 /** Anthropic Messages API. */
@@ -210,6 +294,57 @@ async function anthropicChat(
     .join("\n");
   if (!content?.trim()) throw new Error("Anthropic returned an empty completion");
   return content;
+}
+
+/** Anthropic streaming Messages API. Returns the full text. */
+async function anthropicStream(
+  apiKey: string,
+  model: string,
+  messages: LlmMessage[],
+  opts: CallOpts,
+  onDelta: DeltaSink
+): Promise<string> {
+  const system = messages.find((m) => m.role === "assistant" && isSystemLike(m))?.content;
+  const rest = messages.filter((m) => !(m.role === "assistant" && isSystemLike(m)));
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: opts.maxTokens ?? 4096,
+      ...(system ? { system } : {}),
+      messages: rest.map((m) => ({ role: m.role, content: m.content })),
+      stream: true,
+    }),
+    signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      scrubSecrets(`Anthropic HTTP ${res.status}: ${text.slice(0, 300)}`)
+    );
+  }
+  let full = "";
+  await readProviderSse(res, (data) => {
+    try {
+      const json = JSON.parse(data) as {
+        type?: string;
+        delta?: { type?: string; text?: string };
+      };
+      if (json?.type === "content_block_delta" && typeof json.delta?.text === "string" && json.delta.text) {
+        full += json.delta.text;
+        onDelta(json.delta.text);
+      }
+    } catch {
+      /* ignore malformed frame */
+    }
+  });
+  if (!full.trim()) throw new Error("Anthropic returned an empty completion");
+  return full;
 }
 
 /**
@@ -287,6 +422,67 @@ async function geminiChat(
   return content;
 }
 
+/** Gemini streaming generateContent (SSE). Returns the full text. */
+async function geminiStream(
+  apiKey: string,
+  model: string,
+  messages: LlmMessage[],
+  opts: CallOpts,
+  onDelta: DeltaSink
+): Promise<string> {
+  const sys = messages.find((m) => isSystemLike(m));
+  const rest = messages.filter((m) => !isSystemLike(m));
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model
+  )}:streamGenerateContent?alt=sse`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      ...(sys
+        ? {
+            systemInstruction: {
+              parts: [{ text: unmarkSystem(sys.content) }],
+            },
+          }
+        : {}),
+      contents: rest.map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      })),
+      generationConfig: { maxOutputTokens: opts.maxTokens ?? 8192 },
+    }),
+    signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      scrubSecrets(`Gemini HTTP ${res.status}: ${text.slice(0, 300)}`)
+    );
+  }
+  let full = "";
+  await readProviderSse(res, (data) => {
+    try {
+      const json = JSON.parse(data) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const delta =
+        json?.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+      if (delta) {
+        full += delta;
+        onDelta(delta);
+      }
+    } catch {
+      /* ignore malformed frame */
+    }
+  });
+  if (!full.trim()) throw new Error("Gemini returned an empty completion");
+  return full;
+}
+
 /** Single completion against a concrete provider + key. */
 export async function providerChatComplete(
   provider: ProviderId,
@@ -312,6 +508,36 @@ export async function providerChatComplete(
       return anthropicChat(apiKey, model, normalized, opts);
     case "gemini":
       return geminiChat(apiKey, model, normalized, opts);
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
+}
+
+/** Streaming completion against a concrete provider + key. Returns full text. */
+export async function providerChatStream(
+  provider: ProviderId,
+  apiKey: string,
+  model: string,
+  messages: LlmMessage[],
+  onDelta: DeltaSink,
+  opts: CallOpts = {}
+): Promise<string> {
+  const normalized: LlmMessage[] = messages.map((m, i) =>
+    i === 0 && m.role === "assistant" ? { role: "assistant", content: markSystem(m.content) } : m
+  );
+  switch (provider) {
+    case "openai":
+      return openAiCompatibleStream("https://api.openai.com/v1", apiKey, model, normalized, opts, onDelta);
+    case "deepseek":
+      return openAiCompatibleStream("https://api.deepseek.com", apiKey, model, normalized, opts, onDelta);
+    case "kimi":
+      return openAiCompatibleStream("https://api.moonshot.cn/v1", apiKey, model, normalized, opts, onDelta);
+    case "glm":
+      return openAiCompatibleStream("https://api.z.ai/api/paas/v4", apiKey, model, normalized, opts, onDelta);
+    case "anthropic":
+      return anthropicStream(apiKey, model, normalized, opts, onDelta);
+    case "gemini":
+      return geminiStream(apiKey, model, normalized, opts, onDelta);
     default:
       throw new Error(`Unsupported provider: ${provider}`);
   }
@@ -349,6 +575,16 @@ export interface ResolvedLlm {
   provider: ProviderId | "glm-platform";
   model: string;
   callLLM: (messages: LlmMessage[], opts?: CallOpts) => Promise<string>;
+  /**
+   * Streaming variant — emits incremental text via `onDelta` and resolves to
+   * the full text. Falls back to `callLLM` (single delta) when the provider
+   * cannot stream. The agent loop uses this for the live-typing effect.
+   */
+  callLLMStream?: (
+    messages: LlmMessage[],
+    onDelta: DeltaSink,
+    opts?: CallOpts
+  ) => Promise<string>;
 }
 
 export async function resolveLlmForUser(userId: string): Promise<ResolvedLlm> {
@@ -375,6 +611,8 @@ export async function resolveLlmForUser(userId: string): Promise<ResolvedLlm> {
       provider,
       model,
       callLLM: (messages, opts) => providerChatComplete(provider, apiKey, model, messages, opts),
+      callLLMStream: (messages, onDelta, opts) =>
+        providerChatStream(provider, apiKey, model, messages, onDelta, opts),
     };
   }
   // Platform fallback (z-ai SDK, GLM) — no user key required.
@@ -385,6 +623,10 @@ export async function resolveLlmForUser(userId: string): Promise<ResolvedLlm> {
     callLLM: async (messages) => {
       const { zaiPlatformChat } = await import("./platform-llm");
       return zaiPlatformChat(messages);
+    },
+    callLLMStream: async (messages, onDelta) => {
+      const { zaiPlatformChatStream } = await import("./platform-llm");
+      return zaiPlatformChatStream(messages, onDelta);
     },
   };
 }
