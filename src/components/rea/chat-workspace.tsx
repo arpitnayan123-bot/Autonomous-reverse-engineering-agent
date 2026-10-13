@@ -8,8 +8,10 @@ import {
   Check,
   ChevronDown,
   CircleAlert,
+  GitFork,
   KeyRound,
   Loader2,
+  Paperclip,
   PanelRightOpen,
   Pencil,
   RotateCcw,
@@ -20,6 +22,7 @@ import {
 } from "lucide-react";
 
 import {
+  forkChatSession,
   getChatSession,
   streamChat,
   type ChatMessageRow,
@@ -28,6 +31,7 @@ import {
 } from "@/lib/api-client";
 import { useReaStore } from "@/store/rea-store";
 import { CopyButton, Markdown, humanBytes, toastError } from "@/components/rea/shared";
+import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -90,10 +94,13 @@ export function ChatWorkspace({
   className,
   onSessionsChanged,
   onTargetsChanged,
+  onAttachFile,
 }: {
   className?: string;
   onSessionsChanged?: () => void;
   onTargetsChanged?: () => void;
+  /** Opens the hidden file picker (composer paperclip → upload → draft chat). */
+  onAttachFile?: () => void;
 }) {
   const {
     sessions,
@@ -248,6 +255,7 @@ export function ChatWorkspace({
                 id: ev.sessionId,
                 title: ev.title,
                 targetId: ev.targetId,
+                pinned: false,
                 targetName: boundTarget?.originalName ?? null,
                 detectedFormat: boundTarget?.detectedFormat ?? null,
                 messageCount: 1,
@@ -399,6 +407,27 @@ export function ChatWorkspace({
     });
   };
 
+  /**
+   * Fork: branch a NEW chat that copies the history up to and including this
+   * message. The original chat is left untouched.
+   */
+  const forkFrom = async (entry: ChatEntry) => {
+    if (streaming || !activeSessionId || entry.id.startsWith("local-")) return;
+    try {
+      const summary = await forkChatSession(activeSessionId, entry.id);
+      const s = useReaStore.getState();
+      s.setSessions([summary, ...s.sessions]);
+      s.openSession(summary.id);
+      toast({
+        title: "Chat forked",
+        description: `“${summary.title}” continues from this point (${summary.messageCount} messages).`,
+      });
+      onSessionsChanged?.();
+    } catch (err) {
+      toastError(err, "Could not fork chat");
+    }
+  };
+
   const startEdit = (entry: ChatEntry) => {
     if (streaming) return;
     setEditingId(entry.id);
@@ -502,11 +531,15 @@ export function ChatWorkspace({
                     onEditCancel={cancelEdit}
                     onEditStart={() => startEdit(entry)}
                     onRegenerate={regenerateLast}
+                    onFork={() => void forkFrom(entry)}
                     canRegenerate={
                       !streaming &&
                       !!activeSessionId &&
                       entry.role === "assistant" &&
                       idx === entries.length - 1
+                    }
+                    canFork={
+                      !streaming && !!activeSessionId && !entry.id.startsWith("local-")
                     }
                   />
                 </motion.div>
@@ -572,6 +605,17 @@ export function ChatWorkspace({
               disabled={streaming}
             />
             <div className="flex items-center gap-1 px-2.5 pb-2">
+              {onAttachFile && (
+                <button
+                  type="button"
+                  onClick={onAttachFile}
+                  aria-label="Attach a file to investigate (upload)"
+                  title="Attach a file — uploads and starts a tool-driven chat"
+                  className="grid size-6 shrink-0 place-items-center rounded text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-emerald-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                >
+                  <Paperclip className="size-3.5" aria-hidden />
+                </button>
+              )}
               <span className="font-mono text-[10px] text-zinc-600">
                 {boundTarget ? (
                   <span className="flex items-center gap-1 text-emerald-500/80">
@@ -664,7 +708,9 @@ function MessageRow({
   onEditCancel,
   onEditStart,
   onRegenerate,
+  onFork,
   canRegenerate,
+  canFork,
 }: {
   entry: ChatEntry;
   streaming?: boolean;
@@ -676,7 +722,9 @@ function MessageRow({
   onEditCancel?: () => void;
   onEditStart?: () => void;
   onRegenerate?: () => void;
+  onFork?: () => void;
   canRegenerate?: boolean;
+  canFork?: boolean;
 }) {
   if (entry.role === "user") {
     return (
@@ -753,6 +801,15 @@ function MessageRow({
             </div>
           )}
           <MessageMeta entry={entry} model={null}>
+            {!editing && canFork && (
+              <MetaButton
+                label="Fork chat from this message"
+                onClick={onFork}
+                hoverClass="hover:text-sky-400"
+              >
+                <GitFork className="size-3" aria-hidden />
+              </MetaButton>
+            )}
             {!editing && (
               <MetaButton label={`Edit and resend: ${entry.content.slice(0, 40)}`} onClick={onEditStart}>
                 <Pencil className="size-3" aria-hidden />
@@ -794,6 +851,15 @@ function MessageRow({
           </div>
         )}
         <MessageMeta entry={entry} model={model}>
+          {canFork && (
+            <MetaButton
+              label="Fork chat from this message"
+              onClick={onFork}
+              hoverClass="hover:text-sky-400"
+            >
+              <GitFork className="size-3" aria-hidden />
+            </MetaButton>
+          )}
           {canRegenerate && (
             <MetaButton
               label="Regenerate this response"

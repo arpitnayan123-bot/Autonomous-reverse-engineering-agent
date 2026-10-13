@@ -19,6 +19,7 @@ function toSessionSummary(
     id: string;
     title: string;
     targetId: string | null;
+    pinned: boolean;
     updatedAt: Date;
     target: { originalName: string; detectedFormat: string | null } | null;
     _count: { messages: number };
@@ -28,6 +29,7 @@ function toSessionSummary(
     id: s.id,
     title: s.title,
     targetId: s.targetId,
+    pinned: s.pinned,
     targetName: s.target?.originalName ?? null,
     detectedFormat: s.target?.detectedFormat ?? null,
     messageCount: s._count.messages,
@@ -48,7 +50,7 @@ export async function GET(req: Request) {
     if (!sessionId) {
       const sessions = await db.chatSession.findMany({
         where: { userId: user.id },
-        orderBy: { updatedAt: "desc" },
+        orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
         take: 100,
         include: {
           target: { select: { originalName: true, detectedFormat: true } },
@@ -90,6 +92,7 @@ export async function GET(req: Request) {
         toolCalls: m.toolCalls,
         createdAt: m.createdAt,
       })),
+      pinned: session.pinned,
     });
   } catch (err) {
     console.error("chat GET error:", err);
@@ -99,7 +102,7 @@ export async function GET(req: Request) {
 
 /** GET /api/chat            → list the user's sessions (sidebar). */
 /** GET /api/chat?sessionId= → message history for one session. */
-/** PATCH /api/chat?sessionId= {title} → rename a session. */
+/** PATCH /api/chat?sessionId= {title?, pinned?} → rename and/or pin a session. */
 export async function PATCH(req: Request) {
   try {
     const user = await getSessionUser();
@@ -110,10 +113,18 @@ export async function PATCH(req: Request) {
     if (!isSafeId(sessionId)) {
       return NextResponse.json({ ok: false, error: "Invalid session id" }, { status: 400 });
     }
-    const body = (await req.json().catch(() => null)) as { title?: unknown } | null;
-    const title = typeof body?.title === "string" ? body.title.trim().slice(0, 120) : "";
-    if (!title) {
-      return NextResponse.json({ ok: false, error: "title is required (1–120 chars)" }, { status: 400 });
+    const body = (await req.json().catch(() => null)) as {
+      title?: unknown;
+      pinned?: unknown;
+    } | null;
+    const title =
+      typeof body?.title === "string" ? body.title.trim().slice(0, 120) : undefined;
+    const pinned = typeof body?.pinned === "boolean" ? body.pinned : undefined;
+    if (!title && pinned === undefined) {
+      return NextResponse.json(
+        { ok: false, error: "title (1–120 chars) or pinned (boolean) is required" },
+        { status: 400 }
+      );
     }
     const session = await db.chatSession.findUnique({ where: { id: sessionId } });
     if (!session || session.userId !== user.id) {
@@ -121,9 +132,15 @@ export async function PATCH(req: Request) {
     }
     const updated = await db.chatSession.update({
       where: { id: sessionId },
-      data: { title },
+      data: {
+        ...(title ? { title } : {}),
+        ...(pinned !== undefined ? { pinned } : {}),
+      },
     });
-    return NextResponse.json({ ok: true, session: { id: updated.id, title: updated.title } });
+    return NextResponse.json({
+      ok: true,
+      session: { id: updated.id, title: updated.title, pinned: updated.pinned },
+    });
   } catch (err) {
     console.error("chat PATCH error:", err);
     return NextResponse.json({ ok: false, error: "Internal error" }, { status: 500 });

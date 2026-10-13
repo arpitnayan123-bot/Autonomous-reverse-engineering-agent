@@ -16,6 +16,8 @@ import {
   PanelLeft,
   PanelRightClose,
   PanelRightOpen,
+  Pin,
+  PinOff,
   Plus,
   SearchIcon,
   Settings2,
@@ -32,6 +34,7 @@ import {
   getChatSession,
   listChatSessions,
   renameChatSession,
+  setChatSessionPinned,
   type Capabilities,
   type ReaUser,
   type SessionSummary,
@@ -118,6 +121,8 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
   const [renameValue, setRenameValue] = React.useState("");
   const [exportingChat, setExportingChat] = React.useState(false);
   const [exportingReport, setExportingReport] = React.useState(false);
+  /** Depth counter for the drag-and-drop upload overlay (only real file drags). */
+  const [dragDepth, setDragDepth] = React.useState(0);
   const sidebarOpen = useReaStore((s) => s.sidebarOpen);
 
   const activeSession = React.useMemo(
@@ -266,6 +271,16 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     setRenameValue(s.title);
   };
 
+  /** Pin or unpin a chat (pinned chats get their own sidebar section). */
+  const onTogglePin = async (s: SessionSummary) => {
+    try {
+      await setChatSessionPinned(s.id, !s.pinned);
+      await refreshSessions();
+    } catch (err) {
+      toastError(err, "Could not update pin");
+    }
+  };
+
   const commitRename = async () => {
     const session = renamingSession;
     if (!session) return;
@@ -316,6 +331,30 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     setMobileNavOpen(false);
   };
 
+  // ---- Drag & drop upload (whole shell; only real file drags) ------------
+  const isFileDrag = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes("Files");
+  const onDragEnter = (e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    setDragDepth((d) => d + 1);
+  };
+  const onDragOver = (e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault(); // required for the drop event to fire
+  };
+  const onDragLeave = (e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
+    setDragDepth((d) => Math.max(0, d - 1));
+  };
+  const onDrop = (e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    setDragDepth(0);
+    const file = e.dataTransfer?.files?.[0];
+    if (file) void onFileSelected(file);
+  };
+
   const topBarTitle = activeSession
     ? activeSession.title
     : draftTarget
@@ -323,7 +362,29 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
       : "New chat";
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+    <div
+      className="flex h-screen flex-col overflow-hidden bg-zinc-950 text-zinc-100"
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {/* Drop-zone overlay (pointer-events-none so the drop reaches the shell) */}
+      {dragDepth > 0 && (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-emerald-500/5 backdrop-blur-[2px]"
+        >
+          <div className="rounded-xl border-2 border-dashed border-emerald-500/60 bg-zinc-950/85 px-10 py-7 text-center shadow-2xl shadow-emerald-500/10">
+            <Upload className="mx-auto size-6 text-emerald-400" aria-hidden />
+            <p className="mt-2.5 text-sm font-medium text-zinc-100">Drop to investigate</p>
+            <p className="mt-1 font-mono text-[10px] text-zinc-500">
+              parsed read-only · never executed
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ============================== Top bar ============================== */}
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-zinc-800/80 bg-zinc-950 px-2 sm:px-3">
         {/* Mobile sidebar trigger */}
@@ -365,6 +426,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
               onStartRename={startRename}
               onCommitRename={() => void commitRename()}
               onCancelRename={() => setRenamingSession(null)}
+              onTogglePin={(s) => void onTogglePin(s)}
               onUpload={onPickFile}
               onOpenTargetChat={(id) => {
                 useReaStore.getState().newTargetChat(id);
@@ -520,6 +582,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
             onStartRename={startRename}
             onCommitRename={() => void commitRename()}
             onCancelRename={() => setRenamingSession(null)}
+            onTogglePin={(s) => void onTogglePin(s)}
             onUpload={onPickFile}
             onOpenTargetChat={(id) => useReaStore.getState().newTargetChat(id)}
             onInspect={(id) => useReaStore.getState().openInspector(id)}
@@ -534,6 +597,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
             className="min-w-0 flex-1"
             onSessionsChanged={refreshSessions}
             onTargetsChanged={refreshTargets}
+            onAttachFile={onPickFile}
           />
 
           {/* Desktop inspector (lg+) */}
@@ -602,6 +666,9 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           onExportChat: () => void onExportChat(),
           onExportReport: () => void onExportReport(),
           onLogout: () => void doLogout(),
+          onTogglePinCurrent: () => {
+            if (activeSession) void onTogglePin(activeSession);
+          },
         }}
       />
 
@@ -716,6 +783,7 @@ interface SidebarBodyProps {
   onStartRename: (s: SessionSummary) => void;
   onCommitRename: () => void;
   onCancelRename: () => void;
+  onTogglePin: (s: SessionSummary) => void;
   onUpload: () => void;
   onOpenTargetChat: (targetId: string) => void;
   onInspect: (targetId: string) => void;
@@ -727,16 +795,150 @@ function SidebarBody(p: SidebarBodyProps) {
   /** Client-side filter for chats + files (Cursor-style quick search). */
   const [search, setSearch] = React.useState("");
   const q = search.trim().toLowerCase();
-  const shownSessions = q
+  const matchSessions = q
     ? p.sessions.filter(
         (s) =>
           (s.title || "new chat").toLowerCase().includes(q) ||
           (s.targetName ?? "").toLowerCase().includes(q)
       )
     : p.sessions;
+  const shownPinned = matchSessions.filter((s) => s.pinned);
+  const shownChats = matchSessions.filter((s) => !s.pinned);
   const shownTargets = q
     ? p.targets.filter((t) => t.originalName.toLowerCase().includes(q))
     : p.targets;
+
+  /** One chat row (shared by the Pinned and Chats sections). */
+  const renderSessionRow = (s: SessionSummary) => {
+    const active = s.id === p.activeSessionId && !p.draftTargetId;
+    const renaming = p.renamingSession?.id === s.id;
+    return (
+      <div
+        key={s.id}
+        className={cn(
+          "group relative flex items-center gap-1.5 rounded-md pr-1 transition-colors",
+          active ? "bg-zinc-800/80" : "hover:bg-zinc-900"
+        )}
+      >
+        {/* Active accent (VSCode-style left bar) */}
+        <span
+          aria-hidden
+          className={cn(
+            "absolute top-1 bottom-1 left-0 w-0.5 rounded-full transition-opacity",
+            active ? "bg-emerald-500 opacity-90" : "opacity-0"
+          )}
+        />
+        {renaming ? (
+          <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-1">
+            <input
+              autoFocus
+              value={p.renameValue}
+              onChange={(e) => p.setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void p.onCommitRename();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  p.onCancelRename();
+                }
+              }}
+              aria-label="Rename chat"
+              maxLength={120}
+              className="h-6 min-w-0 flex-1 rounded border border-emerald-500/40 bg-zinc-950 px-1.5 font-mono text-[11px] text-zinc-100 focus-visible:outline-none"
+            />
+            <button
+              type="button"
+              aria-label="Save chat name"
+              onClick={() => void p.onCommitRename()}
+              className="rounded p-1 text-emerald-400 hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+            >
+              <Check className="size-3.5" aria-hidden />
+            </button>
+            <button
+              type="button"
+              aria-label="Cancel renaming"
+              onClick={p.onCancelRename}
+              className="rounded p-1 text-zinc-500 hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+            >
+              <X className="size-3.5" aria-hidden />
+            </button>
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => p.onOpenSession(s.id)}
+              aria-current={active ? "true" : undefined}
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+            >
+              {s.targetId ? (
+                <Binary className="size-3.5 shrink-0 text-emerald-500/80" aria-hidden />
+              ) : (
+                <MessageSquare className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
+              )}
+              <span className="min-w-0 flex-1">
+                <span
+                  className={cn(
+                    "block truncate text-xs",
+                    active ? "text-zinc-100" : "text-zinc-400"
+                  )}
+                >
+                  {s.title || "New chat"}
+                </span>
+                <span className="block truncate text-[10px] text-zinc-600">
+                  {s.targetName ? `${s.targetName} · ` : ""}
+                  {s.messageCount > 0 ? `${s.messageCount} msg · ` : ""}
+                  {timeAgo(s.updatedAt)}
+                </span>
+              </span>
+            </button>
+            <span className="flex shrink-0 items-center">
+              {/* Pin — always visible on pinned rows, hover-only otherwise. */}
+              <button
+                type="button"
+                aria-label={s.pinned ? `Unpin chat: ${s.title}` : `Pin chat: ${s.title}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  p.onTogglePin(s);
+                }}
+                className={cn(
+                  "rounded p-1 transition-all group-focus-within:opacity-100 focus-visible:ring-2 focus-visible:ring-amber-500/50 focus-visible:outline-none",
+                  s.pinned
+                    ? "text-amber-400 opacity-100"
+                    : "text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-amber-400"
+                )}
+              >
+                {s.pinned ? <PinOff className="size-3.5" aria-hidden /> : <Pin className="size-3.5" aria-hidden />}
+              </button>
+              <button
+                type="button"
+                aria-label={`Rename chat: ${s.title}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  p.onStartRename(s);
+                }}
+                className="rounded p-1 text-zinc-600 opacity-0 transition-colors group-focus-within:opacity-100 group-hover:opacity-100 hover:text-emerald-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+              >
+                <Pencil className="size-3.5" aria-hidden />
+              </button>
+              <button
+                type="button"
+                aria-label={`Delete chat: ${s.title}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  p.onDeleteSession(s);
+                }}
+                className="rounded p-1 text-zinc-600 opacity-0 transition-colors group-focus-within:opacity-100 group-hover:opacity-100 hover:text-rose-400 focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:outline-none"
+              >
+                <Trash2 className="size-3.5" aria-hidden />
+              </button>
+            </span>
+          </>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -779,8 +981,15 @@ function SidebarBody(p: SidebarBodyProps) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto rea-scroll">
+        {/* Pinned chats */}
+        {p.sessionsLoaded && shownPinned.length > 0 && (
+          <SidebarSection icon={Pin} label={`Pinned${q ? ` (${shownPinned.length})` : ""}`}>
+            {shownPinned.map(renderSessionRow)}
+          </SidebarSection>
+        )}
+
         {/* Chats */}
-        <SidebarSection icon={MessagesSquare} label={`Chats${q ? ` (${shownSessions.length})` : ""}`}>
+        <SidebarSection icon={MessagesSquare} label={`Chats${q ? ` (${shownChats.length})` : ""}`}>
           {!p.sessionsLoaded ? (
             <div className="space-y-1.5 px-2 py-1">
               <div className="h-6 animate-pulse rounded bg-zinc-900" />
@@ -790,124 +999,12 @@ function SidebarBody(p: SidebarBodyProps) {
             <p className="px-2 py-1 text-[11px] leading-relaxed text-zinc-600">
               No chats yet. Ask anything, or pick a file below.
             </p>
-          ) : shownSessions.length === 0 ? (
+          ) : matchSessions.length === 0 ? (
             <p className="px-2 py-1 font-mono text-[10px] text-zinc-600">
               no chats match “{search.trim()}”
             </p>
           ) : (
-            shownSessions.map((s) => {
-              const active = s.id === p.activeSessionId && !p.draftTargetId;
-              const renaming = p.renamingSession?.id === s.id;
-              return (
-                <div
-                  key={s.id}
-                  className={cn(
-                    "group relative flex items-center gap-1.5 rounded-md pr-1 transition-colors",
-                    active ? "bg-zinc-800/80" : "hover:bg-zinc-900"
-                  )}
-                >
-                  {/* Active accent (VSCode-style left bar) */}
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "absolute top-1 bottom-1 left-0 w-0.5 rounded-full transition-opacity",
-                      active ? "bg-emerald-500 opacity-90" : "opacity-0"
-                    )}
-                  />
-                  {renaming ? (
-                    <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-1">
-                      <input
-                        autoFocus
-                        value={p.renameValue}
-                        onChange={(e) => p.setRenameValue(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            void p.onCommitRename();
-                          } else if (e.key === "Escape") {
-                            e.preventDefault();
-                            p.onCancelRename();
-                          }
-                        }}
-                        aria-label="Rename chat"
-                        maxLength={120}
-                        className="h-6 min-w-0 flex-1 rounded border border-emerald-500/40 bg-zinc-950 px-1.5 font-mono text-[11px] text-zinc-100 focus-visible:outline-none"
-                      />
-                      <button
-                        type="button"
-                        aria-label="Save chat name"
-                        onClick={() => void p.onCommitRename()}
-                        className="rounded p-1 text-emerald-400 hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                      >
-                        <Check className="size-3.5" aria-hidden />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Cancel renaming"
-                        onClick={p.onCancelRename}
-                        className="rounded p-1 text-zinc-500 hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                      >
-                        <X className="size-3.5" aria-hidden />
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => p.onOpenSession(s.id)}
-                        aria-current={active ? "true" : undefined}
-                        className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                      >
-                        {s.targetId ? (
-                          <Binary className="size-3.5 shrink-0 text-emerald-500/80" aria-hidden />
-                        ) : (
-                          <MessageSquare className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
-                        )}
-                        <span className="min-w-0 flex-1">
-                          <span
-                            className={cn(
-                              "block truncate text-xs",
-                              active ? "text-zinc-100" : "text-zinc-400"
-                            )}
-                          >
-                            {s.title || "New chat"}
-                          </span>
-                          <span className="block truncate text-[10px] text-zinc-600">
-                            {s.targetName ? `${s.targetName} · ` : ""}
-                            {s.messageCount > 0 ? `${s.messageCount} msg · ` : ""}
-                            {timeAgo(s.updatedAt)}
-                          </span>
-                        </span>
-                      </button>
-                      <span className="flex shrink-0 items-center opacity-0 transition-all group-hover:opacity-100 focus-within:opacity-100">
-                        <button
-                          type="button"
-                          aria-label={`Rename chat: ${s.title}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            p.onStartRename(s);
-                          }}
-                          className="rounded p-1 text-zinc-600 transition-colors hover:text-emerald-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                        >
-                          <Pencil className="size-3.5" aria-hidden />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={`Delete chat: ${s.title}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            p.onDeleteSession(s);
-                          }}
-                          className="rounded p-1 text-zinc-600 transition-colors hover:text-rose-400 focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:outline-none"
-                        >
-                          <Trash2 className="size-3.5" aria-hidden />
-                        </button>
-                      </span>
-                    </>
-                  )}
-                </div>
-              );
-            })
+            shownChats.map(renderSessionRow)
           )}
         </SidebarSection>
 
@@ -961,6 +1058,14 @@ function SidebarBody(p: SidebarBodyProps) {
                     <span className="flex items-center gap-1.5 text-[10px] text-zinc-600">
                       <FormatBadge format={t.detectedFormat} className="scale-90" />
                       {humanBytes(t.sizeBytes)}
+                      <span
+                        aria-label={`Analysis status: ${t.status}`}
+                        title={`analysis: ${t.status}`}
+                        className={cn(
+                          "size-1.5 shrink-0 rounded-full",
+                          targetStatusDot(t.status)
+                        )}
+                      />
                     </span>
                   </span>
                 </button>
@@ -1027,6 +1132,23 @@ function SidebarSection({
       <div className="flex flex-col gap-0.5">{children}</div>
     </section>
   );
+}
+
+/** Sidebar status dot for a file's analysis state. */
+function targetStatusDot(status: string): string {
+  switch (status) {
+    case "analyzed":
+    case "completed":
+      return "bg-emerald-500";
+    case "failed":
+      return "bg-rose-500";
+    case "queued":
+    case "analyzing":
+    case "running":
+      return "animate-pulse bg-amber-400";
+    default:
+      return "bg-zinc-600";
+  }
 }
 
 // ---------------------------------------------------------------------------

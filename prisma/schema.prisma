@@ -104,11 +104,12 @@ model ChatSession {
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   title     String   @default("New investigation")
+  pinned    Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
   messages  ChatMessage[]
 
-  @@index([userId, updatedAt])
+  @@index([userId, pinned, updatedAt])
   @@index([targetId])
 }
 

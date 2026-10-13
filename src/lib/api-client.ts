@@ -125,6 +125,7 @@ export interface SessionSummary {
   id: string;
   title: string;
   targetId: string | null;
+  pinned: boolean;
   targetName: string | null;
   detectedFormat: string | null;
   messageCount: number;
@@ -216,7 +217,7 @@ export type ChatStreamEvent =
 // Chat sessions
 // ---------------------------------------------------------------------------
 
-/** GET /api/chat — list the signed-in user's sessions, newest first. */
+/** GET /api/chat — list the signed-in user's sessions, pinned first. */
 export async function listChatSessions(): Promise<SessionSummary[]> {
   const res = await apiGet<{ sessions: SessionSummary[] }>("/api/chat");
   return res.sessions;
@@ -240,6 +241,23 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
 /** PATCH /api/chat?sessionId= — rename a session. */
 export async function renameChatSession(sessionId: string, title: string): Promise<void> {
   await apiPatch(`/api/chat?sessionId=${encodeURIComponent(sessionId)}`, { title });
+}
+
+/** PATCH /api/chat?sessionId= — pin or unpin a session. */
+export async function setChatSessionPinned(sessionId: string, pinned: boolean): Promise<void> {
+  await apiPatch(`/api/chat?sessionId=${encodeURIComponent(sessionId)}`, { pinned });
+}
+
+/** POST /api/chat/fork — branch a new chat that copies history up to a message. */
+export async function forkChatSession(
+  sessionId: string,
+  messageId: string
+): Promise<SessionSummary> {
+  const res = await apiPost<{ session: SessionSummary }>("/api/chat/fork", {
+    sessionId,
+    messageId,
+  });
+  return res.session;
 }
 
 // ---------------------------------------------------------------------------

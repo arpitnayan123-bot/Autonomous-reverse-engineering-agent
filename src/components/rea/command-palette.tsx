@@ -10,6 +10,8 @@ import {
   MonitorDot,
   PanelLeft,
   PanelRight,
+  Pin,
+  PinOff,
   Plus,
   Upload,
 } from "lucide-react";
@@ -38,6 +40,8 @@ export interface CommandPaletteActions {
   onExportChat: () => void;
   onExportReport: () => void;
   onLogout: () => void;
+  /** Pin/unpin the active chat (optional — hidden when absent). */
+  onTogglePinCurrent?: () => void;
 }
 
 const GROUP_HEADING_CLS =
@@ -123,6 +127,13 @@ export function CommandPalette({
               icon={Download}
               label="Export chat as Markdown"
               onSelect={() => run(actions.onExportChat)}
+            />
+          )}
+          {activeSession && actions.onTogglePinCurrent && (
+            <Item
+              icon={activeSession.pinned ? PinOff : Pin}
+              label={activeSession.pinned ? "Unpin current chat" : "Pin current chat"}
+              onSelect={() => run(actions.onTogglePinCurrent!)}
             />
           )}
           {(inspectorTargetId ?? activeSession?.targetId) && (
@@ -236,7 +247,9 @@ function ChatItem({
       onSelect={onSelect}
       className="gap-2.5 rounded-md px-2.5 text-xs aria-selected:bg-zinc-800/80 aria-selected:text-zinc-100"
     >
-      {session.targetId ? (
+      {session.pinned ? (
+        <Pin className="shrink-0 text-amber-400" aria-hidden />
+      ) : session.targetId ? (
         <Binary className="shrink-0 text-emerald-500/80" aria-hidden />
       ) : (
         <MessagesSquare className="shrink-0 text-zinc-500" aria-hidden />
