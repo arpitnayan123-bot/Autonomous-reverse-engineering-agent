@@ -135,6 +135,7 @@ interface ExtractedPage {
   status: number;
   title: string | null;
   description: string | null;
+  headings: { h1: string[]; h2: string[]; h3: string[] };
   textExcerpt: string | null;
   links: Array<{ href: string; text: string }>;
   tech: TechSignal[];
@@ -156,16 +157,91 @@ function extractPage(res: { url: string; status: number; headers: Record<string,
     links.push({ href, text: textAttr });
     if (links.length >= MAX_LINKS_PER_PAGE) break;
   }
+  const headings: ExtractedPage["headings"] = { h1: [], h2: [], h3: [] };
+  for (const tag of ["h1", "h2", "h3"] as const) {
+    for (const el of $(tag).toArray().slice(0, 12)) {
+      const t = $(el).text().replace(/\s+/g, " ").trim().slice(0, 160);
+      if (t) headings[tag].push(t);
+    }
+  }
   const tech = [...fingerprintHeaders(res.headers), ...fingerprintMarkup(cheerio.load(html), html)];
   return {
     url: res.url,
     status: res.status,
     title: $("title").first().text().trim().slice(0, 200) || null,
     description: $('meta[name="description"]').attr("content")?.trim().slice(0, 300) || null,
+    headings,
     textExcerpt: text.slice(0, EXTRACT_BUDGET) || null,
     links,
     tech,
     contentHash: createHash("sha256").update(res.body).digest("hex"),
+  };
+}
+
+// --- Single-page probe (chat agent / lightweight inspection) ---------------
+
+export interface ProbeResult {
+  requestUrl: string;
+  finalUrl: string; // after redirects
+  status: number;
+  ms: number;
+  contentType: string;
+  title: string | null;
+  description: string | null;
+  headings: { h1: string[]; h2: string[]; h3: string[] };
+  links: Array<{ href: string; text: string }>;
+  tech: string[];
+  textExcerpt: string | null;
+  contentHash: string;
+}
+
+export const PROBE_TIMEOUT_MS = 12_000;
+export const PROBE_MAX_BYTES = 1024 * 1024; // 1 MB — chat probes stay light
+const PROBE_TEXT_BUDGET = 1_200; // visible-text excerpt chars
+
+/**
+ * Fetch and extract ONE public page — the Explorer's capability in a single
+ * call, with no project and no database writes. The full SSRF guard applies
+ * (scheme allowlist, private-IP DNS checks, metadata-host blocklist, size
+ * cap, timeout, re-validated redirects). Throws BlockedUrlError for refused
+ * URLs; network/DNS failures propagate as thrown errors with real messages.
+ */
+export async function probeUrl(
+  rawUrl: string,
+  opts?: { timeoutMs?: number; maxBytes?: number; includeText?: boolean }
+): Promise<ProbeResult> {
+  const res = await safeFetch(rawUrl, {
+    timeoutMs: opts?.timeoutMs ?? PROBE_TIMEOUT_MS,
+    maxBytes: opts?.maxBytes ?? PROBE_MAX_BYTES,
+  });
+  const base: ProbeResult = {
+    requestUrl: rawUrl,
+    finalUrl: res.url,
+    status: res.status,
+    ms: res.ms,
+    contentType: res.contentType,
+    title: null,
+    description: null,
+    headings: { h1: [], h2: [], h3: [] },
+    links: [],
+    tech: fingerprintHeaders(res.headers).map((t) => t.name),
+    textExcerpt: null,
+    contentHash: createHash("sha256").update(res.body).digest("hex"),
+  };
+  const ct = res.contentType.toLowerCase();
+  if (!ct.includes("html") && !ct.includes("xhtml")) return base; // non-HTML: headers observed, body not parsed
+  const page = extractPage({ ...res });
+  if (!page) return base;
+  return {
+    ...base,
+    title: page.title,
+    description: page.description,
+    headings: page.headings,
+    links: page.links,
+    tech: [...new Set([...base.tech, ...page.tech.map((t) => t.name)])],
+    textExcerpt:
+      opts?.includeText === false ? null : page.textExcerpt?.slice(0, PROBE_TEXT_BUDGET) || null,
+    contentHash: page.contentHash,
   };
 }
 
