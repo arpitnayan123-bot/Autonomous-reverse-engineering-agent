@@ -1,37 +1,40 @@
 "use client";
 
 import * as React from "react";
-import { motion } from "framer-motion";
 import {
   ArrowRight,
-  ArrowUpRight,
   Binary,
-  Command,
   FileUp,
   Github,
   KeyRound,
-  MessageSquarePlus,
-  MessagesSquare,
-  MonitorDot,
+  MessageSquare,
+  Paperclip,
   ScanSearch,
-  ShieldCheck,
-  Star,
+  SendHorizontal,
   Zap,
 } from "lucide-react";
 
-import { estimateCostUsd, formatCostUsd } from "@/lib/pricing";
 import { useReaStore } from "@/store/rea-store";
 import { cn } from "@/lib/utils";
-import { FormatBadge, humanBytes, humanTokens, timeAgo } from "@/components/rea/shared";
+import { MAX_MESSAGE_CHARS } from "@/components/rea/chat-limits";
+import { SlashMenu, filterPrompts, slashTokenOf, type PromptEntry } from "@/components/rea/prompt-library";
+import { FormatBadge, humanBytes, timeAgo, toastError } from "@/components/rea/shared";
+import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
 
 // ---------------------------------------------------------------------------
-// HomeDashboard — the app "homepage": the empty state of a fresh free chat.
-// Every tile is live-wired to the same store data the sidebar/status bar use,
-// so the dashboard is always in sync with reality (no stale mock numbers).
+// HomeDashboard — the first screen after sign-in (empty state of a free chat).
+//
+// Design brief: composer-first and restrained. One prominent prompt composer,
+// a few suggested tasks, recent investigations, and quiet status/credit lines.
+// Everything the user already has elsewhere (full stats, quick actions, engine
+// diagnostics) lives in the sidebar, palette, status bar and dialogs — this
+// screen only needs to answer "how do I start?".
 // ---------------------------------------------------------------------------
 
 const REA_REPO_URL = "https://github.com/morluto/rea";
 
+/** A small number of relevant suggested tasks (kept deliberately short). */
 const STARTERS = [
   "What file formats can REA analyze?",
   "How do I start reverse engineering an unknown binary?",
@@ -39,44 +42,112 @@ const STARTERS = [
   "What is the safest way to analyze a suspicious file?",
 ];
 
-const fadeUp = {
-  hidden: { opacity: 0, y: 10 },
-  show: (i: number) => ({
-    opacity: 1,
-    y: 0,
-    transition: { duration: 0.28, ease: "easeOut" as const, delay: i * 0.05 },
-  }),
-};
-
 export function HomeDashboard({
   hasKey,
   onSuggest,
+  onAttachFile,
 }: {
   hasKey: boolean | null;
   onSuggest: (text: string) => void;
+  /** Opens the file picker (upload → auto-analyze → file-bound draft chat). */
+  onAttachFile?: () => void;
 }) {
   const sessions = useReaStore((s) => s.sessions);
   const targets = useReaStore((s) => s.targets);
   const capabilities = useReaStore((s) => s.capabilities);
   const providerActive = useReaStore((s) => s.providerActive);
-  const chatQuota = useReaStore((s) => s.chatQuota);
   const openSession = useReaStore((s) => s.openSession);
   const openInspector = useReaStore((s) => s.openInspector);
   const setDialog = useReaStore((s) => s.setDialog);
   const setPaletteOpen = useReaStore((s) => s.setPaletteOpen);
-  const setShortcutsOpen = useReaStore((s) => s.setShortcutsOpen);
-  const newFreeChat = useReaStore((s) => s.newFreeChat);
 
   const engine = capabilities?.engine ?? null;
-  const recentChats = React.useMemo(() => sessions.slice(0, 4), [sessions]);
-  const recentFiles = React.useMemo(() => targets.slice(0, 4), [targets]);
+  const recentChats = React.useMemo(() => sessions.slice(0, 3), [sessions]);
+  const recentFiles = React.useMemo(() => targets.slice(0, 3), [targets]);
 
-  // Session-scope cost rollup across visible chats (sum of per-chat estimates).
-  const visibleCost = React.useMemo(
-    () => sessions.reduce((acc, s) => acc + (s.costUsd ?? 0), 0),
-    [sessions]
-  );
-  const visibleCostLabel = formatCostUsd(visibleCost > 0 ? visibleCost : null);
+  // ---- Home composer (the entry point; the docked composer takes over
+  // after the first message) ------------------------------------------------
+  const [input, setInput] = React.useState("");
+  const [slashIndex, setSlashIndex] = React.useState(0);
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const slashToken = slashTokenOf(input);
+  const slashEntries = React.useMemo(() => filterPrompts("free", slashToken), [slashToken]);
+  const slashOpen = slashToken !== null && slashEntries.length > 0;
+
+  React.useEffect(() => setSlashIndex(0), [input]);
+
+  // Auto-resize (same behavior as the docked composer).
+  React.useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [input]);
+
+  // Focus on mount (desktop only — on phones an autofocus pops the keyboard
+  // over the suggestions before the user has read anything).
+  React.useEffect(() => {
+    if (window.matchMedia("(min-width: 640px)").matches) {
+      textareaRef.current?.focus();
+    }
+  }, []);
+
+  // Cursor-style: start typing anywhere on Home and it lands in the composer.
+  const onHomeKeyDown = (e: React.KeyboardEvent) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const el = e.target as HTMLElement | null;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+    if (e.key.length === 1 && e.key !== " ") {
+      // Focus before the default insert so the character lands in the composer.
+      textareaRef.current?.focus();
+    }
+  };
+
+  const send = () => {
+    const message = input.trim();
+    if (!message) return;
+    if (message.length > MAX_MESSAGE_CHARS) {
+      toastError(new Error(`Message too long (${message.length}/${MAX_MESSAGE_CHARS} characters). Trim it first.`));
+      return;
+    }
+    setInput("");
+    onSuggest(message);
+  };
+
+  const pickPrompt = React.useCallback((entry: PromptEntry) => {
+    setInput(entry.prompt);
+    textareaRef.current?.focus();
+  }, []);
+
+  const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex((i) => (i + 1) % slashEntries.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex((i) => (i - 1 + slashEntries.length) % slashEntries.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const picked = slashEntries[slashIndex] ?? slashEntries[0];
+        if (picked) pickPrompt(picked);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setInput("");
+        return;
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  };
 
   const totalMessages = React.useMemo(
     () => sessions.reduce((acc, s) => acc + s.messageCount, 0),
@@ -84,428 +155,281 @@ export function HomeDashboard({
   );
 
   return (
-    <div className="relative min-h-full overflow-hidden">
-      {/* ---------- ambient background: grid + glow + scanline ---------- */}
-      <div aria-hidden className="rea-home-bg pointer-events-none absolute inset-0">
-        <div className="rea-home-glow" />
-        <div className="rea-home-grid" />
-        <div className="rea-home-scan" />
-      </div>
+    <div className="min-h-full" onKeyDown={onHomeKeyDown}>
+      <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pt-[9vh] pb-8 sm:px-6">
+        {/* ===================== Greeting + composer ===================== */}
+        <h1 className="text-balance text-xl font-semibold tracking-tight text-zinc-100 sm:text-2xl">
+          What are we investigating?
+        </h1>
+        <p className="mt-1.5 text-pretty text-[13px] leading-relaxed text-zinc-500">
+          Ask anything, attach a file, or press{" "}
+          <kbd className="rounded border border-zinc-800 bg-zinc-900 px-1 py-px font-mono text-[10px] text-zinc-400">
+            /
+          </kbd>{" "}
+          for prompts. File chats run the real REA engine and grade every claim.
+        </p>
 
-      <div className="relative mx-auto w-full max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
-        {/* ============================ Hero ============================ */}
-        <motion.header
-          variants={fadeUp}
-          custom={0}
-          initial="hidden"
-          animate="show"
-          className="text-center"
-        >
-          <div className="mx-auto mb-4 flex w-fit items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/70 py-1 pl-1 pr-3 shadow-[0_0_24px_rgb(16_185_129/0.08)] backdrop-blur">
-            <span className="grid size-7 place-items-center rounded-full border border-emerald-500/40 bg-emerald-500/10">
-              <Binary className="size-3.5 text-emerald-400" aria-hidden />
-            </span>
-            <span className="font-mono text-[11px] tracking-[0.22em] text-zinc-400">
-              REA&nbsp;
-              <span className="text-zinc-600">·</span>
-              <span className="ml-1.5 text-zinc-500">REVERSE ENGINEER ANYTHING</span>
-            </span>
-          </div>
-
-          <h1 className="text-balance text-2xl font-semibold tracking-tight text-zinc-100 sm:text-[28px]">
-            Your reverse-engineering{" "}
-            <span className="bg-gradient-to-r from-emerald-300 via-emerald-400 to-teal-300 bg-clip-text text-transparent">
-              workspace
-            </span>
-          </h1>
-          <p className="mx-auto mt-2 max-w-md text-pretty text-[13px] leading-relaxed text-zinc-500">
-            Chat with a real binary-analysis agent. Attach a file and it runs the actual REA
-            engine — every claim graded with evidence.
-          </p>
-
-          {/* live engine + model chips */}
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-            {engine && (
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[10px]",
-                  engine.healthy
-                    ? "border-emerald-500/25 bg-emerald-500/5 text-emerald-300"
-                    : "border-rose-500/25 bg-rose-500/5 text-rose-300"
-                )}
-                title={engine.detail ?? "REA engine status"}
-              >
-                <span className="relative flex size-1.5">
-                  {engine.healthy && (
-                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-                  )}
-                  <span
-                    className={cn(
-                      "relative inline-flex size-1.5 rounded-full",
-                      engine.healthy ? "bg-emerald-400" : "bg-rose-400"
-                    )}
-                  />
-                </span>
-                engine v{engine.version} · {engine.toolCount} tools
-              </span>
+        {/* --- Prominent composer --- */}
+        <div className="relative mt-4">
+          <SlashMenu
+            visible={slashOpen}
+            entries={slashEntries}
+            activeIndex={slashIndex}
+            onPick={pickPrompt}
+            onHover={setSlashIndex}
+          />
+          <div
+            className={cn(
+              "rounded-xl border border-zinc-800 bg-zinc-900/70 shadow-lg shadow-black/20 transition-all duration-200",
+              "focus-within:border-emerald-500/40 focus-within:bg-zinc-900 focus-within:shadow-[0_0_0_1px_rgba(16,185,129,0.18)]"
             )}
-            <span
-              className="inline-flex items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-900/60 px-2.5 py-1 font-mono text-[10px] text-zinc-400"
-              title={providerActive ? "Running on your own API key" : "Running on the built-in platform model"}
-            >
-              <Zap className="size-3 text-amber-400/80" aria-hidden />
-              {providerActive ? `${providerActive.provider}/${providerActive.model}` : "platform model"}
-            </span>
-            {hasKey === false && (
-              <button
+          >
+            <Textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={onComposerKeyDown}
+              rows={2}
+              placeholder="Describe what you want to investigate…"
+              aria-label="Start an investigation"
+              className="max-h-[200px] resize-none border-0 bg-transparent px-4 pt-3.5 pb-1 text-sm text-zinc-100 placeholder:text-zinc-600 focus-visible:ring-0"
+            />
+            <div className="flex items-center gap-2 px-3 pb-2.5">
+              {onAttachFile && (
+                <button
+                  type="button"
+                  onClick={onAttachFile}
+                  aria-label="Attach a file to investigate (upload)"
+                  title="Attach a file — uploads, auto-analyzes, and starts a tool-driven chat"
+                  className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-950/60 px-2 text-[11px] text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                >
+                  <FileUp className="size-3.5" aria-hidden />
+                  <span className="hidden sm:inline">Attach file</span>
+                </button>
+              )}
+              <span className="ml-auto hidden font-mono text-[10px] text-zinc-600 sm:inline">
+                Enter to send · Shift+Enter for a new line
+              </span>
+              <Button
                 type="button"
-                onClick={() => setDialog("settings")}
-                className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/25 bg-amber-500/5 px-2.5 py-1 font-mono text-[10px] text-amber-300 transition-colors hover:bg-amber-500/15"
+                size="sm"
+                onClick={send}
+                disabled={!input.trim() || input.length > MAX_MESSAGE_CHARS}
+                aria-label="Start the investigation"
+                className="h-7 gap-1.5 bg-emerald-600 px-3 text-xs text-white hover:bg-emerald-500 disabled:opacity-40"
               >
-                <KeyRound className="size-3" aria-hidden />
-                add your API key
-                <ArrowUpRight className="size-3" aria-hidden />
-              </button>
-            )}
-          </div>
-        </motion.header>
-
-        {/* ======================= Stat cards ======================= */}
-        <motion.section
-          variants={fadeUp}
-          custom={1}
-          initial="hidden"
-          animate="show"
-          aria-label="Workspace stats"
-          className="mt-7 grid grid-cols-2 gap-2.5 sm:grid-cols-4"
-        >
-          <StatCard
-            icon={MessagesSquare}
-            label="chats"
-            value={String(sessions.length)}
-            detail={`${totalMessages} messages`}
-            onClick={() => {
-              newFreeChat();
-              setPaletteOpen(true);
-            }}
-            hint="Browse chats (⌘K)"
-          />
-          <StatCard
-            icon={FileUp}
-            label="files"
-            value={String(targets.length)}
-            detail={targets.length > 0 ? `latest ${timeAgo(targets[0].createdAt)}` : "none uploaded yet"}
-            onClick={() => {
-              if (targets.length > 0) openInspector(targets[0].id);
-              else setDialog("settings");
-            }}
-            hint={targets.length > 0 ? "Inspect latest file" : "Upload from the sidebar"}
-          />
-          <StatCard
-            icon={ScanSearch}
-            label="engine tools"
-            value={engine ? String(engine.toolCount) : "—"}
-            detail={engine ? `v${engine.version} ${engine.healthy ? "· ready" : "· degraded"}` : "probing…"}
-            onClick={() => setDialog("system")}
-            hint="Engine & security"
-          />
-          <StatCard
-            icon={ShieldCheck}
-            label="msg quota"
-            value={chatQuota ? `${chatQuota.remaining}/${chatQuota.limit}` : "—"}
-            detail={chatQuota ? "per 5-minute window" : "resets on first message"}
-            onClick={() => setShortcutsOpen(true)}
-            hint="Rate-limit info (?)"
-          />
-        </motion.section>
-
-        {/* ================== Recent chats + files ================== */}
-        <motion.section
-          variants={fadeUp}
-          custom={2}
-          initial="hidden"
-          animate="show"
-          className="mt-3 grid grid-cols-1 gap-2.5 sm:mt-4 md:grid-cols-2"
-        >
-          {/* -------- Recent chats -------- */}
-          <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 backdrop-blur">
-            <div className="flex items-center justify-between border-b border-zinc-800/60 px-3.5 py-2.5">
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
-                Recent chats
-              </p>
-              <span className="font-mono text-[10px] tabular-nums text-zinc-600">
-                {sessions.length}
-              </span>
+                <SendHorizontal className="size-3" aria-hidden />
+                Send
+              </Button>
             </div>
-            <ul className="p-1.5">
-              {recentChats.length === 0 && (
-                <li className="px-2.5 py-3 text-xs text-zinc-600">
-                  No chats yet — send your first message below.
-                </li>
-              )}
-              {recentChats.map((chat) => (
-                <li key={chat.id}>
-                  <button
-                    type="button"
-                    onClick={() => openSession(chat.id)}
-                    className="group flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-zinc-800/50 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                  >
-                    <MessageSquarePlus
-                      className="size-3.5 shrink-0 text-zinc-600 transition-colors group-hover:text-emerald-400"
-                      aria-hidden
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs text-zinc-300 group-hover:text-zinc-100">
-                        {chat.title || "Untitled chat"}
-                      </span>
-                      <span className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
-                        {chat.targetName && (
-                          <span className="max-w-[90px] truncate text-emerald-500/70">
-                            {chat.targetName}
-                          </span>
-                        )}
-                        <span>{chat.messageCount} msg</span>
-                        <span>·</span>
-                        <span>{timeAgo(chat.updatedAt)}</span>
-                        {chat.costUsd != null && chat.costUsd > 0 && (
-                          <>
-                            <span>·</span>
-                            <span className="text-amber-500/70">~{formatCostUsd(chat.costUsd)}</span>
-                          </>
-                        )}
-                      </span>
-                    </span>
-                    <ArrowRight
-                      className="size-3.5 shrink-0 -translate-x-1 text-zinc-700 opacity-0 transition-all group-hover:translate-x-0 group-hover:text-zinc-400 group-hover:opacity-100"
-                      aria-hidden
-                    />
-                  </button>
-                </li>
-              ))}
-            </ul>
           </div>
 
-          {/* -------- Recent files -------- */}
-          <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 backdrop-blur">
-            <div className="flex items-center justify-between border-b border-zinc-800/60 px-3.5 py-2.5">
-              <p className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
-                Recent files
-              </p>
-              <span className="font-mono text-[10px] tabular-nums text-zinc-600">
-                {targets.length}
+          {/* BYOK hint — only when the platform model is in use. */}
+          {hasKey === false && (
+            <button
+              type="button"
+              onClick={() => setDialog("settings")}
+              className="mt-2 flex w-full items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-left text-[11px] text-amber-300/90 transition-colors hover:bg-amber-500/10 focus-visible:ring-2 focus-visible:ring-amber-500/50 focus-visible:outline-none"
+            >
+              <KeyRound className="size-3.5 shrink-0" aria-hidden />
+              <span className="flex-1">
+                Running on the built-in platform model. Add your own API key for full control.
               </span>
-            </div>
-            <ul className="p-1.5">
-              {recentFiles.length === 0 && (
-                <li className="px-2.5 py-3 text-xs text-zinc-600">
-                  No files yet — upload one from the sidebar to start a tool-driven chat.
-                </li>
-              )}
-              {recentFiles.map((file) => (
-                <li key={file.id}>
-                  <button
-                    type="button"
-                    onClick={() => openInspector(file.id)}
-                    className="group flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-zinc-800/50 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                  >
-                    <span className="shrink-0">
-                      <FormatBadge format={file.detectedFormat} className="text-[9px]" />
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-xs text-zinc-300 group-hover:text-zinc-100">
-                        {file.originalName}
-                      </span>
-                      <span className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
-                        <span>{humanBytes(file.sizeBytes)}</span>
-                        <span>·</span>
-                        <span>{timeAgo(file.createdAt)}</span>
-                        {file.lastRun && (
-                          <>
-                            <span>·</span>
-                            <span className="text-emerald-500/70">{file.lastRun.status}</span>
-                          </>
-                        )}
-                      </span>
-                    </span>
-                    <ArrowRight
-                      className="size-3.5 shrink-0 -translate-x-1 text-zinc-700 opacity-0 transition-all group-hover:translate-x-0 group-hover:text-zinc-400 group-hover:opacity-100"
-                      aria-hidden
-                    />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </motion.section>
+              <span className="font-mono text-[10px] text-amber-400">ADD KEY</span>
+            </button>
+          )}
+        </div>
 
-        {/* ===================== Quick actions ===================== */}
-        <motion.section
-          variants={fadeUp}
-          custom={3}
-          initial="hidden"
-          animate="show"
-          aria-label="Quick actions"
-          className="mt-3 grid grid-cols-2 gap-2.5 sm:mt-4 sm:grid-cols-4"
-        >
-          <QuickAction icon={MessageSquarePlus} label="New chat" kbd="⌘⇧O" onClick={() => newFreeChat()} />
-          <QuickAction icon={KeyRound} label="API key" kbd="" onClick={() => setDialog("settings")} />
-          <QuickAction icon={MonitorDot} label="Engine" kbd="" onClick={() => setDialog("system")} />
-          <QuickAction icon={Command} label="Palette" kbd="⌘K" onClick={() => setPaletteOpen(true)} />
-        </motion.section>
-
-        {/* ================== Starter prompts ================== */}
-        <motion.section
-          variants={fadeUp}
-          custom={4}
-          initial="hidden"
-          animate="show"
-          aria-label="Starter prompts"
-          className="mt-5 sm:mt-6"
-        >
-          <p className="mb-2.5 text-center font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-600">
-            try asking
-          </p>
-          <div className="flex flex-wrap items-center justify-center gap-2">
+        {/* ===================== Suggested tasks ===================== */}
+        <section aria-label="Suggested tasks" className="mt-6">
+          <div className="flex flex-wrap gap-2">
             {STARTERS.map((s) => (
               <button
                 key={s}
                 type="button"
                 onClick={() => onSuggest(s)}
-                className="rounded-full border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-400 transition-all hover:-translate-y-px hover:border-emerald-500/30 hover:bg-zinc-900 hover:text-zinc-200 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                className="rounded-full border border-zinc-800 bg-zinc-900/50 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-200 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
               >
                 {s}
               </button>
             ))}
           </div>
-          {visibleCostLabel && (
-            <p className="mt-4 text-center font-mono text-[10px] text-zinc-700">
-              est. spend across {sessions.length} chats:{" "}
-              <span className="text-amber-500/80">~{visibleCostLabel}</span>
-              {totalMessages > 0 && (
-                <>
-                  {" "}· {humanTokens(totalMessages)} messages
-                </>
-              )}
-            </p>
-          )}
-        </motion.section>
+        </section>
 
-        {/* ==================== REA repo credit ==================== */}
-        <motion.section
-          variants={fadeUp}
-          custom={5}
-          initial="hidden"
-          animate="show"
-          className="mt-6 sm:mt-8"
+        {/* ===================== Recent activity ===================== */}
+        <section
+          aria-label="Recent investigations and files"
+          className="mt-10 grid grid-cols-1 gap-x-8 gap-y-4 md:grid-cols-2"
         >
+          {/* Investigations */}
+          <div className="min-w-0">
+            <div className="flex items-baseline justify-between border-b border-zinc-800/70 pb-1.5">
+              <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                Recent investigations
+              </h2>
+              {sessions.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setPaletteOpen(true)}
+                  aria-label="Browse all chats in the command palette"
+                  className="rounded px-1 font-mono text-[10px] text-zinc-600 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                >
+                  all {sessions.length} →
+                </button>
+              )}
+            </div>
+            {recentChats.length === 0 ? (
+              <p className="pt-2.5 text-xs leading-relaxed text-zinc-600">
+                No chats yet — your investigations will appear here.
+              </p>
+            ) : (
+              <ul>
+                {recentChats.map((chat) => (
+                  <li key={chat.id}>
+                    <button
+                      type="button"
+                      onClick={() => openSession(chat.id)}
+                      className="group flex w-full items-center gap-2.5 border-b border-zinc-800/40 px-1 py-2 text-left transition-colors last:border-b-0 hover:bg-zinc-900/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                    >
+                      <MessageSquare className="size-3.5 shrink-0 text-zinc-600 transition-colors group-hover:text-emerald-400" aria-hidden />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs text-zinc-300 group-hover:text-zinc-100">
+                          {chat.title || "Untitled chat"}
+                        </span>
+                        <span className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
+                          {chat.targetName && (
+                            <span className="max-w-[90px] truncate text-emerald-500/70">{chat.targetName}</span>
+                          )}
+                          <span>{chat.messageCount} msg</span>
+                          <span>·</span>
+                          <span>{timeAgo(chat.updatedAt)}</span>
+                        </span>
+                      </span>
+                      <ArrowRight
+                        className="size-3.5 shrink-0 -translate-x-1 text-zinc-700 opacity-0 transition-all group-hover:translate-x-0 group-hover:text-zinc-400 group-hover:opacity-100"
+                        aria-hidden
+                      />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Files */}
+          <div className="min-w-0">
+            <div className="flex items-baseline justify-between border-b border-zinc-800/70 pb-1.5">
+              <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                Files
+              </h2>
+              {onAttachFile && (
+                <button
+                  type="button"
+                  onClick={onAttachFile}
+                  aria-label="Upload a file to investigate"
+                  className="rounded px-1 font-mono text-[10px] text-zinc-600 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                >
+                  upload →
+                </button>
+              )}
+            </div>
+            {recentFiles.length === 0 ? (
+              <p className="pt-2.5 text-xs leading-relaxed text-zinc-600">
+                Nothing uploaded yet. Drop a binary anywhere, or use{" "}
+                <button
+                  type="button"
+                  onClick={onAttachFile}
+                  className="font-mono text-[11px] text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                >
+                  attach file
+                </button>
+                .
+              </p>
+            ) : (
+              <ul>
+                {recentFiles.map((file) => (
+                  <li key={file.id}>
+                    <button
+                      type="button"
+                      onClick={() => openInspector(file.id)}
+                      className="group flex w-full items-center gap-2.5 border-b border-zinc-800/40 px-1 py-2 text-left transition-colors last:border-b-0 hover:bg-zinc-900/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                    >
+                      <FormatBadge format={file.detectedFormat} className="shrink-0 text-[9px]" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs text-zinc-300 group-hover:text-zinc-100">
+                          {file.originalName}
+                        </span>
+                        <span className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
+                          <span>{humanBytes(file.sizeBytes)}</span>
+                          <span>·</span>
+                          <span>{timeAgo(file.createdAt)}</span>
+                          {file.lastRun && (
+                            <>
+                              <span>·</span>
+                              <span className="text-emerald-500/70">{file.lastRun.status}</span>
+                            </>
+                          )}
+                        </span>
+                      </span>
+                      <ArrowRight
+                        className="size-3.5 shrink-0 -translate-x-1 text-zinc-700 opacity-0 transition-all group-hover:translate-x-0 group-hover:text-zinc-400 group-hover:opacity-100"
+                        aria-hidden
+                      />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </section>
+
+        {/* ================= Quiet status + credit ================= */}
+        <footer className="mt-auto pt-10">
+          {/* One quiet mono line instead of stat cards — each part still navigates. */}
+          <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5 font-mono text-[10px] text-zinc-600">
+            <span>
+              {sessions.length} chats{totalMessages > 0 ? ` · ${totalMessages} msgs` : ""} · {targets.length} files
+            </span>
+            <span aria-hidden className="text-zinc-800">·</span>
+            {engine && (
+              <button
+                type="button"
+                onClick={() => setDialog("system")}
+                title="Engine & security details"
+                className="inline-flex items-center gap-1 rounded px-1 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+              >
+                <ScanSearch className="size-3" aria-hidden />
+                engine v{engine.version} · {engine.toolCount} tools
+              </button>
+            )}
+            <span aria-hidden className="text-zinc-800">·</span>
+            <button
+              type="button"
+              onClick={() => setDialog("settings")}
+              title="Model & API key settings"
+              className="inline-flex items-center gap-1 rounded px-1 transition-colors hover:text-zinc-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+            >
+              <Zap className="size-3 text-amber-400/70" aria-hidden />
+              {providerActive ? `${providerActive.provider}/${providerActive.model}` : "platform model"}
+            </button>
+          </div>
+
           <a
             href={REA_REPO_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="group flex items-center gap-3.5 rounded-xl border border-zinc-800/80 bg-gradient-to-r from-zinc-900/80 via-zinc-900/50 to-zinc-900/80 px-4 py-3.5 transition-all hover:border-emerald-500/30 hover:shadow-[0_0_32px_rgb(16_185_129/0.07)] focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-            title="Open the REA repository on GitHub"
+            title="REA is open source (MIT) — github.com/morluto/rea"
+            className="mx-auto mt-3 flex w-fit items-center gap-1.5 rounded font-mono text-[10px] text-zinc-700 transition-colors hover:text-zinc-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
           >
-            <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-zinc-800 bg-zinc-950 transition-colors group-hover:border-emerald-500/40">
-              <Github className="size-4.5 text-zinc-300 transition-colors group-hover:text-emerald-300" aria-hidden />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                <span className="text-xs font-semibold text-zinc-200">
-                  Powered by REA — Reverse Engineer Anything
-                </span>
-                <span className="inline-flex items-center gap-1 rounded border border-zinc-800 bg-zinc-950 px-1 font-mono text-[9px] text-zinc-500">
-                  <Star className="size-2.5 text-amber-400/80" aria-hidden />
-                  MIT
-                </span>
-              </span>
-              <span className="mt-0.5 block truncate font-mono text-[10px] text-zinc-600 group-hover:text-zinc-500">
-                github.com/morluto/rea
-                {engine && <> · rea-agents v{engine.version} · {engine.toolCount} MCP tools</>}
-              </span>
-            </span>
-            <ArrowUpRight
-              className="size-4 shrink-0 text-zinc-600 transition-all group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-emerald-300"
-              aria-hidden
-            />
+            <Github className="size-3" aria-hidden />
+            Powered by REA — Reverse Engineer Anything · MIT
+            <span className="text-zinc-600">github.com/morluto/rea</span>
           </a>
-        </motion.section>
+          <span className="sr-only">
+            <Binary aria-hidden /> REA evidence-first reverse engineering workspace
+          </span>
+        </footer>
       </div>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Tiles
-// ---------------------------------------------------------------------------
-
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  detail,
-  onClick,
-  hint,
-}: {
-  icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" | "false" }>;
-  label: string;
-  value: string;
-  detail: string;
-  onClick: () => void;
-  hint: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={hint}
-      className="group relative overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-3 text-left backdrop-blur transition-all hover:-translate-y-px hover:border-zinc-700 hover:bg-zinc-900/70 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-    >
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -right-3 -top-3 size-14 rounded-full bg-emerald-500/5 opacity-0 blur-xl transition-opacity duration-300 group-hover:opacity-100"
-      />
-      <div className="flex items-center justify-between">
-        <Icon className="size-3.5 text-zinc-600 transition-colors group-hover:text-emerald-400" aria-hidden />
-        <ArrowUpRight
-          className="size-3 text-zinc-800 transition-all group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-zinc-500"
-          aria-hidden
-        />
-      </div>
-      <p className="mt-2 font-mono text-lg font-semibold tabular-nums leading-none text-zinc-100">
-        {value}
-      </p>
-      <p className="mt-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-zinc-500">
-        {label}
-      </p>
-      <p className="mt-0.5 truncate font-mono text-[10px] text-zinc-600">{detail}</p>
-    </button>
-  );
-}
-
-function QuickAction({
-  icon: Icon,
-  label,
-  kbd,
-  onClick,
-}: {
-  icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" | "false" }>;
-  label: string;
-  kbd: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="group flex items-center justify-center gap-2 rounded-lg border border-zinc-800/80 bg-zinc-900/40 px-3 py-2.5 text-xs text-zinc-400 backdrop-blur transition-all hover:border-emerald-500/30 hover:bg-zinc-900 hover:text-zinc-100 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-    >
-      <Icon className="size-3.5 text-zinc-500 transition-colors group-hover:text-emerald-400" aria-hidden />
-      {label}
-      {kbd && (
-        <kbd className="rounded border border-zinc-800 bg-zinc-950 px-1 font-mono text-[9px] text-zinc-600">
-          {kbd}
-        </kbd>
-      )}
-    </button>
   );
 }

@@ -16,6 +16,8 @@ import {
   Pencil,
   Quote,
   RotateCcw,
+  ScanSearch,
+  SearchCheck,
   SendHorizontal,
   Square,
   Timer,
@@ -34,6 +36,7 @@ import {
 import { useReaStore } from "@/store/rea-store";
 import { CopyButton, Markdown, humanBytes, humanDuration, humanTokens, toastError } from "@/components/rea/shared";
 import { HomeDashboard } from "@/components/rea/home-dashboard";
+import { MAX_MESSAGE_CHARS, CHAR_COUNTER_AT } from "@/components/rea/chat-limits";
 import { SlashMenu, filterPrompts, slashTokenOf, type PromptEntry } from "@/components/rea/prompt-library";
 import { SpeakButton } from "@/components/rea/speak-button";
 import { estimateCostUsd, formatCostUsd } from "@/lib/pricing";
@@ -60,11 +63,6 @@ const TARGET_SUGGESTIONS = [
   "List interesting strings and what they suggest",
   "What are the limitations of this analysis?",
 ];
-
-/** Mirrors MAX_MESSAGE_CHARS server-side (POST /api/chat). */
-const MAX_MESSAGE_CHARS = 8000;
-/** The composer counter appears once the draft approaches the limit. */
-const CHAR_COUNTER_AT = 7000;
 
 interface TraceStep {
   id: string;
@@ -660,6 +658,8 @@ export function ChatWorkspace({
 
   const showEmptyState = !historyLoading && entries.length === 0;
   const hasKey = useReaStore((s) => s.hasProviderKey);
+  /** Home view owns its own prominent composer — the docked one would duplicate it. */
+  const homeOwnsComposer = showEmptyState && !boundTarget;
 
   return (
     <section className={cn("relative flex min-h-0 flex-col bg-zinc-950", className)} aria-label="Chat">
@@ -680,6 +680,15 @@ export function ChatWorkspace({
             variant="ghost"
             size="sm"
             className="ml-auto h-6 gap-1 px-2 text-[10px] text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+            onClick={() => openInspector(boundTarget.id, "findings")}
+          >
+            <ScanSearch className="size-3" aria-hidden />
+            Findings
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 gap-1 px-2 text-[10px] text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
             onClick={() => openInspector(boundTarget.id)}
           >
             <PanelRightOpen className="size-3" aria-hidden />
@@ -715,6 +724,7 @@ export function ChatWorkspace({
             boundTarget={boundTarget}
             hasKey={hasKey}
             onSuggest={(text) => void sendWithEvents(text)}
+            onAttachFile={onAttachFile}
             onOpenSettings={() => setDialog("settings")}
           />
         ) : (
@@ -752,6 +762,12 @@ export function ChatWorkspace({
                     canFork={
                       !streaming && !!activeSessionId && !entry.id.startsWith("local-")
                     }
+                    evidenceTargetId={
+                      entry.role === "assistant" && boundTarget ? boundTarget.id : null
+                    }
+                    onOpenEvidence={
+                      boundTarget ? () => openInspector(boundTarget.id, "evidence") : undefined
+                    }
                   />
                 </motion.div>
               ))}
@@ -779,7 +795,8 @@ export function ChatWorkspace({
         </button>
       )}
 
-      {/* Composer */}
+      {/* Composer — hidden while the Home dashboard's own composer is showing */}
+      {!homeOwnsComposer && (
       <div className="shrink-0 px-3 pb-3 pt-1 sm:px-4 sm:pb-4" id="rea-composer">
         <div className="mx-auto w-full max-w-3xl">
           {/* First-run hint: platform model */}
@@ -891,6 +908,7 @@ export function ChatWorkspace({
           </p>
         </div>
       </div>
+      )}
     </section>
   );
 }
@@ -898,6 +916,58 @@ export function ChatWorkspace({
 // ---------------------------------------------------------------------------
 // Message rendering
 // ---------------------------------------------------------------------------
+
+/**
+ * Maps raw agent/network failures to a human-readable explanation. The raw
+ * message stays available under a collapsed "Technical details" section —
+ * advanced users can always see exactly what happened.
+ */
+function friendlyError(raw: string): { title: string; hint?: string } {
+  const m = raw.toLowerCase();
+  if (/aborted|aborterror/.test(m)) {
+    return { title: "Stopped before finishing.", hint: "The request was cancelled — nothing was saved for this turn." };
+  }
+  if (/rate.?limit|too many requests|\b429\b|quota/.test(m)) {
+    return {
+      title: "Message limit reached for this window.",
+      hint: "The 5-minute quota resets automatically — wait a moment and send again.",
+    };
+  }
+  if (/api key|unauthorized|invalid.api.?key|\b401\b|\b403\b|forbidden/.test(m)) {
+    return {
+      title: "The model rejected the credentials.",
+      hint: "If you use your own API key, check it in Settings → API key & model. Otherwise the platform model may be temporarily unavailable.",
+    };
+  }
+  if (/insufficient|billing|credit|\b402\b|exceeded.*balance/.test(m)) {
+    return {
+      title: "The provider reported a billing problem.",
+      hint: "Check the account behind your API key, or switch models in Settings → API key & model.",
+    };
+  }
+  if (/timeout|etimedout|econnreset|econnrefused|fetch failed|network|socket|enotfound|dns/i.test(m)) {
+    return {
+      title: "Lost contact with the model mid-answer.",
+      hint: "Usually a temporary network hiccup — retry the message.",
+    };
+  }
+  if (/too long|too large|\b413\b|payload|max.*chars|character/.test(m)) {
+    return {
+      title: "The message exceeded the size limit.",
+      hint: "Trim or split it — the limit is 8,000 characters per message.",
+    };
+  }
+  if (/engine|rea-agents|mcp|spawn|tool .*fail/.test(m)) {
+    return {
+      title: "The REA engine hit a problem.",
+      hint: "The analysis tool failed inside the sandbox. Details below; the rest of the chat still works.",
+    };
+  }
+  return {
+    title: "This turn could not be completed.",
+    hint: "Retry the message — if it keeps failing, check Settings → Engine & security for diagnostics.",
+  };
+}
 
 function rowToEntry(m: ChatMessageRow): ChatEntry {
   let trace: TraceStep[] = [];
@@ -950,6 +1020,8 @@ function MessageRow({
   onQuote,
   canRegenerate,
   canFork,
+  evidenceTargetId,
+  onOpenEvidence,
 }: {
   entry: ChatEntry;
   streaming?: boolean;
@@ -967,6 +1039,9 @@ function MessageRow({
   onQuote?: () => void;
   canRegenerate?: boolean;
   canFork?: boolean;
+  /** Set for file-bound chats — enables the "view evidence" deep-link. */
+  evidenceTargetId?: string | null;
+  onOpenEvidence?: () => void;
 }) {
   if (entry.role === "user") {
     return (
@@ -1088,15 +1163,44 @@ function MessageRow({
         )}
         {/* Live preview while the model writes the next tool block */}
         {streaming && intent && <ToolIntentRow intent={intent} />}
-        {entry.error && (
-          <div
-            role="alert"
-            className="flex items-start gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
-          >
-            <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-            {entry.error}
-          </div>
-        )}
+        {entry.error && (() => {
+          const friendly = friendlyError(entry.error);
+          return (
+            <div
+              role="alert"
+              className="flex items-start gap-2.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2.5"
+            >
+              <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-rose-400" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-medium text-rose-200">{friendly.title}</p>
+                {friendly.hint && (
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-rose-300/70">{friendly.hint}</p>
+                )}
+                <details className="group mt-1.5">
+                  <summary className="w-fit cursor-pointer select-none font-mono text-[10px] text-rose-400/60 transition-colors hover:text-rose-300">
+                    Technical details
+                  </summary>
+                  <pre className="rea-scroll mt-1 max-h-32 overflow-auto rounded-md border border-rose-500/20 bg-zinc-950/80 p-2 font-mono text-[10px] leading-relaxed whitespace-pre-wrap text-rose-200/60">
+                    {entry.error}
+                  </pre>
+                </details>
+              </div>
+              {canRegenerate && onRegenerate && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={onRegenerate}
+                  aria-label="Retry this message"
+                  className="h-6 shrink-0 gap-1 border border-rose-500/40 bg-rose-500/15 px-2 text-[11px] text-rose-200 hover:bg-rose-500/25"
+                  variant="outline"
+                >
+                  <RotateCcw className="size-3" aria-hidden />
+                  Retry
+                </Button>
+              )}
+            </div>
+          );
+        })()}
         {entry.content && (
           <div className="rea-markdown text-sm leading-relaxed text-zinc-200">
             <Markdown>{entry.content}</Markdown>
@@ -1104,6 +1208,15 @@ function MessageRow({
           </div>
         )}
         <MessageMeta entry={entry} model={model} streaming={streaming}>
+          {evidenceTargetId && onOpenEvidence && (
+            <MetaButton
+              label="View the evidence behind this answer"
+              onClick={onOpenEvidence}
+              hoverClass="hover:text-teal-300"
+            >
+              <SearchCheck className="size-3" aria-hidden />
+            </MetaButton>
+          )}
           {canFork && (
             <MetaButton
               label="Fork chat from this message"
@@ -1399,15 +1512,17 @@ function EmptyState({
   boundTarget,
   hasKey,
   onSuggest,
+  onAttachFile,
   onOpenSettings,
 }: {
   boundTarget: TargetSummary | null;
   hasKey: boolean | null;
   onSuggest: (text: string) => void;
+  onAttachFile?: () => void;
   onOpenSettings: () => void;
 }) {
   if (!boundTarget) {
-    return <HomeDashboard hasKey={hasKey} onSuggest={onSuggest} />;
+    return <HomeDashboard hasKey={hasKey} onSuggest={onSuggest} onAttachFile={onAttachFile} />;
   }
 
   const suggestions = TARGET_SUGGESTIONS;

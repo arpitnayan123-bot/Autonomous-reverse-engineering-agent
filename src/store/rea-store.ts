@@ -30,6 +30,8 @@ interface ReaState {
   /** Right-side inspector panel state. */
   inspectorTargetId: string | null;
   inspectorOpen: boolean;
+  /** Tab the inspector should land on when (re)opened ("evidence", "findings", …). */
+  inspectorTab: string | null;
 
   /** Desktop sidebar visibility (⌘B). */
   sidebarOpen: boolean;
@@ -69,9 +71,10 @@ interface ReaState {
 
   setTargets: (targets: TargetSummary[]) => void;
   setTargetsLoaded: (loaded: boolean) => void;
-  openInspector: (targetId: string) => void;
+  openInspector: (targetId: string, tab?: string) => void;
   closeInspector: () => void;
   setInspectorOpen: (open: boolean) => void;
+  setInspectorTab: (tab: string | null) => void;
 
   setSidebarOpen: (open: boolean) => void;
   toggleSidebar: () => void;
@@ -104,6 +107,7 @@ export const useReaStore = create<ReaState>((set) => ({
   targetsLoaded: false,
   inspectorTargetId: null,
   inspectorOpen: false,
+  inspectorTab: null,
 
   sidebarOpen: true,
   paletteOpen: false,
@@ -134,10 +138,11 @@ export const useReaStore = create<ReaState>((set) => ({
 
   setTargets: (targets) => set({ targets }),
   setTargetsLoaded: (targetsLoaded) => set({ targetsLoaded }),
-  openInspector: (inspectorTargetId) =>
-    set({ inspectorTargetId, inspectorOpen: true }),
-  closeInspector: () => set({ inspectorOpen: false }),
+  openInspector: (inspectorTargetId, tab) =>
+    set({ inspectorTargetId, inspectorOpen: true, inspectorTab: tab ?? null }),
+  closeInspector: () => set({ inspectorOpen: false, inspectorTab: null }),
   setInspectorOpen: (inspectorOpen) => set({ inspectorOpen }),
+  setInspectorTab: (inspectorTab) => set({ inspectorTab }),
 
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),

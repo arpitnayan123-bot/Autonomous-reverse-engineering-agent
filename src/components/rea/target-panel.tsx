@@ -128,7 +128,16 @@ function PanelCard({
 // TargetPanel
 // ---------------------------------------------------------------------------
 
-export function TargetPanel({ targetId, className }: { targetId: string; className?: string }) {
+export function TargetPanel({
+  targetId,
+  className,
+  /** Store-driven tab request (evidence deep-link from chat); null = leave as-is. */
+  externalTab,
+}: {
+  targetId: string;
+  className?: string;
+  externalTab?: string | null;
+}) {
   const [target, setTarget] = React.useState<TargetDetail | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [tab, setTab] = React.useState<string>("overview");
@@ -164,6 +173,12 @@ export function TargetPanel({ targetId, className }: { targetId: string; classNa
     setTab("overview");
     void fetchTarget();
   }, [fetchTarget]);
+
+  // Deep-link: when the caller requests a specific tab (e.g. Evidence from a
+  // chat message), jump there once the panel has rendered.
+  React.useEffect(() => {
+    if (externalTab) setTab(externalTab);
+  }, [externalTab]);
 
   // Poll every 4s while the latest run is active so progress updates live.
   const running = isRunActive(target?.runs?.[0]?.status);

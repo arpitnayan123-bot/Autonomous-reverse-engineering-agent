@@ -111,6 +111,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     draftTargetId,
     inspectorOpen,
     inspectorTargetId,
+    inspectorTab,
     dialog,
     shortcutsOpen,
     setSessions,
@@ -686,7 +687,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
                 </div>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto rea-scroll">
-                <TargetPanel targetId={inspectorTargetId} />
+                <TargetPanel targetId={inspectorTargetId} externalTab={inspectorTab} />
               </div>
             </aside>
           )}
@@ -703,7 +704,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
               </SheetTitle>
             </SheetHeader>
             <div className="h-[calc(100%-3rem)] overflow-y-auto rea-scroll">
-              <TargetPanel targetId={inspectorTargetId} />
+              <TargetPanel targetId={inspectorTargetId} externalTab={inspectorTab} />
             </div>
           </SheetContent>
         </Sheet>
