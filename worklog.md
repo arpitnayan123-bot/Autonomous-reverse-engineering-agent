@@ -139,3 +139,31 @@ Stage Summary:
 - Component contract: `export function TargetPanel({ targetId, className }: { targetId: string; className?: string })` — props-driven, no store dependency, safe to embed in the new app shell; reset to Overview tab + refetch whenever `targetId` changes.
 - Endpoints called: GET /api/targets/:id (poll 4s while run active), POST /api/targets/:id/analyze {goal?}, GET /api/targets/:id/findings?limit=500 (overview counts + findings tab), GET /api/targets/:id/hex?offset=&length=256, GET /api/targets/:id/strings?q=&page=&pageSize=100, GET /api/targets/:id/evidence, GET /api/targets/:id/docs (silent), POST /api/targets/:id/report {action:'generate-docs'}.
 - Reuses shared.tsx: FormatBadge, StatusBadge, EvidenceKindBadge, ConfidenceBadge, SectionCard, EmptyState, CopyButton, Markdown, humanBytes, humanDuration, timeAgo, prettyJson, parseJsonSafe, toastError.
+
+---
+Task ID: 5 (redesign v2 — Cursor/Claude-Code style)
+Agent: main agent
+Task: User redesign directive — (1) strip ALL design from sign-in page, (2) replace messy multi-page dashboard with a structured Cursor/Claude-Code/Codex-style chat-first workspace, (3) only useful chrome: API key settings + free chat.
+
+Work Log:
+- Schema: ChatSession.targetId → String? (nullable, free chats), dropped @@unique([targetId,userId]), added updatedAt @default(now())@updatedAt + indexes; db:push OK (data preserved).
+- prompts.ts: added freeChatSystemPrompt() (no tools, no tool blocks, RE copilot).
+- agent.ts: runAgentLoop accepts target: Target | null — null → free prompt, no target context; defensive redirect if model emits tool block in free chat.
+- /api/chat rewritten: GET (no params) = session list w/ _count + target info; GET ?sessionId= = messages; DELETE ?sessionId=; POST {sessionId?|targetId?|message} → new target session per request (no unique constraint anymore); first SSE event session_saved{sessionId,title,targetId}; MAX_SESSIONS_PER_USER=100 guard.
+- api-client: SessionSummary/ChatSessionDetail types, listChatSessions/getChatSession/deleteChatSession, streamChat({sessionId?,targetId?,message,onEvent},signal); ChatStreamEvent = closed union (catch-all replaced with {type:"<unknown>"} so switch narrowing works).
+- store rewritten: sessions/activeSessionId/draftTargetId (draft = not-yet-persisted chat), targets, inspectorTargetId/inspectorOpen, dialog ('settings'|'system'), providerActive/hasProviderKey; view/onboarding concepts removed.
+- auth-view.tsx: rewritten minimal (wordmark + tabs + demo button, plain zinc-950, zero motion/3D/aurora).
+- rea-app.tsx: thin boot+gate; refreshProviderInStore() helper exported.
+- app-shell.tsx NEW: top bar (context title, model chip→settings, inspector toggle, user menu), sidebar (New chat / CHATS list w/ delete confirm / FILES w/ upload+auto-analyze+draft-chat+inspect), ChatWorkspace main, inline inspector aside (lg+, via useIsDesktop matchMedia) + Sheet version (<lg), VSCode-style status bar (engine dot v6.4.0, model, files/chats counts, DEMO).
+- chat-workspace.tsx NEW: history load per session, optimistic send, SSE handling (session_saved pins sidebar w/o aborting stream — skipHistoryLoadRef fix; tool_call/tool_result → collapsible mono trace rows; model chip; error rows), Stop button (AbortController), auto-resize composer w/ Enter=send, free vs target suggestion chips, first-run "platform model — add key" banner, empty states.
+- target-panel.tsx (subagent 4-a): props-driven {targetId} inspector, all 6 tabs ported, 4s polling while run active.
+- settings-dialog.tsx NEW (wraps ProviderSettings in Dialog); system-dialog.tsx NEW (Engine/Security/About tabs wrapping existing views).
+- Deleted: dashboard-view.tsx, workspace-view.tsx, chat-view.tsx. Kept: provider/capabilities/security/docs views as dialog content.
+- Fixed during E2E: (a) stream aborted when session_saved flipped activeSessionId (history effect now skipped via ref), (b) duplicate inspector panes (desktop aside + mobile Sheet both rendered — useIsDesktop gate), (c) mobile sidebar trigger icon (rotated Plus → PanelLeft).
+- E2E (agent-browser): minimal sign-in ✓, demo login ✓, free chat streams full markdown reply ✓, session pinned in sidebar ✓, file chat runs sql_schema/list_findings w/ trace rows + evidence-graded answer ✓, inspector inline panel all tabs ✓, settings dialog ✓, system dialog (Engine healthy v6.4.0 170 tools) ✓, mobile 390x844 layout + sidebar sheet ✓, upload → auto-analyze → draft target chat ✓, delete chat w/ confirm ✓, console clean (0 errors) ✓. lint 0 problems, tsc clean (excl. pre-existing examples/skills dirs).
+- Commit: "feat: Cursor/Claude-Code-style redesign — chat-first IDE shell".
+
+Stage Summary:
+- UX now: sign-in (minimal) → chat-first workspace (Cursor-like). Free chat = no tools, honest label "free chat · no tools". File chats run real REA tools. API key via top-bar model chip / sidebar / user menu. Engine+security tucked into System dialog.
+- Contracts: GET/POST/DELETE /api/chat reshaped (breaking vs v1 — old targetId-unique upsert gone); SSE first event = session_saved.
+- Open items: file compare view, report export,用量 limit display, i18n, per-message token accounting.
