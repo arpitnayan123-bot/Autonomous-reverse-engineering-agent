@@ -289,3 +289,36 @@ Stage Summary:
 - API: PATCH /api/chat body now {title?, pinned?}; NEW POST /api/chat/fork; GET /api/chat rows include pinned and order pinned-first.
 - Infra rules reaffirmed: never trust agent-browser console buffer across reloads (close+reopen for a clean read); keep generated artifacts out of git and out of Tailwind's scan.
 - Next candidates: per-message token accounting (provider usage), server-side chat search (>100 sessions), file compare view, i18n, chat folder/tags, streaming tool-arg preview.
+
+---
+Task ID: 10 (cron review round 5 — QA + token accounting + touch usability)
+Agent: main agent (webDevReview)
+Task: Assess status, QA via agent-browser, fix bugs / add features + styling details.
+
+Work Log:
+- Status assessment: dev server healthy, tsc clean, lint clean, git at round-4 commit. Live QA pass: auth gate ✓, demo login ✓, free chat streaming ✓, file chat w/ evidence grading ✓, inspector ✓, 0 console errors → phase STABLE → proceeded to features.
+
+Feature 1 — Per-message token accounting (all 6 BYOK providers + platform):
+- providers.ts: new `CallOpts.onUsage?: (TokenUsage) => void` (exported interface). Capture points: OpenAI-compat non-stream (`usage` in response JSON), OpenAI/DeepSeek streams add `stream_options.include_usage` (final frame carries usage w/ empty choices; kimi/glm skip the param to avoid strict-endpoint 400s but still capture usage frames defensively), Anthropic non-stream (`usage`), Anthropic stream (`message_start` → input, `message_delta` → running output), Gemini non-stream + stream (`usageMetadata`, last frame wins).
+- platform-llm.ts: z-ai SDK probe (raw SSE dump) PROVED the final stream frame carries `usage:{prompt_tokens,completion_tokens}` — SseDeltaParser.extractUsage now parses it from raw frames AND parsed chunk objects; zaiPlatformChat reads completion.usage.
+- BUG (silent): resolveLlmForUser's platform wrapper dropped the third `opts` arg → onUsage never reached zaiPlatformChatStream. Fixed by forwarding opts.
+- agent.ts: accumulates usage across ALL ReAct turns (multi-tool turns sum every LLM call), measures wall-clock durationMs (tools included), persists tokensIn/tokensOut/durationMs on the assistant row, returns them in AgentLoopResult.
+- /api/chat: new SSE event `usage {tokensIn, tokensOut, durationMs}` (before `assistant`); GET history rows include the three fields; chat Markdown export shows `_tokens: ↑x ↓y · duration: Ns_` per assistant turn.
+- UI: MessageMeta gains `↑2.5k ↓125 tok` + `⏱ 8.9s` chips (mono, tooltips explain; absent honestly when provider reports nothing); StatusBar gains `tok: ↑x ↓y` session total (lg+ only) fed by a store.sessionTokens computed from loaded entries; new humanTokens() formatter in shared.tsx.
+- DB: ChatMessage.tokensIn/tokensOut/durationMs Int? — db:push OK (data preserved).
+- INFRA LESSON: after `prisma db push` + generate, the RUNNING dev server keeps the old client → `chatMessage.create` fails validation on new columns and the persistence catch swallows it (assistant rows silently vanish; stream still shows). Restarting the dev server fixes it. Symptom: streamed answer renders, reload shows nothing.
+
+Feature 2 — Quote-reply: hover Quote button (violet) on user AND assistant messages inserts `> …` blockquote (first 6 lines + `> …` ellipsis) at the top of the composer and focuses it.
+
+Feature 3 — TraceRow args restyling: raw JSON blob → `key=value` pairs (`sql_query  query=SELECT * FROM secrets`), tool name brightened, empty-arg tools stay clean.
+
+BUG FIXED (real UX, affects all touch devices): headless QA browser reported `(hover: none)` and NONE of the group-hover affordances were clickable-visible — investigation showed Tailwind 4 wraps every `hover:`/`group-hover:` variant in `@media (hover: hover)`. On real phones/tablets the message meta rows (edit/regenerate/fork/quote/copy) and sidebar row actions (pin/rename/delete/inspect) were permanently INVISIBLE with no touch alternative. Fix: `.touch-visible { opacity: 1 !important }` inside `@media (hover: none)` in globals.css, applied to MessageMeta + all sidebar row action buttons. Desktop (hover:hover) behavior unchanged; touch devices (and the QA browser) get always-visible affordances.
+- DEBUG NOTE for future rounds: agent-browser's headless Chrome reports hover:none/pointer:none — CSSOM checks must recurse into nested @layer/@media rules (top-level sheet.cssRules iteration finds nothing); stale Turbopack CSS survived `touch` + dev-server restart and required a full `.next` wipe (symptom: identical CSS byte length across restarts).
+
+QA verification (fresh browser session): free chat streams + persists `tokensIn 239 / tokensOut 33 / durationMs 8911` in sqlite ✓; file chat meta `glm-platform ↑2.5k ↓125 tok ⏱ 1.9s` + status bar session total ✓; quote-reply inserts blockquote ✓; trace args `query=SELECT * FROM secrets` ✓; sidebar + meta touch-reveal ✓; mobile 390×844 meta/actions reachable ✓; export includes token meta ✓ (code path), tsc clean, lint 0 problems, console 0 errors ✓.
+
+Stage Summary:
+- Platform gained: Cursor-parity token usage accounting end-to-end (providers → SSE → DB → message chips + status bar + exports), turn duration, quote-reply, readable tool-arg previews, and hover-gated UI that no longer traps touch users.
+- SSE protocol: additive `usage` event (backward compatible).
+- Contracts: ChatMessageRow +{tokensIn?, tokensOut?, durationMs?}; POST /api/chat SSE +usage event.
+- Next candidates: streaming tool-arg preview while pending (live args), server-side chat search (>100 sessions), file compare view, i18n, chat folders/tags, per-provider cost estimate from token counts.
