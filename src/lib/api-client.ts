@@ -117,6 +117,11 @@ export interface ChatMessageRow {
   role: "user" | "assistant" | string;
   content: string;
   toolCalls: string | null; // JSON string
+  /** Provider-reported tokens (assistant rows; null = unknown). */
+  tokensIn?: number | null;
+  tokensOut?: number | null;
+  /** Wall-clock agent turn duration in ms (assistant rows). */
+  durationMs?: number | null;
   createdAt: string;
 }
 
@@ -207,6 +212,12 @@ export type ChatStreamEvent =
   | { type: "delta"; text: string }
   | { type: "tool_call"; tool: string; args?: unknown }
   | { type: "tool_result"; tool: string; preview?: string }
+  | {
+      type: "usage";
+      tokensIn: number | null;
+      tokensOut: number | null;
+      durationMs: number;
+    }
   | { type: "assistant"; content: string }
   | { type: "error"; error: string }
   | { type: "done" }

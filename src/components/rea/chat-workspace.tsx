@@ -14,9 +14,11 @@ import {
   Paperclip,
   PanelRightOpen,
   Pencil,
+  Quote,
   RotateCcw,
   SendHorizontal,
   Square,
+  Timer,
   Wrench,
   X,
 } from "lucide-react";
@@ -30,7 +32,7 @@ import {
   type TargetSummary,
 } from "@/lib/api-client";
 import { useReaStore } from "@/store/rea-store";
-import { CopyButton, Markdown, humanBytes, toastError } from "@/components/rea/shared";
+import { CopyButton, Markdown, humanBytes, humanDuration, humanTokens, toastError } from "@/components/rea/shared";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import {
@@ -76,6 +78,11 @@ interface ChatEntry {
   trace: TraceStep[];
   error?: string;
   createdAt?: string;
+  /** Provider-reported tokens (assistant; null = provider did not report). */
+  tokensIn?: number | null;
+  tokensOut?: number | null;
+  /** Wall-clock agent turn duration in ms (assistant). */
+  durationMs?: number | null;
 }
 
 interface ModelInfo {
@@ -185,6 +192,21 @@ export function ChatWorkspace({
       cancelled = true;
     };
   }, [activeSessionId]);
+
+  // ---- Session token total (status bar) -----------------------------------
+  React.useEffect(() => {
+    let tokensIn = 0;
+    let tokensOut = 0;
+    let any = false;
+    for (const e of entries) {
+      if (e.role === "assistant" && (e.tokensIn != null || e.tokensOut != null)) {
+        any = true;
+        tokensIn += e.tokensIn ?? 0;
+        tokensOut += e.tokensOut ?? 0;
+      }
+    }
+    useReaStore.getState().setSessionTokens(any ? { tokensIn, tokensOut } : null);
+  }, [entries]);
 
   // ---- Autoscroll (only while pinned to bottom) ---------------------------
   React.useEffect(() => {
@@ -321,6 +343,16 @@ export function ChatWorkspace({
             return { ...e, trace };
           });
           break;
+        case "usage":
+          // Authoritative turn totals from the provider (may be null when the
+          // provider does not report usage — shown honestly as absent).
+          applyAssistant((e) => ({
+            ...e,
+            tokensIn: ev.tokensIn,
+            tokensOut: ev.tokensOut,
+            durationMs: ev.durationMs,
+          }));
+          break;
         case "assistant":
           // Authoritative final text — replaces the streamed draft verbatim.
           turnBecameToolRef.current = false;
@@ -434,6 +466,19 @@ export function ChatWorkspace({
     setEditValue(entry.content);
   };
 
+  /** Quote a message into the composer as a markdown blockquote. */
+  const quoteIntoComposer = (entry: ChatEntry) => {
+    if (streaming) return;
+    const quoted = entry.content
+      .split("\n")
+      .slice(0, 6)
+      .map((l) => `> ${l}`)
+      .join("\n");
+    const suffix = entry.content.split("\n").length > 6 ? "\n> …" : "";
+    setInput((prev) => `${quoted}${suffix}\n\n${prev}`.trimStart());
+    textareaRef.current?.focus();
+  };
+
   const cancelEdit = () => {
     setEditingId(null);
     setEditValue("");
@@ -532,6 +577,7 @@ export function ChatWorkspace({
                     onEditStart={() => startEdit(entry)}
                     onRegenerate={regenerateLast}
                     onFork={() => void forkFrom(entry)}
+                    onQuote={() => quoteIntoComposer(entry)}
                     canRegenerate={
                       !streaming &&
                       !!activeSessionId &&
@@ -693,6 +739,9 @@ function rowToEntry(m: ChatMessageRow): ChatEntry {
     role: m.role === "assistant" ? "assistant" : "user",
     content: m.content,
     trace,
+    tokensIn: m.tokensIn ?? null,
+    tokensOut: m.tokensOut ?? null,
+    durationMs: m.durationMs ?? null,
     createdAt: m.createdAt,
   };
 }
@@ -709,6 +758,7 @@ function MessageRow({
   onEditStart,
   onRegenerate,
   onFork,
+  onQuote,
   canRegenerate,
   canFork,
 }: {
@@ -723,6 +773,7 @@ function MessageRow({
   onEditStart?: () => void;
   onRegenerate?: () => void;
   onFork?: () => void;
+  onQuote?: () => void;
   canRegenerate?: boolean;
   canFork?: boolean;
 }) {
@@ -810,6 +861,15 @@ function MessageRow({
                 <GitFork className="size-3" aria-hidden />
               </MetaButton>
             )}
+            {!editing && onQuote && (
+              <MetaButton
+                label="Quote this message in the composer"
+                onClick={onQuote}
+                hoverClass="hover:text-violet-400"
+              >
+                <Quote className="size-3" aria-hidden />
+              </MetaButton>
+            )}
             {!editing && (
               <MetaButton label={`Edit and resend: ${entry.content.slice(0, 40)}`} onClick={onEditStart}>
                 <Pencil className="size-3" aria-hidden />
@@ -858,6 +918,15 @@ function MessageRow({
               hoverClass="hover:text-sky-400"
             >
               <GitFork className="size-3" aria-hidden />
+            </MetaButton>
+          )}
+          {onQuote && (
+            <MetaButton
+              label="Quote this message in the composer"
+              onClick={onQuote}
+              hoverClass="hover:text-violet-400"
+            >
+              <Quote className="size-3" aria-hidden />
             </MetaButton>
           )}
           {canRegenerate && (
@@ -913,7 +982,7 @@ function MetaButton({
   );
 }
 
-/** Hover meta row: timestamp + actions + copy (+ provider/model for assistant turns). */
+/** Hover meta row: timestamp + token/duration + actions + copy (+ provider/model for assistant turns). */
 function MessageMeta({
   entry,
   model,
@@ -925,8 +994,9 @@ function MessageMeta({
 }) {
   const copyLabel =
     entry.role === "assistant" ? "Copy assistant message" : "Copy your message";
+  const hasUsage = entry.tokensIn != null || entry.tokensOut != null;
   return (
-    <div className="mt-1 flex h-5 items-center gap-2 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
+    <div className="touch-visible mt-1 flex h-5 items-center gap-2 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
       {entry.createdAt && (
         <time className="font-mono text-[10px] text-zinc-600" dateTime={entry.createdAt}>
           {new Date(entry.createdAt).toLocaleTimeString([], {
@@ -938,6 +1008,28 @@ function MessageMeta({
       {entry.role === "assistant" && model && (
         <span className="truncate font-mono text-[10px] text-zinc-700">
           {model.provider}/{model.model}
+        </span>
+      )}
+      {entry.role === "assistant" && (hasUsage || entry.durationMs != null) && (
+        <span className="flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
+          {hasUsage && (
+            <span
+              className="flex items-center gap-0.5"
+              title={`Provider-reported tokens — prompt: ${entry.tokensIn ?? "unknown"}, completion: ${entry.tokensOut ?? "unknown"}`}
+            >
+              <span className="text-zinc-700">↑</span>
+              {humanTokens(entry.tokensIn)}
+              <span className="text-zinc-700">↓</span>
+              {humanTokens(entry.tokensOut)}
+              <span className="text-zinc-700">tok</span>
+            </span>
+          )}
+          {entry.durationMs != null && (
+            <span className="flex items-center gap-0.5" title="Agent turn duration (tools included)">
+              <Timer className="size-2.5" aria-hidden />
+              {humanDuration(entry.durationMs)}
+            </span>
+          )}
         </span>
       )}
       <div className="ml-auto flex items-center gap-1">
@@ -968,7 +1060,20 @@ function ThinkingIndicator({ modelInfo }: { modelInfo: ModelInfo | null }) {
   );
 }
 
+/** Human-readable one-line preview of tool args: key=value pairs. */
+function argsPreview(args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  const pairs = Object.entries(args as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .map(([k, v]) => {
+      const s = typeof v === "string" ? v : JSON.stringify(v);
+      return `${k}=${s.length > 42 ? `${s.slice(0, 42)}…` : s}`;
+    });
+  return pairs.join("  ");
+}
+
 function TraceRow({ step }: { step: TraceStep }) {
+  const preview = argsPreview(step.args);
   return (
     <Collapsible>
       <CollapsibleTrigger
@@ -983,10 +1088,8 @@ function TraceRow({ step }: { step: TraceStep }) {
           <Wrench className="size-3 shrink-0 text-emerald-500/80" aria-hidden />
         )}
         <span className="truncate">
-          {step.tool}
-          {typeof step.args === "object" && step.args !== null && Object.keys(step.args).length > 0 && (
-            <span className="ml-1.5 text-zinc-600">{JSON.stringify(step.args).slice(0, 80)}</span>
-          )}
+          <span className={step.pending ? "text-amber-200" : "text-zinc-300"}>{step.tool}</span>
+          {preview && <span className="ml-1.5 text-zinc-600">{preview}</span>}
         </span>
         <span className="ml-auto flex items-center gap-1 text-[9px] uppercase tracking-wider text-zinc-600">
           {step.pending ? "running" : "done"}

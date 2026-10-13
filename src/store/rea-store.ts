@@ -46,6 +46,8 @@ interface ReaState {
   hasProviderKey: boolean | null;
   /** Message quota from the last chat POST (X-RateLimit headers). */
   chatQuota: { limit: number; remaining: number } | null;
+  /** Cumulative provider-reported tokens for the active session (null = none known). */
+  sessionTokens: { tokensIn: number; tokensOut: number } | null;
 
   setBooted: (booted: boolean) => void;
   setUser: (user: ReaUser | null) => void;
@@ -78,6 +80,7 @@ interface ReaState {
   setProviderLoaded: (loaded: boolean) => void;
   setHasProviderKey: (has: boolean | null) => void;
   setChatQuota: (quota: { limit: number; remaining: number } | null) => void;
+  setSessionTokens: (tokens: { tokensIn: number; tokensOut: number } | null) => void;
 }
 
 export const useReaStore = create<ReaState>((set) => ({
@@ -104,6 +107,7 @@ export const useReaStore = create<ReaState>((set) => ({
   providerLoaded: false,
   hasProviderKey: null,
   chatQuota: null,
+  sessionTokens: null,
 
   setBooted: (booted) => set({ booted }),
   setUser: (user) => set({ user }),
@@ -136,4 +140,5 @@ export const useReaStore = create<ReaState>((set) => ({
   setProviderLoaded: (providerLoaded) => set({ providerLoaded }),
   setHasProviderKey: (hasProviderKey) => set({ hasProviderKey }),
   setChatQuota: (chatQuota) => set({ chatQuota }),
+  setSessionTokens: (sessionTokens) => set({ sessionTokens }),
 }));

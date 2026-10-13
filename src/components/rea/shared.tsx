@@ -93,6 +93,17 @@ export function humanDuration(ms: number | null | undefined): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
+/** Compact token count: 940 → "940", 12400 → "12.4k", 3050000 → "3.1M". */
+export function humanTokens(n: number | null | undefined): string {
+  if (n === null || n === undefined || Number.isNaN(n)) return "—";
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) {
+    const k = n / 1000;
+    return `${k < 10 ? k.toFixed(1) : Math.round(k)}k`;
+  }
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
 /** Safe JSON pretty-print; returns the raw string when it is not JSON. */
 export function prettyJson(raw: string | null | undefined): string {
   if (!raw) return "";

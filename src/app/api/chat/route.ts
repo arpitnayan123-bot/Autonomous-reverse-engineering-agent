@@ -90,6 +90,9 @@ export async function GET(req: Request) {
         content: m.content,
         // Raw JSON string (client parses defensively) — matches ChatMessageRow.
         toolCalls: m.toolCalls,
+        tokensIn: m.tokensIn,
+        tokensOut: m.tokensOut,
+        durationMs: m.durationMs,
         createdAt: m.createdAt,
       })),
       pinned: session.pinned,
@@ -387,7 +390,7 @@ export async function POST(req: Request) {
             targetId: session!.targetId,
           });
           if (userMessage) send({ type: "user_saved", messageId: userMessage.id });
-          const { content } = await runAgentLoop({
+          const { content, usage, durationMs } = await runAgentLoop({
             sessionId: session!.id,
             target: target ?? null,
             userId: user.id,
@@ -406,6 +409,7 @@ export async function POST(req: Request) {
               shouldCancel: () => closed || req.signal.aborted,
             },
           });
+          send({ type: "usage", tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, durationMs });
           send({ type: "assistant", content });
         } catch (err) {
           send({

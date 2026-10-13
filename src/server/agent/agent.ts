@@ -2,7 +2,12 @@ import { db } from "@/lib/db";
 import { MAX_CHAT_ITERATIONS } from "@/lib/security";
 import { documentationPrompt, freeChatSystemPrompt, systemPrompt } from "./prompts";
 import { buildTargetContext, executeAgentTool, type AgentToolContext } from "./tools";
-import { resolveLlmForUser, type LlmMessage, type ResolvedLlm } from "./providers";
+import {
+  resolveLlmForUser,
+  type LlmMessage,
+  type ResolvedLlm,
+  type TokenUsage,
+} from "./providers";
 import type { Evidence, Finding, Target } from "@prisma/client";
 
 /**
@@ -46,6 +51,10 @@ export interface AgentToolTrace {
 export interface AgentLoopResult {
   content: string;
   toolCalls: AgentToolTrace[];
+  /** Cumulative provider-reported token usage for the whole turn (null = unknown). */
+  usage: { tokensIn: number | null; tokensOut: number | null };
+  /** Wall-clock duration of the whole agent turn in ms. */
+  durationMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +147,21 @@ export async function runAgentLoop(opts: {
 
   const toolTrace: AgentToolTrace[] = [];
   let final: string | null = null;
+  /** Cumulative usage across every LLM call of this turn. */
+  const usage: { tokensIn: number | null; tokensOut: number | null } = {
+    tokensIn: null,
+    tokensOut: null,
+  };
+  const accumulateUsage = (u: TokenUsage) => {
+    if (typeof u.promptTokens === "number") {
+      usage.tokensIn = (usage.tokensIn ?? 0) + u.promptTokens;
+    }
+    if (typeof u.completionTokens === "number") {
+      usage.tokensOut = (usage.tokensOut ?? 0) + u.completionTokens;
+    }
+  };
+  const callOpts = { onUsage: accumulateUsage };
+  const startedAt = Date.now();
 
   for (let i = 0; i < MAX_CHAT_ITERATIONS; i++) {
     if (events?.shouldCancel?.()) {
@@ -145,7 +169,7 @@ export async function runAgentLoop(opts: {
       break;
     }
     events?.onTurnStart?.(i);
-    const text = await callTurn(llm, messages, i, events);
+    const text = await callTurn(llm, messages, i, events, callOpts);
     const action = parseToolAction(text);
     if (!action) {
       final = text;
@@ -180,8 +204,10 @@ export async function runAgentLoop(opts: {
       role: "user",
       content: `You have used the maximum number of tool iterations (${MAX_CHAT_ITERATIONS}). Do not emit any more tool blocks. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown.`,
     });
-    final = await callTurn(llm, messages, synthesisTurn, events);
+    final = await callTurn(llm, messages, synthesisTurn, events, callOpts);
   }
+
+  const durationMs = Date.now() - startedAt;
 
   try {
     await db.chatMessage.create({
@@ -190,13 +216,16 @@ export async function runAgentLoop(opts: {
         role: "assistant",
         content: final,
         toolCalls: toolTrace.length ? JSON.stringify(toolTrace) : null,
+        tokensIn: usage.tokensIn,
+        tokensOut: usage.tokensOut,
+        durationMs,
       },
     });
   } catch {
     /* persistence failure must not break the stream */
   }
 
-  return { content: final, toolCalls: toolTrace };
+  return { content: final, toolCalls: toolTrace, usage, durationMs };
 }
 
 /**
@@ -207,18 +236,19 @@ async function callTurn(
   llm: ResolvedLlm,
   messages: LlmMessage[],
   turn: number,
-  events?: AgentEventHandlers
+  events?: AgentEventHandlers,
+  callOpts?: { onUsage?: (u: TokenUsage) => void }
 ): Promise<string> {
   const sink = (delta: string) => events?.onAssistantDelta?.(delta, turn);
   if (llm.callLLMStream) {
     try {
-      return await llm.callLLMStream(messages, sink);
+      return await llm.callLLMStream(messages, sink, callOpts);
     } catch (err) {
       // A failed stream must not kill the loop — retry once non-streamed.
       console.error("agent stream turn failed, retrying non-streamed:", err);
     }
   }
-  const text = await llm.callLLM(messages);
+  const text = await llm.callLLM(messages, callOpts);
   sink(text);
   return text;
 }

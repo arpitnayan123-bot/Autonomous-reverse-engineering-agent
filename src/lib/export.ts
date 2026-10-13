@@ -86,7 +86,17 @@ export function buildChatMarkdown(
   const body = messages
     .map((m) => {
       const who = m.role === "assistant" ? "## REA Agent" : "## You";
-      return `${who}\n\n${m.content.trim() || "_(empty)_"}\n${toolTraceMarkdown(m.toolCalls)}`;
+      const meta: string[] = [];
+      if (m.role === "assistant") {
+        if (m.tokensIn != null || m.tokensOut != null) {
+          meta.push(
+            `tokens: ↑${m.tokensIn ?? "?"} ↓${m.tokensOut ?? "?"}`
+          );
+        }
+        if (m.durationMs != null) meta.push(`duration: ${(m.durationMs / 1000).toFixed(1)}s`);
+      }
+      const metaLine = meta.length > 0 ? `\n\n_${meta.join(" · ")}_` : "";
+      return `${who}\n${metaLine}\n\n${m.content.trim() || "_(empty)_"}\n${toolTraceMarkdown(m.toolCalls)}`;
     })
     .join("\n---\n\n");
 

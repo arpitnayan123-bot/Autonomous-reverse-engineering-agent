@@ -123,9 +123,18 @@ export interface LlmMessage {
   content: string;
 }
 
-interface CallOpts {
+/** Token usage as reported by a provider (all fields optional — honest unknowns). */
+export interface TokenUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+}
+
+/** Call options shared by every provider invocation. */
+export interface CallOpts {
   signal?: AbortSignal;
   maxTokens?: number;
+  /** Called once per LLM call when the provider reports token usage. */
+  onUsage?: (usage: TokenUsage) => void;
 }
 
 /** Receives incremental text as it is produced by the provider. */
@@ -171,6 +180,17 @@ async function openAiCompatibleChat(
   messages: LlmMessage[],
   opts: CallOpts
 ): Promise<string> {
+  const reportUsage = (json: unknown) => {
+    const u = (json as { usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } })
+      ?.usage;
+    if (u && typeof u === "object") {
+      opts.onUsage?.({
+        promptTokens: typeof u.prompt_tokens === "number" ? u.prompt_tokens : undefined,
+        completionTokens:
+          typeof u.completion_tokens === "number" ? u.completion_tokens : undefined,
+      });
+    }
+  };
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -197,6 +217,7 @@ async function openAiCompatibleChat(
   } catch {
     throw new Error("Provider returned non-JSON response");
   }
+  reportUsage(json);
   const content =
     (json as { choices?: Array<{ message?: { content?: string } }> })
       ?.choices?.[0]?.message?.content ?? "";
@@ -204,14 +225,20 @@ async function openAiCompatibleChat(
   return content;
 }
 
-/** OpenAI-compatible streaming chat completion. Returns the full text. */
+/**
+ * OpenAI-compatible streaming chat completion. Returns the full text.
+ * `includeUsageInBody` adds `stream_options.include_usage` (OpenAI/DeepSeek
+ * support it; some stricter compatible endpoints may reject unknown params,
+ * so it is opt-in per provider).
+ */
 async function openAiCompatibleStream(
   baseUrl: string,
   apiKey: string,
   model: string,
   messages: LlmMessage[],
   opts: CallOpts,
-  onDelta: DeltaSink
+  onDelta: DeltaSink,
+  includeUsageInBody = false
 ): Promise<string> {
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -224,6 +251,7 @@ async function openAiCompatibleStream(
       messages,
       max_tokens: opts.maxTokens ?? 4096,
       stream: true,
+      ...(includeUsageInBody ? { stream_options: { include_usage: true } } : {}),
     }),
     signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -239,11 +267,23 @@ async function openAiCompatibleStream(
     try {
       const json = JSON.parse(data) as {
         choices?: Array<{ delta?: { content?: string } }>;
+        usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
       };
       const delta = json?.choices?.[0]?.delta?.content;
       if (typeof delta === "string" && delta) {
         full += delta;
         onDelta(delta);
+      }
+      // Final frame (include_usage) carries usage with an empty choices array.
+      if (json?.usage && typeof json.usage === "object") {
+        opts.onUsage?.({
+          promptTokens:
+            typeof json.usage.prompt_tokens === "number" ? json.usage.prompt_tokens : undefined,
+          completionTokens:
+            typeof json.usage.completion_tokens === "number"
+              ? json.usage.completion_tokens
+              : undefined,
+        });
       }
     } catch {
       /* ignore malformed frame */
@@ -289,6 +329,13 @@ async function anthropicChat(
   } catch {
     throw new Error("Anthropic returned non-JSON response");
   }
+  const au = (json as { usage?: { input_tokens?: unknown; output_tokens?: unknown } })?.usage;
+  if (au && typeof au === "object") {
+    opts.onUsage?.({
+      promptTokens: typeof au.input_tokens === "number" ? au.input_tokens : undefined,
+      completionTokens: typeof au.output_tokens === "number" ? au.output_tokens : undefined,
+    });
+  }
   const content = (json as { content?: Array<{ text?: string }> })?.content
     ?.map((c) => c.text ?? "")
     .join("\n");
@@ -329,20 +376,40 @@ async function anthropicStream(
     );
   }
   let full = "";
+  let streamUsage: TokenUsage = {};
   await readProviderSse(res, (data) => {
     try {
       const json = JSON.parse(data) as {
         type?: string;
         delta?: { type?: string; text?: string };
+        message?: { usage?: { input_tokens?: unknown; output_tokens?: unknown } };
+        usage?: { output_tokens?: unknown };
       };
       if (json?.type === "content_block_delta" && typeof json.delta?.text === "string" && json.delta.text) {
         full += json.delta.text;
         onDelta(json.delta.text);
       }
+      // message_start carries input tokens; message_delta carries running output.
+      if (json?.type === "message_start") {
+        const mu = json.message?.usage;
+        if (mu && typeof mu === "object") {
+          if (typeof mu.input_tokens === "number") streamUsage.promptTokens = mu.input_tokens;
+          if (typeof mu.output_tokens === "number") streamUsage.completionTokens = mu.output_tokens;
+        }
+      }
+      if (json?.type === "message_delta") {
+        const du = json.usage;
+        if (du && typeof du === "object" && typeof du.output_tokens === "number") {
+          streamUsage.completionTokens = du.output_tokens;
+        }
+      }
     } catch {
       /* ignore malformed frame */
     }
   });
+  if (streamUsage.promptTokens !== undefined || streamUsage.completionTokens !== undefined) {
+    opts.onUsage?.(streamUsage);
+  }
   if (!full.trim()) throw new Error("Anthropic returned an empty completion");
   return full;
 }
@@ -411,6 +478,18 @@ async function geminiChat(
   } catch {
     throw new Error("Gemini returned non-JSON response");
   }
+  const gu = (
+    json as {
+      usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown };
+    }
+  )?.usageMetadata;
+  if (gu && typeof gu === "object") {
+    opts.onUsage?.({
+      promptTokens: typeof gu.promptTokenCount === "number" ? gu.promptTokenCount : undefined,
+      completionTokens:
+        typeof gu.candidatesTokenCount === "number" ? gu.candidatesTokenCount : undefined,
+    });
+  }
   const content = (
     json as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
@@ -464,10 +543,12 @@ async function geminiStream(
     );
   }
   let full = "";
+  let lastUsage: TokenUsage | null = null;
   await readProviderSse(res, (data) => {
     try {
       const json = JSON.parse(data) as {
         candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+        usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown };
       };
       const delta =
         json?.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
@@ -475,10 +556,23 @@ async function geminiStream(
         full += delta;
         onDelta(delta);
       }
+      if (json?.usageMetadata && typeof json.usageMetadata === "object") {
+        lastUsage = {
+          promptTokens:
+            typeof json.usageMetadata.promptTokenCount === "number"
+              ? json.usageMetadata.promptTokenCount
+              : undefined,
+          completionTokens:
+            typeof json.usageMetadata.candidatesTokenCount === "number"
+              ? json.usageMetadata.candidatesTokenCount
+              : undefined,
+        };
+      }
     } catch {
       /* ignore malformed frame */
     }
   });
+  if (lastUsage) opts.onUsage?.(lastUsage);
   if (!full.trim()) throw new Error("Gemini returned an empty completion");
   return full;
 }
@@ -527,9 +621,9 @@ export async function providerChatStream(
   );
   switch (provider) {
     case "openai":
-      return openAiCompatibleStream("https://api.openai.com/v1", apiKey, model, normalized, opts, onDelta);
+      return openAiCompatibleStream("https://api.openai.com/v1", apiKey, model, normalized, opts, onDelta, true);
     case "deepseek":
-      return openAiCompatibleStream("https://api.deepseek.com", apiKey, model, normalized, opts, onDelta);
+      return openAiCompatibleStream("https://api.deepseek.com", apiKey, model, normalized, opts, onDelta, true);
     case "kimi":
       return openAiCompatibleStream("https://api.moonshot.cn/v1", apiKey, model, normalized, opts, onDelta);
     case "glm":
@@ -620,13 +714,13 @@ export async function resolveLlmForUser(userId: string): Promise<ResolvedLlm> {
     source: "platform",
     provider: "glm-platform",
     model: "glm-platform",
-    callLLM: async (messages) => {
+    callLLM: async (messages, opts) => {
       const { zaiPlatformChat } = await import("./platform-llm");
-      return zaiPlatformChat(messages);
+      return zaiPlatformChat(messages, opts);
     },
-    callLLMStream: async (messages, onDelta) => {
+    callLLMStream: async (messages, onDelta, opts) => {
       const { zaiPlatformChatStream } = await import("./platform-llm");
-      return zaiPlatformChatStream(messages, onDelta);
+      return zaiPlatformChatStream(messages, onDelta, opts);
     },
   };
 }

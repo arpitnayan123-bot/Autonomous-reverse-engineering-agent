@@ -49,7 +49,7 @@ import { CommandPalette } from "@/components/rea/command-palette";
 import { SettingsDialog } from "@/components/rea/settings-dialog";
 import { SystemDialog } from "@/components/rea/system-dialog";
 import { TargetPanel } from "@/components/rea/target-panel";
-import { FormatBadge, humanBytes, timeAgo, toastError } from "@/components/rea/shared";
+import { FormatBadge, humanBytes, humanTokens, timeAgo, toastError } from "@/components/rea/shared";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -906,7 +906,7 @@ function SidebarBody(p: SidebarBodyProps) {
                   "rounded p-1 transition-all group-focus-within:opacity-100 focus-visible:ring-2 focus-visible:ring-amber-500/50 focus-visible:outline-none",
                   s.pinned
                     ? "text-amber-400 opacity-100"
-                    : "text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-amber-400"
+                    : "touch-visible text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-amber-400"
                 )}
               >
                 {s.pinned ? <PinOff className="size-3.5" aria-hidden /> : <Pin className="size-3.5" aria-hidden />}
@@ -918,7 +918,7 @@ function SidebarBody(p: SidebarBodyProps) {
                   e.stopPropagation();
                   p.onStartRename(s);
                 }}
-                className="rounded p-1 text-zinc-600 opacity-0 transition-colors group-focus-within:opacity-100 group-hover:opacity-100 hover:text-emerald-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                className="touch-visible rounded p-1 text-zinc-600 opacity-0 transition-colors group-focus-within:opacity-100 group-hover:opacity-100 hover:text-emerald-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
               >
                 <Pencil className="size-3.5" aria-hidden />
               </button>
@@ -929,7 +929,7 @@ function SidebarBody(p: SidebarBodyProps) {
                   e.stopPropagation();
                   p.onDeleteSession(s);
                 }}
-                className="rounded p-1 text-zinc-600 opacity-0 transition-colors group-focus-within:opacity-100 group-hover:opacity-100 hover:text-rose-400 focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:outline-none"
+                className="touch-visible rounded p-1 text-zinc-600 opacity-0 transition-colors group-focus-within:opacity-100 group-hover:opacity-100 hover:text-rose-400 focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:outline-none"
               >
                 <Trash2 className="size-3.5" aria-hidden />
               </button>
@@ -1076,7 +1076,7 @@ function SidebarBody(p: SidebarBodyProps) {
                     e.stopPropagation();
                     p.onInspect(t.id);
                   }}
-                  className="rounded p-1 text-zinc-600 opacity-0 transition-all hover:text-emerald-400 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                  className="touch-visible rounded p-1 text-zinc-600 opacity-0 transition-all hover:text-emerald-400 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
                 >
                   <MonitorDot className="size-3.5" aria-hidden />
                 </button>
@@ -1156,7 +1156,8 @@ function targetStatusDot(status: string): string {
 // ---------------------------------------------------------------------------
 
 function StatusBar() {
-  const { capabilities, providerActive, sessions, targets, user, chatQuota } = useReaStore();
+  const { capabilities, providerActive, sessions, targets, user, chatQuota, sessionTokens } =
+    useReaStore();
 
   return (
     <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-zinc-800/80 bg-zinc-950 px-3 font-mono text-[10px] text-zinc-500">
@@ -1183,6 +1184,16 @@ function StatusBar() {
           aria-label={`Message quota: ${chatQuota.remaining} of ${chatQuota.limit} remaining in this window`}
         >
           quota: {chatQuota.remaining}/{chatQuota.limit} msgs · 5 min
+        </span>
+      )}
+      {sessionTokens && (
+        <span
+          className="hidden lg:inline"
+          aria-label={`Session tokens — prompt ${sessionTokens.tokensIn}, completion ${sessionTokens.tokensOut}`}
+          title="Provider-reported tokens across this chat (↑ prompt · ↓ completion)"
+        >
+          <span className="text-zinc-600">tok:</span> ↑{humanTokens(sessionTokens.tokensIn)} ↓
+          {humanTokens(sessionTokens.tokensOut)}
         </span>
       )}
       <span className="hidden md:inline">{targets.length} files</span>

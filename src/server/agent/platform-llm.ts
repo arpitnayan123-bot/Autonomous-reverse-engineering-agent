@@ -1,5 +1,5 @@
 import ZAI from "z-ai-web-dev-sdk";
-import type { DeltaSink, LlmMessage } from "./providers";
+import type { CallOpts, DeltaSink, LlmMessage, TokenUsage } from "./providers";
 
 /**
  * Platform-provided fallback LLM (GLM via z-ai-web-dev-sdk).
@@ -16,7 +16,10 @@ async function getZai(): Promise<ZaiClient> {
   return globalForZai.__reaZai;
 }
 
-export async function zaiPlatformChat(messages: LlmMessage[]): Promise<string> {
+export async function zaiPlatformChat(
+  messages: LlmMessage[],
+  opts?: CallOpts
+): Promise<string> {
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -24,7 +27,21 @@ export async function zaiPlatformChat(messages: LlmMessage[]): Promise<string> {
       const completion = (await zai.chat.completions.create({
         messages,
         thinking: { type: "disabled" },
-      })) as { choices?: Array<{ message?: { content?: string } }> };
+      })) as { choices?: Array<{ message?: { content?: string } }> } & {
+        usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
+      };
+      if (completion?.usage && typeof completion.usage === "object" && opts?.onUsage) {
+        opts.onUsage({
+          promptTokens:
+            typeof completion.usage.prompt_tokens === "number"
+              ? completion.usage.prompt_tokens
+              : undefined,
+          completionTokens:
+            typeof completion.usage.completion_tokens === "number"
+              ? completion.usage.completion_tokens
+              : undefined,
+        });
+      }
       const text = completion?.choices?.[0]?.message?.content ?? "";
       if (typeof text === "string" && text.trim()) return text;
       lastErr = new Error("Model returned an empty completion");
@@ -44,8 +61,10 @@ export async function zaiPlatformChat(messages: LlmMessage[]): Promise<string> {
  */
 export async function zaiPlatformChatStream(
   messages: LlmMessage[],
-  onDelta: DeltaSink
+  onDelta: DeltaSink,
+  opts?: CallOpts
 ): Promise<string> {
+  const usageRef: { value: TokenUsage | null } = { value: null };
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -62,7 +81,9 @@ export async function zaiPlatformChatStream(
         typeof (result as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] ===
           "function"
       ) {
-        const parser = new SseDeltaParser(onDelta);
+        const parser = new SseDeltaParser(onDelta, (u) => {
+          usageRef.value = u;
+        });
         const decoder = new TextDecoder();
         for await (const chunk of result as AsyncIterable<unknown>) {
           if (typeof chunk === "string") {
@@ -75,17 +96,34 @@ export async function zaiPlatformChatStream(
         }
         parser.flush();
         const full = parser.full;
-        if (full.trim()) return full;
+        if (full.trim()) {
+          if (usageRef.value) opts?.onUsage?.(usageRef.value);
+          return full;
+        }
         lastErr = new Error("Model stream produced no content");
         continue;
       }
 
       // Non-iterable → maybe a full completion object; else plain string.
-      const asObject = result as { choices?: Array<{ message?: { content?: string } }> };
+      const asObject = result as { choices?: Array<{ message?: { content?: string } }> } & {
+        usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
+      };
       const fullText =
         (asObject?.choices?.[0]?.message?.content ?? "") ||
         (typeof result === "string" ? result : "");
       if (fullText.trim()) {
+        if (asObject?.usage && typeof asObject.usage === "object" && opts?.onUsage) {
+          opts.onUsage({
+            promptTokens:
+              typeof asObject.usage.prompt_tokens === "number"
+                ? asObject.usage.prompt_tokens
+                : undefined,
+            completionTokens:
+              typeof asObject.usage.completion_tokens === "number"
+                ? asObject.usage.completion_tokens
+                : undefined,
+          });
+        }
         onDelta(fullText);
         return fullText;
       }
@@ -94,7 +132,7 @@ export async function zaiPlatformChatStream(
       lastErr = err;
       // Streaming may be unsupported server-side — retry once without streaming.
       try {
-        const text = await zaiPlatformChat(messages);
+        const text = await zaiPlatformChat(messages, opts);
         onDelta(text);
         return text;
       } catch (fallbackErr) {
@@ -113,7 +151,10 @@ export async function zaiPlatformChatStream(
 class SseDeltaParser {
   private buffer = "";
   private fullText = "";
-  constructor(private readonly onDelta: DeltaSink) {}
+  constructor(
+    private readonly onDelta: DeltaSink,
+    private readonly onUsage?: (usage: TokenUsage) => void
+  ) {}
 
   get full(): string {
     return this.fullText;
@@ -141,6 +182,7 @@ class SseDeltaParser {
       this.fullText += delta;
       this.onDelta(delta);
     }
+    this.extractUsage(chunk);
   }
 
   private pushJson(data: string): void {
@@ -151,8 +193,25 @@ class SseDeltaParser {
         this.fullText += delta;
         this.onDelta(delta);
       }
+      this.extractUsage(json);
     } catch {
       /* ignore malformed frame */
+    }
+  }
+
+  /** OpenAI-shaped usage frame (final stream chunk / completion object). */
+  private extractUsage(chunk: unknown): void {
+    if (!chunk || typeof chunk !== "object" || !this.onUsage) return;
+    const u = (chunk as { usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } })
+      .usage;
+    if (!u || typeof u !== "object") return;
+    const usage: TokenUsage = {
+      promptTokens: typeof u.prompt_tokens === "number" ? u.prompt_tokens : undefined,
+      completionTokens:
+        typeof u.completion_tokens === "number" ? u.completion_tokens : undefined,
+    };
+    if (usage.promptTokens !== undefined || usage.completionTokens !== undefined) {
+      this.onUsage(usage);
     }
   }
 

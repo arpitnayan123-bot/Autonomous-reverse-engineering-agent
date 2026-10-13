@@ -403,3 +403,12 @@ body {
 /* rea: theme touch */
 
 /* rea: cache reset */
+
+/* rea: touch reveal — hover-gated affordances must stay reachable on
+   touch devices (no hover capability): show them at rest instead of
+   hiding them behind an interaction that cannot happen. */
+@media (hover: none) {
+  .touch-visible {
+    opacity: 1 !important;
+  }
+}

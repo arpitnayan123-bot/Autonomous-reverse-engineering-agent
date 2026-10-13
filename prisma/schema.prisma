@@ -114,13 +114,19 @@ model ChatSession {
 }
 
 model ChatMessage {
-  id        String      @id @default(cuid())
-  sessionId String
-  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  role      String
-  content   String
-  toolCalls String?
-  createdAt DateTime    @default(now())
+  id         String      @id @default(cuid())
+  sessionId  String
+  session    ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role       String
+  content    String
+  toolCalls  String?
+  /** Prompt tokens reported by the provider (assistant rows, null = unknown). */
+  tokensIn   Int?
+  /** Completion tokens reported by the provider (assistant rows, null = unknown). */
+  tokensOut  Int?
+  /** Wall-clock duration of the whole agent turn, in ms (assistant rows). */
+  durationMs Int?
+  createdAt  DateTime    @default(now())
 
   @@index([sessionId, createdAt])
 }
