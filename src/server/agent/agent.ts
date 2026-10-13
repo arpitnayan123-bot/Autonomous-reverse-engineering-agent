@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { MAX_CHAT_ITERATIONS } from "@/lib/security";
 import { documentationPrompt, freeChatSystemPrompt, systemPrompt } from "./prompts";
-import { buildTargetContext, executeAgentTool, applyPlanUpdate, type AgentToolContext } from "./tools";
+import { buildTargetContext, executeAgentTool, applyPlanUpdate, runExploreUrlTool, type AgentToolContext } from "./tools";
 import {
   resolveLlmForUser,
   type LlmMessage,
@@ -208,12 +208,26 @@ export async function runAgentLoop(opts: {
       break;
     }
     if (!ctx) {
-      // Free chat: every file-bound tool is unavailable — EXCEPT update_plan,
-      // which is pure planning (no target, no I/O) and stays fully functional
-      // so long multi-step guidance still gets visible task structure.
+      // Free chat: file-bound tools are unavailable — EXCEPT update_plan (pure
+      // planning, no I/O) and explore_url (SSRF-guarded public web fetch, no
+      // target context needed). Both stay fully functional so URL analysis and
+      // long multi-step guidance still execute for real instead of being
+      // answered conceptually.
       if (action.tool === "update_plan") {
         events?.onToolCall?.(action.tool, action.args);
         const result = await applyPlanUpdate(action.args);
+        events?.onToolResult?.(action.tool, result);
+        toolTrace.push({ tool: action.tool, args: action.args, result });
+        messages.push({ role: "assistant", content: text });
+        messages.push({
+          role: "user",
+          content: `TOOL RESULT for ${action.tool}:\n${result}`,
+        });
+        continue;
+      }
+      if (action.tool === "explore_url") {
+        events?.onToolCall?.(action.tool, action.args);
+        const result = await runExploreUrlTool(action.args ?? {});
         events?.onToolResult?.(action.tool, result);
         toolTrace.push({ tool: action.tool, args: action.args, result });
         messages.push({ role: "assistant", content: text });
