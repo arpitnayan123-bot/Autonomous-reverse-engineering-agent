@@ -11,6 +11,15 @@ const nextConfig: NextConfig = {
   devIndicators: {
     position: "bottom-right",
   },
+  // Native/WASM-capability packages must stay real Node modules (they load
+  // .wasm/.node assets from the filesystem at runtime and cannot be bundled).
+  serverExternalPackages: [
+    "web-tree-sitter",
+    "tree-sitter-wasms",
+    "playwright-core",
+    "@modelcontextprotocol/sdk",
+    "sharp",
+  ],
 };
 
 export default nextConfig;

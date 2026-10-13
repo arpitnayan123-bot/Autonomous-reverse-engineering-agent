@@ -20,6 +20,8 @@ model User {
   chatSessions ChatSession[]
   providerKey  ProviderKey?
   authSessions AuthSession[]
+  projects     Project[]
+  connectors   Connector[]
 }
 
 /**
@@ -182,4 +184,205 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Universal Software Intelligence & Reconstruction Platform
+// ---------------------------------------------------------------------------
+
+/**
+ * A Project is the subject of a full DISCOVER→VERIFY investigation: a website,
+ * a GitHub repository, or an uploaded target. Everything the eight platform
+ * capabilities produce (crawled pages, graph nodes, research, builds,
+ * orchestrations, verifications) hangs off a Project.
+ */
+model Project {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  kind         String // "website" | "github" | "file"
+  reference    String // https URL, "owner/repo", or targets/<id>
+  description  String?
+  status       String   @default("active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  pages        CrawlPage[]
+  nodes        GraphNode[]
+  edges        GraphEdge[]
+  reports      ResearchReport[]
+  artifacts    BuildArtifact[]
+  orchestrations Orchestration[]
+  verifications  VerificationRun[]
+
+  @@index([userId, updatedAt])
+}
+
+/** One crawled page of a website project (explorer output, untrusted data). */
+model CrawlPage {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  url         String
+  status      Int // HTTP status code (0 = fetch error)
+  title       String?
+  description String?
+  textExcerpt String? // bounded plain-text extraction
+  links       String? // JSON [{href,text}]
+  tech        String? // JSON [fingerprint strings]
+  depth       Int      @default(0)
+  contentHash String?
+  fetchedAt   DateTime @default(now())
+
+  @@unique([projectId, url])
+  @@index([projectId])
+}
+
+/**
+ * Knowledge-graph node. Deduplicated per project by (kind,key). Provenance
+ * follows the evidence ledger: OBSERVED | DERIVED | INFERRED | UNKNOWN.
+ */
+model GraphNode {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  kind       String // page|asset|api|endpoint|component|service|model|tech|function|class|finding
+  key        String // stable identity: URL, symbol path, name
+  label      String
+  meta       String? // JSON details
+  provenance String   @default("OBSERVED")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([projectId, kind, key])
+  @@index([projectId, kind])
+}
+
+/** Typed, directed graph edge between two nodes (referenced by node keys). */
+model GraphEdge {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fromKind   String
+  fromKey    String
+  toKind     String
+  toKey      String
+  kind       String // links-to|calls|imports|serves|depends-on|contains|references
+  meta       String?
+  provenance String   @default("OBSERVED")
+  createdAt  DateTime @default(now())
+
+  @@unique([projectId, fromKind, fromKey, toKind, toKey, kind])
+  @@index([projectId])
+}
+
+/** A cited research report produced for a project. */
+model ResearchReport {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  query     String
+  summary   String?
+  reportMd  String?
+  sources   String? // JSON [{title,url,snippet,kind}]
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+}
+
+/** A file (or log/plan) materialized in the builder's isolated workspace. */
+model BuildArtifact {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  path      String // workspace-relative
+  content   String?
+  kind      String   @default("file") // file|log|plan
+  sizeBytes Int?
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+}
+
+/**
+ * One run of the full reconstruction pipeline. Steps form a DAG persisted in
+ * OrchestrationStep; retries, checkpoints, approvals and cancellation live on
+ * the step rows.
+ */
+model Orchestration {
+  id           String    @id @default(cuid())
+  projectId    String
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  goal         String
+  status       String    @default("running") // running|completed|failed|cancelled|awaiting_approval
+  currentStage String?
+  progress     Int       @default(0)
+  error        String?
+  context      String? // JSON shared context across steps
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  finishedAt   DateTime?
+  steps        OrchestrationStep[]
+
+  @@index([projectId, createdAt])
+}
+
+model OrchestrationStep {
+  id              String        @id @default(cuid())
+  orchestrationId String
+  orchestration   Orchestration @relation(fields: [orchestrationId], references: [id], onDelete: Cascade)
+  createdAt       DateTime      @default(now())
+  stage           String // discover|collect|understand|map|research|plan|build|test|verify
+  name            String
+  status          String        @default("pending") // pending|running|done|failed|skipped|awaiting_approval|cancelled
+  attempts        Int           @default(0)
+  maxAttempts     Int           @default(2)
+  dependsOn       String? // JSON array of step ids
+  output          String? // JSON result payload
+  checkpoint      String? // JSON resume point
+  error           String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  durationMs      Int?
+
+  @@index([orchestrationId])
+}
+
+/** One verification pass: HTTP/browser checks, score, diff, regression flag. */
+model VerificationRun {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  url         String?
+  status      String   @default("completed")
+  score       Int? // 0-100
+  checks      String? // JSON [{name,passed,detail,ms}]
+  diffSummary String?
+  regression  Boolean?
+  createdAt   DateTime @default(now())
+
+  @@index([projectId, createdAt])
+}
+
+/**
+ * A reusable external capability: built-in platform services, plain HTTP
+ * endpoints, or MCP servers. Header secrets are sealed with the same
+ * AES-256-GCM vault as provider keys.
+ */
+model Connector {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  kind          String // builtin|http|mcp
+  endpoint      String? // URL (http) or command (mcp stdio)
+  config        String? // JSON: builtin id / method / tool mapping
+  sealedHeaders String? // JSON SealedKey[] for auth headers
+  status        String    @default("unknown") // unknown|healthy|unreachable
+  lastCheckedAt DateTime?
+  lastError     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([userId])
 }
