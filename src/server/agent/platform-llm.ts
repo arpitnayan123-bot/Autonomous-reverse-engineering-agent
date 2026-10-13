@@ -94,8 +94,13 @@ function withTimeoutAndAbort<T>(
   });
 }
 
+/** Platform messages may carry native system prompts (GLM supports them). */
+export type PlatformMessage =
+  | LlmMessage
+  | { role: "system"; content: string };
+
 export async function zaiPlatformChat(
-  messages: LlmMessage[],
+  messages: PlatformMessage[],
   opts?: CallOpts
 ): Promise<string> {
   let lastErr: unknown = null;
