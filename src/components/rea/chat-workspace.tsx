@@ -1,7 +1,9 @@
 "use client";
 
 import * as React from "react";
+import { motion } from "framer-motion";
 import {
+  ArrowDown,
   Binary,
   ChevronDown,
   CircleAlert,
@@ -22,7 +24,7 @@ import {
   type TargetSummary,
 } from "@/lib/api-client";
 import { useReaStore } from "@/store/rea-store";
-import { Markdown, humanBytes, toastError } from "@/components/rea/shared";
+import { CopyButton, Markdown, humanBytes, toastError } from "@/components/rea/shared";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -121,6 +123,8 @@ export function ChatWorkspace({
   const [streaming, setStreaming] = React.useState(false);
   const [modelInfo, setModelInfo] = React.useState<ModelInfo | null>(null);
   const [input, setInput] = React.useState("");
+  /** False while the user scrolled up — suppresses autoscroll + shows the jump button. */
+  const [atBottom, setAtBottom] = React.useState(true);
 
   const abortRef = React.useRef<AbortController | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
@@ -164,12 +168,26 @@ export function ChatWorkspace({
     };
   }, [activeSessionId]);
 
-  // ---- Autoscroll ---------------------------------------------------------
+  // ---- Autoscroll (only while pinned to bottom) ---------------------------
   React.useEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
+    if (!el || !atBottom) return;
     el.scrollTop = el.scrollHeight;
-  }, [entries, streaming]);
+  }, [entries, streaming, atBottom]);
+
+  const onMessagesScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setAtBottom(distance < 80);
+  };
+
+  const jumpToBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    setAtBottom(true);
+  };
 
   // ---- Composer auto-resize ----------------------------------------------
   React.useEffect(() => {
@@ -261,7 +279,13 @@ export function ChatWorkspace({
     };
 
     try {
-      await streamChat({ sessionId, targetId, message, onEvent }, controller.signal);
+      const { rateLimitRemaining } = await streamChat(
+        { sessionId, targetId, message, onEvent },
+        controller.signal
+      );
+      if (rateLimitRemaining !== null) {
+        useReaStore.getState().setChatQuota({ limit: 20, remaining: rateLimitRemaining });
+      }
     } catch (err) {
       if (!controller.signal.aborted) {
         const msg = err instanceof Error ? err.message : "Chat failed";
@@ -292,7 +316,7 @@ export function ChatWorkspace({
   const hasKey = useReaStore((s) => s.hasProviderKey);
 
   return (
-    <section className={cn("flex min-h-0 flex-col bg-zinc-950", className)} aria-label="Chat">
+    <section className={cn("relative flex min-h-0 flex-col bg-zinc-950", className)} aria-label="Chat">
       {/* Context strip (only when a file is attached) */}
       {boundTarget && (
         <div className="flex h-9 shrink-0 items-center gap-2 border-b border-zinc-800/60 px-3 text-xs text-zinc-500">
@@ -330,7 +354,11 @@ export function ChatWorkspace({
       )}
 
       {/* Messages */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto rea-scroll">
+      <div
+        ref={scrollRef}
+        onScroll={onMessagesScroll}
+        className="relative min-h-0 flex-1 overflow-y-auto rea-scroll"
+      >
         {historyLoading ? (
           <div className="mx-auto w-full max-w-3xl space-y-4 px-4 py-8">
             <div className="h-16 animate-pulse rounded-lg bg-zinc-900" />
@@ -347,7 +375,14 @@ export function ChatWorkspace({
           <div className="mx-auto w-full max-w-3xl px-4 py-6">
             <div className="flex flex-col gap-5">
               {entries.map((entry) => (
-                <MessageRow key={entry.id} entry={entry} />
+                <motion.div
+                  key={entry.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.18, ease: "easeOut" }}
+                >
+                  <MessageRow entry={entry} />
+                </motion.div>
               ))}
               {streaming && (
                 <div className="flex items-center gap-2 font-mono text-[10px] text-zinc-600">
@@ -359,6 +394,18 @@ export function ChatWorkspace({
           </div>
         )}
       </div>
+
+      {/* Scroll-to-bottom (appears when the user scrolled up) */}
+      {!atBottom && (
+        <button
+          type="button"
+          onClick={jumpToBottom}
+          aria-label="Scroll to latest message"
+          className="absolute bottom-32 left-1/2 z-10 -translate-x-1/2 rounded-full border border-zinc-700 bg-zinc-900/90 p-2 text-zinc-300 shadow-lg shadow-black/40 backdrop-blur transition-colors hover:border-zinc-600 hover:text-zinc-100 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+        >
+          <ArrowDown className="size-4" aria-hidden />
+        </button>
+      )}
 
       {/* Composer */}
       <div className="shrink-0 px-3 pb-3 pt-1 sm:px-4 sm:pb-4" id="rea-composer">
@@ -551,9 +598,14 @@ function TraceRow({ step }: { step: TraceStep }) {
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <pre className="mt-1 max-h-48 overflow-auto rea-scroll rounded-md border border-zinc-800/70 bg-zinc-950 p-2.5 font-mono text-[10px] leading-relaxed whitespace-pre-wrap text-zinc-400">
-          {step.preview || "(no output)"}
-        </pre>
+        <div className="relative mt-1">
+          <pre className="max-h-48 overflow-auto rea-scroll rounded-md border border-zinc-800/70 bg-zinc-950 p-2.5 pr-9 font-mono text-[10px] leading-relaxed whitespace-pre-wrap text-zinc-400">
+            {step.preview || "(no output)"}
+          </pre>
+          <div className="absolute top-1.5 right-1.5">
+            <CopyButton value={step.preview ?? ""} label="Copy tool output" />
+          </div>
+        </div>
       </CollapsibleContent>
     </Collapsible>
   );

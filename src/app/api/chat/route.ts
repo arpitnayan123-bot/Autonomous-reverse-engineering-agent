@@ -80,26 +80,50 @@ export async function GET(req: Request) {
         targetName: session.target?.originalName ?? null,
         detectedFormat: session.target?.detectedFormat ?? null,
       },
-      messages: messages.map((m) => {
-        let toolCalls: unknown = null;
-        if (m.toolCalls) {
-          try {
-            toolCalls = JSON.parse(m.toolCalls);
-          } catch {
-            toolCalls = null;
-          }
-        }
-        return {
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          toolCalls,
-          createdAt: m.createdAt,
-        };
-      }),
+      messages: messages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        // Raw JSON string (client parses defensively) — matches ChatMessageRow.
+        toolCalls: m.toolCalls,
+        createdAt: m.createdAt,
+      })),
     });
   } catch (err) {
     console.error("chat GET error:", err);
+    return NextResponse.json({ ok: false, error: "Internal error" }, { status: 500 });
+  }
+}
+
+/** GET /api/chat            → list the user's sessions (sidebar). */
+/** GET /api/chat?sessionId= → message history for one session. */
+/** PATCH /api/chat?sessionId= {title} → rename a session. */
+export async function PATCH(req: Request) {
+  try {
+    const user = await getSessionUser();
+    if (!user) {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+    const sessionId = new URL(req.url).searchParams.get("sessionId") ?? "";
+    if (!isSafeId(sessionId)) {
+      return NextResponse.json({ ok: false, error: "Invalid session id" }, { status: 400 });
+    }
+    const body = (await req.json().catch(() => null)) as { title?: unknown } | null;
+    const title = typeof body?.title === "string" ? body.title.trim().slice(0, 120) : "";
+    if (!title) {
+      return NextResponse.json({ ok: false, error: "title is required (1–120 chars)" }, { status: 400 });
+    }
+    const session = await db.chatSession.findUnique({ where: { id: sessionId } });
+    if (!session || session.userId !== user.id) {
+      return NextResponse.json({ ok: false, error: "Session not found" }, { status: 404 });
+    }
+    const updated = await db.chatSession.update({
+      where: { id: sessionId },
+      data: { title },
+    });
+    return NextResponse.json({ ok: true, session: { id: updated.id, title: updated.title } });
+  } catch (err) {
+    console.error("chat PATCH error:", err);
     return NextResponse.json({ ok: false, error: "Internal error" }, { status: 500 });
   }
 }
@@ -316,6 +340,8 @@ export async function POST(req: Request) {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
+        "X-RateLimit-Limit": "20",
+        "X-RateLimit-Remaining": String(rl.remaining),
       },
     });
   } catch (err) {

@@ -3,13 +3,16 @@
 import * as React from "react";
 import {
   Binary,
+  Check,
   ChevronRight,
   CircleDot,
+  Download,
   KeyRound,
   LogOut,
   MessageSquare,
   MessagesSquare,
   MonitorDot,
+  Pencil,
   PanelLeft,
   PanelRightClose,
   PanelRightOpen,
@@ -17,6 +20,7 @@ import {
   Settings2,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 
 import {
@@ -24,12 +28,16 @@ import {
   apiPost,
   apiUpload,
   deleteChatSession,
+  getChatSession,
   listChatSessions,
+  renameChatSession,
   type Capabilities,
   type ReaUser,
   type SessionSummary,
+  type TargetDetail,
   type TargetSummary,
 } from "@/lib/api-client";
+import { exportChat, exportTargetReport } from "@/lib/export";
 import { useReaStore } from "@/store/rea-store";
 import { refreshProviderInStore } from "@/components/rea/rea-app";
 import { ChatWorkspace } from "@/components/rea/chat-workspace";
@@ -104,6 +112,10 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [deletingSession, setDeletingSession] = React.useState<SessionSummary | null>(null);
   const [uploading, setUploading] = React.useState(false);
+  const [renamingSession, setRenamingSession] = React.useState<SessionSummary | null>(null);
+  const [renameValue, setRenameValue] = React.useState("");
+  const [exportingChat, setExportingChat] = React.useState(false);
+  const [exportingReport, setExportingReport] = React.useState(false);
 
   const activeSession = React.useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -204,6 +216,56 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     }
   };
 
+  const startRename = (s: SessionSummary) => {
+    setRenamingSession(s);
+    setRenameValue(s.title);
+  };
+
+  const commitRename = async () => {
+    const session = renamingSession;
+    if (!session) return;
+    const title = renameValue.trim().slice(0, 120);
+    setRenamingSession(null);
+    if (!title || title === session.title) return;
+    try {
+      await renameChatSession(session.id, title);
+      await refreshSessions();
+    } catch (err) {
+      toastError(err, "Could not rename chat");
+    }
+  };
+
+  /** Download the active chat transcript as Markdown. */
+  const onExportChat = async () => {
+    if (!activeSession || exportingChat) return;
+    setExportingChat(true);
+    try {
+      const { session, messages } = await getChatSession(activeSession.id);
+      exportChat(session.title, messages, {
+        targetName: session.targetName,
+        detectedFormat: session.detectedFormat,
+      });
+    } catch (err) {
+      toastError(err, "Could not export chat");
+    } finally {
+      setExportingChat(false);
+    }
+  };
+
+  /** Download the inspector target's investigation report as Markdown. */
+  const onExportReport = async () => {
+    if (!inspectorTargetId || exportingReport) return;
+    setExportingReport(true);
+    try {
+      const res = await apiGet<{ target: TargetDetail }>(`/api/targets/${inspectorTargetId}`);
+      await exportTargetReport(res.target);
+    } catch (err) {
+      toastError(err, "Could not export report");
+    } finally {
+      setExportingReport(false);
+    }
+  };
+
   const openSessionAndClose = (id: string) => {
     openSession(id);
     setMobileNavOpen(false);
@@ -246,12 +308,18 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
               activeSessionId={activeSessionId}
               draftTargetId={draftTargetId}
               uploading={uploading}
+              renamingSession={renamingSession}
+              renameValue={renameValue}
+              setRenameValue={setRenameValue}
               onNewChat={() => {
                 newFreeChat();
                 setMobileNavOpen(false);
               }}
               onOpenSession={openSessionAndClose}
               onDeleteSession={(s) => setDeletingSession(s)}
+              onStartRename={startRename}
+              onCommitRename={() => void commitRename()}
+              onCancelRename={() => setRenamingSession(null)}
               onUpload={onPickFile}
               onOpenTargetChat={(id) => {
                 useReaStore.getState().newTargetChat(id);
@@ -284,6 +352,21 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
 
         {/* Model chip → settings */}
         <ModelChip />
+
+        {/* Export chat transcript */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn(
+            "size-8 text-zinc-400",
+            !activeSession && "hidden"
+          )}
+          aria-label="Export chat as Markdown"
+          disabled={exportingChat}
+          onClick={() => void onExportChat()}
+        >
+          <Download className="size-4" aria-hidden />
+        </Button>
 
         {/* Inspector toggle (desktop) */}
         <Button
@@ -365,9 +448,15 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
             activeSessionId={activeSessionId}
             draftTargetId={draftTargetId}
             uploading={uploading}
+            renamingSession={renamingSession}
+            renameValue={renameValue}
+            setRenameValue={setRenameValue}
             onNewChat={newFreeChat}
             onOpenSession={openSession}
             onDeleteSession={(s) => setDeletingSession(s)}
+            onStartRename={startRename}
+            onCommitRename={() => void commitRename()}
+            onCancelRename={() => setRenamingSession(null)}
             onUpload={onPickFile}
             onOpenTargetChat={(id) => useReaStore.getState().newTargetChat(id)}
             onInspect={(id) => useReaStore.getState().openInspector(id)}
@@ -394,15 +483,27 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
                 <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">
                   Inspector
                 </span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6 text-zinc-500 hover:text-zinc-200"
-                  aria-label="Close inspector"
-                  onClick={closeInspector}
-                >
-                  <PanelRightClose className="size-3.5" aria-hidden />
-                </Button>
+                <div className="flex items-center gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 text-zinc-500 hover:text-emerald-400"
+                    aria-label="Export investigation report as Markdown"
+                    disabled={exportingReport}
+                    onClick={() => void onExportReport()}
+                  >
+                    <Download className="size-3.5" aria-hidden />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 text-zinc-500 hover:text-zinc-200"
+                    aria-label="Close inspector"
+                    onClick={closeInspector}
+                  >
+                    <PanelRightClose className="size-3.5" aria-hidden />
+                  </Button>
+                </div>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto rea-scroll">
                 <TargetPanel targetId={inspectorTargetId} />
@@ -533,9 +634,15 @@ interface SidebarBodyProps {
   activeSessionId: string | null;
   draftTargetId: string | null;
   uploading: boolean;
+  renamingSession: SessionSummary | null;
+  renameValue: string;
+  setRenameValue: (v: string) => void;
   onNewChat: () => void;
   onOpenSession: (id: string) => void;
   onDeleteSession: (s: SessionSummary) => void;
+  onStartRename: (s: SessionSummary) => void;
+  onCommitRename: () => void;
+  onCancelRename: () => void;
   onUpload: () => void;
   onOpenTargetChat: (targetId: string) => void;
   onInspect: (targetId: string) => void;
@@ -574,6 +681,7 @@ function SidebarBody(p: SidebarBodyProps) {
           ) : (
             p.sessions.map((s) => {
               const active = s.id === p.activeSessionId && !p.draftTargetId;
+              const renaming = p.renamingSession?.id === s.id;
               return (
                 <div
                   key={s.id}
@@ -582,44 +690,97 @@ function SidebarBody(p: SidebarBodyProps) {
                     active ? "bg-zinc-800/80" : "hover:bg-zinc-900"
                   )}
                 >
-                  <button
-                    type="button"
-                    onClick={() => p.onOpenSession(s.id)}
-                    aria-current={active ? "true" : undefined}
-                    className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                  >
-                    {s.targetId ? (
-                      <Binary className="size-3.5 shrink-0 text-emerald-500/80" aria-hidden />
-                    ) : (
-                      <MessageSquare className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
-                    )}
-                    <span className="min-w-0 flex-1">
-                      <span
-                        className={cn(
-                          "block truncate text-xs",
-                          active ? "text-zinc-100" : "text-zinc-400"
-                        )}
+                  {renaming ? (
+                    <div className="flex min-w-0 flex-1 items-center gap-1 px-1.5 py-1">
+                      <input
+                        autoFocus
+                        value={p.renameValue}
+                        onChange={(e) => p.setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void p.onCommitRename();
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            p.onCancelRename();
+                          }
+                        }}
+                        aria-label="Rename chat"
+                        maxLength={120}
+                        className="h-6 min-w-0 flex-1 rounded border border-emerald-500/40 bg-zinc-950 px-1.5 font-mono text-[11px] text-zinc-100 focus-visible:outline-none"
+                      />
+                      <button
+                        type="button"
+                        aria-label="Save chat name"
+                        onClick={() => void p.onCommitRename()}
+                        className="rounded p-1 text-emerald-400 hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
                       >
-                        {s.title || "New chat"}
+                        <Check className="size-3.5" aria-hidden />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Cancel renaming"
+                        onClick={p.onCancelRename}
+                        className="rounded p-1 text-zinc-500 hover:bg-zinc-800 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                      >
+                        <X className="size-3.5" aria-hidden />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => p.onOpenSession(s.id)}
+                        aria-current={active ? "true" : undefined}
+                        className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                      >
+                        {s.targetId ? (
+                          <Binary className="size-3.5 shrink-0 text-emerald-500/80" aria-hidden />
+                        ) : (
+                          <MessageSquare className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
+                        )}
+                        <span className="min-w-0 flex-1">
+                          <span
+                            className={cn(
+                              "block truncate text-xs",
+                              active ? "text-zinc-100" : "text-zinc-400"
+                            )}
+                          >
+                            {s.title || "New chat"}
+                          </span>
+                          <span className="block truncate text-[10px] text-zinc-600">
+                            {s.targetName ? `${s.targetName} · ` : ""}
+                            {s.messageCount > 0 ? `${s.messageCount} msg · ` : ""}
+                            {timeAgo(s.updatedAt)}
+                          </span>
+                        </span>
+                      </button>
+                      <span className="flex shrink-0 items-center opacity-0 transition-all group-hover:opacity-100 focus-within:opacity-100">
+                        <button
+                          type="button"
+                          aria-label={`Rename chat: ${s.title}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            p.onStartRename(s);
+                          }}
+                          className="rounded p-1 text-zinc-600 transition-colors hover:text-emerald-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                        >
+                          <Pencil className="size-3.5" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Delete chat: ${s.title}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            p.onDeleteSession(s);
+                          }}
+                          className="rounded p-1 text-zinc-600 transition-colors hover:text-rose-400 focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:outline-none"
+                        >
+                          <Trash2 className="size-3.5" aria-hidden />
+                        </button>
                       </span>
-                      <span className="block truncate text-[10px] text-zinc-600">
-                        {s.targetName ? `${s.targetName} · ` : ""}
-                        {s.messageCount > 0 ? `${s.messageCount} msg · ` : ""}
-                        {timeAgo(s.updatedAt)}
-                      </span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Delete chat: ${s.title}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      p.onDeleteSession(s);
-                    }}
-                    className="rounded p-1 text-zinc-600 opacity-0 transition-all hover:text-rose-400 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:outline-none"
-                  >
-                    <Trash2 className="size-3.5" aria-hidden />
-                  </button>
+                    </>
+                  )}
                 </div>
               );
             })
@@ -742,7 +903,7 @@ function SidebarSection({
 // ---------------------------------------------------------------------------
 
 function StatusBar() {
-  const { capabilities, providerActive, sessions, targets, user } = useReaStore();
+  const { capabilities, providerActive, sessions, targets, user, chatQuota } = useReaStore();
 
   return (
     <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-zinc-800/80 bg-zinc-950 px-3 font-mono text-[10px] text-zinc-500">
@@ -759,6 +920,18 @@ function StatusBar() {
       <span className="hidden sm:inline">
         model: {providerActive ? `${providerActive.provider}/${providerActive.model}` : "platform"}
       </span>
+      {chatQuota && (
+        <span
+          className={cn(
+            "hidden md:inline",
+            chatQuota.remaining <= 3 && chatQuota.remaining > 0 && "text-amber-400",
+            chatQuota.remaining === 0 && "text-rose-400"
+          )}
+          aria-label={`Message quota: ${chatQuota.remaining} of ${chatQuota.limit} remaining in this window`}
+        >
+          quota: {chatQuota.remaining}/{chatQuota.limit} msgs · 5 min
+        </span>
+      )}
       <span className="hidden md:inline">{targets.length} files</span>
       <span className="hidden md:inline">{sessions.length} chats</span>
       <span className="ml-auto hidden sm:inline text-zinc-600">evidence-first analysis</span>

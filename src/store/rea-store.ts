@@ -39,6 +39,8 @@ interface ReaState {
   providerActive: ProviderActive | null;
   providerLoaded: boolean;
   hasProviderKey: boolean | null;
+  /** Message quota from the last chat POST (X-RateLimit headers). */
+  chatQuota: { limit: number; remaining: number } | null;
 
   setBooted: (booted: boolean) => void;
   setUser: (user: ReaUser | null) => void;
@@ -66,6 +68,7 @@ interface ReaState {
   setProviderActive: (active: ProviderActive | null) => void;
   setProviderLoaded: (loaded: boolean) => void;
   setHasProviderKey: (has: boolean | null) => void;
+  setChatQuota: (quota: { limit: number; remaining: number } | null) => void;
 }
 
 export const useReaStore = create<ReaState>((set) => ({
@@ -88,6 +91,7 @@ export const useReaStore = create<ReaState>((set) => ({
   providerActive: null,
   providerLoaded: false,
   hasProviderKey: null,
+  chatQuota: null,
 
   setBooted: (booted) => set({ booted }),
   setUser: (user) => set({ user }),
@@ -115,4 +119,5 @@ export const useReaStore = create<ReaState>((set) => ({
   setProviderActive: (providerActive) => set({ providerActive }),
   setProviderLoaded: (providerLoaded) => set({ providerLoaded }),
   setHasProviderKey: (hasProviderKey) => set({ hasProviderKey }),
+  setChatQuota: (chatQuota) => set({ chatQuota }),
 }));

@@ -235,6 +235,11 @@ export async function deleteChatSession(sessionId: string): Promise<void> {
   await apiDelete(`/api/chat?sessionId=${encodeURIComponent(sessionId)}`);
 }
 
+/** PATCH /api/chat?sessionId= — rename a session. */
+export async function renameChatSession(sessionId: string, title: string): Promise<void> {
+  await apiPatch(`/api/chat?sessionId=${encodeURIComponent(sessionId)}`, { title });
+}
+
 // ---------------------------------------------------------------------------
 // Envelope handling
 // ---------------------------------------------------------------------------
@@ -301,6 +306,16 @@ export async function apiDelete<T>(path: string): Promise<T> {
   return unwrap<T>(res);
 }
 
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+    cache: "no-store",
+  });
+  return unwrap<T>(res);
+}
+
 /**
  * Multipart upload with progress reporting (XMLHttpRequest — fetch cannot
  * report upload progress).
@@ -353,6 +368,7 @@ export function apiUpload<T>(
  * - neither      → start a NEW free chat.
  * Frames are `data: {json}\n\n`; the buffer is split on `\n\n` and every
  * `data: ` line is JSON-parsed and forwarded to `onEvent`.
+ * Resolves with the message quota remaining (from X-RateLimit-Remaining).
  */
 export async function streamChat(
   opts: {
@@ -362,7 +378,7 @@ export async function streamChat(
     onEvent: (event: ChatStreamEvent) => void;
   },
   signal?: AbortSignal
-): Promise<void> {
+): Promise<{ rateLimitRemaining: number | null }> {
   const { sessionId, targetId, message, onEvent } = opts;
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -370,6 +386,7 @@ export async function streamChat(
     body: JSON.stringify({ sessionId: sessionId ?? undefined, targetId: targetId ?? undefined, message }),
     signal,
   });
+  const rateLimitRemaining = Number(res.headers.get("X-RateLimit-Remaining"));
   if (!res.ok || !res.body) {
     let msg = `Chat failed (${res.status})`;
     try {
@@ -412,4 +429,7 @@ export async function streamChat(
   }
   // Flush any trailing frame that was not \n\n-terminated.
   if (buffer.trim()) consumeFrame(buffer);
+  return {
+    rateLimitRemaining: Number.isFinite(rateLimitRemaining) ? rateLimitRemaining : null,
+  };
 }
