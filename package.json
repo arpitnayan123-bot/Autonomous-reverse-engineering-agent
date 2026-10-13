@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "mcp:server": "bun scripts/mcp-server.ts",
     "mcp:token": "bun scripts/mcp-token.ts",
+    "regress:explorer": "bun scripts/regression-explorer.ts",
     "db:push": "prisma db push --accept-data-loss",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
