@@ -2,9 +2,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { db } from "@/lib/db";
 import { audit } from "@/lib/security";
-import { sealKey, openKey, type SealedKey } from "@/server/agent/vault";
+import { sealHeaders, openHeaders } from "@/server/agent/vault";
 import { safeFetch, assertPublicUrl, BlockedUrlError } from "./net";
 import { platformWebSearch } from "./research";
+
+// Header sealing lives in the vault (next to the AES-256-GCM primitives) so
+// research.ts can reuse it without importing this module — keeps the
+// dependency graph acyclic. Re-exported here for existing callers.
+export { sealHeaders, openHeaders };
 
 /**
  * Universal Connector System.
@@ -153,36 +158,6 @@ export async function invokeHttpConnector(
     return { ok: res.ok, status: res.status, body };
   } finally {
     clearTimeout(timer);
-  }
-}
-
-// --- Header sealing -----------------------------------------------------------
-
-export function sealHeaders(headers: Record<string, string>): string | null {
-  const entries = Object.entries(headers).filter(([k, v]) => k && v);
-  if (entries.length === 0) return null;
-  const sealed: Array<{ name: string; sealed: SealedKey }> = entries.map(([name, value]) => ({
-    name: name.toLowerCase(),
-    sealed: sealKey(value),
-  }));
-  return JSON.stringify(sealed);
-}
-
-export function openHeaders(sealedJson: string | null): Record<string, string> {
-  if (!sealedJson) return {};
-  try {
-    const arr = JSON.parse(sealedJson) as Array<{ name: string; sealed: SealedKey }>;
-    const out: Record<string, string> = {};
-    for (const e of arr) {
-      try {
-        out[e.name] = openKey(e.sealed);
-      } catch {
-        /* skip unopenable */
-      }
-    }
-    return out;
-  } catch {
-    return {};
   }
 }
 

@@ -3,6 +3,7 @@ import ZAI from "z-ai-web-dev-sdk";
 import { safeFetch } from "./net";
 import { upsertGraph } from "./graph";
 import { zaiPlatformChat } from "@/server/agent/platform-llm";
+import { openHeaders } from "@/server/agent/vault";
 import { db } from "@/lib/db";
 
 /**
@@ -55,6 +56,38 @@ const GH_HEADERS: Record<string, string> = {
   ...(process.env.GITHUB_TOKEN ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
 };
 
+/**
+ * GitHub REST calls honor the user's own credentials: when the user has a
+ * registered HTTP connector targeting api.github.com, its sealed headers
+ * (e.g. a personal access token) are opened from the vault and layered over
+ * the platform defaults — lifting the shared-IP 60/hr unauthenticated quota.
+ * Headers are resolved per call and never logged or returned to any client.
+ */
+async function githubHeadersForUser(userId: string | undefined): Promise<Record<string, string>> {
+  if (!userId) return {};
+  try {
+    const connectors = await db.connector.findMany({
+      where: { userId, kind: "http" },
+      orderBy: { updatedAt: "desc" },
+      take: 50,
+    });
+    const rank = (s: string) => (s === "healthy" ? 0 : s === "unknown" ? 1 : 2);
+    const match = connectors
+      .filter((c) => {
+        try {
+          return Boolean(c.endpoint && new URL(c.endpoint).host === "api.github.com");
+        } catch {
+          return false;
+        }
+      })
+      .sort((a, b) => rank(a.status) - rank(b.status))[0];
+    if (!match) return {};
+    return openHeaders(match.sealedHeaders);
+  } catch {
+    return {};
+  }
+}
+
 /** Parse "owner/repo", a github.com URL, or a full git URL into owner/repo. */
 export function parseGitHubRef(raw: string): { owner: string; repo: string } | null {
   const cleaned = raw.trim().replace(/\.git$/, "");
@@ -84,14 +117,18 @@ export interface GitHubAnalysis {
   err?: string;
 }
 
-export async function analyzeGitHubRepo(ref: string): Promise<{ analysis: GitHubAnalysis | null; sources: ResearchSource[] }> {
+export async function analyzeGitHubRepo(
+  ref: string,
+  userId?: string
+): Promise<{ analysis: GitHubAnalysis | null; sources: ResearchSource[] }> {
   const parsed = parseGitHubRef(ref);
   if (!parsed) return { analysis: null, sources: [] };
   const { owner, repo } = parsed;
   const sources: ResearchSource[] = [];
+  const headers = { ...GH_HEADERS, ...(await githubHeadersForUser(userId)) };
   const j = async (path: string): Promise<unknown> => {
     const res = await fetch(`https://api.github.com${path}`, {
-      headers: GH_HEADERS,
+      headers,
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) throw new Error(`GitHub API ${path} → ${res.status}`);
@@ -250,6 +287,9 @@ export async function runResearch(
 ): Promise<ResearchResult> {
   const sources: ResearchSource[] = [];
 
+  // 0. The project record — its owner decides whose connectors apply.
+  const project = await db.project.findUnique({ where: { id: projectId } });
+
   // 1. Platform web search (always).
   let webResults: Array<{ name: string; url: string; snippet: string }> = [];
   try {
@@ -268,7 +308,7 @@ export async function runResearch(
   // 2. GitHub analysis when the query references a repository.
   const ghRefMatch = query.match(/\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/);
   if (ghRefMatch && parseGitHubRef(ghRefMatch[1])) {
-    const gh = await analyzeGitHubRepo(ghRefMatch[1]);
+    const gh = await analyzeGitHubRepo(ghRefMatch[1], project?.userId);
     sources.push(...gh.sources);
     if (gh.analysis) {
       sources.push({
@@ -288,7 +328,6 @@ export async function runResearch(
   }
 
   // 4. Docs discovery for website projects.
-  const project = await db.project.findUnique({ where: { id: projectId } });
   if (project?.kind === "website") {
     try {
       const docs = await discoverDocs(project.reference);

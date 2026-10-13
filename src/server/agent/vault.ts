@@ -81,3 +81,40 @@ export function scrubSecrets(text: string): string {
     .replace(/x-api-key[:\s]+[A-Za-z0-9._-]{8,}/gi, "x-api-key: ***")
     .replace(/key=[A-Za-z0-9._-]{8,}/gi, "key=***");
 }
+
+// --- Sealed header bundles (connector auth) -----------------------------------
+//
+// Sealing lives next to the vault primitives so any server module can use it
+// without importing the connector registry (keeps the dependency graph
+// acyclic — e.g. research.ts needs connector headers but must not import
+// connectors.ts, which imports research.ts).
+
+/** Seal a set of auth headers into a single JSON string for DB storage. */
+export function sealHeaders(headers: Record<string, string>): string | null {
+  const entries = Object.entries(headers).filter(([k, v]) => k && v);
+  if (entries.length === 0) return null;
+  const sealed: Array<{ name: string; sealed: SealedKey }> = entries.map(([name, value]) => ({
+    name: name.toLowerCase(),
+    sealed: sealKey(value),
+  }));
+  return JSON.stringify(sealed);
+}
+
+/** Open a sealed header bundle. Unopenable entries are skipped silently. */
+export function openHeaders(sealedJson: string | null): Record<string, string> {
+  if (!sealedJson) return {};
+  try {
+    const arr = JSON.parse(sealedJson) as Array<{ name: string; sealed: SealedKey }>;
+    const out: Record<string, string> = {};
+    for (const e of arr) {
+      try {
+        out[e.name] = openKey(e.sealed);
+      } catch {
+        /* skip unopenable */
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
