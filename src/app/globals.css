@@ -196,6 +196,14 @@ body {
   margin-top: 0;
 }
 
+/* GFM tables: zebra rows + softer header separation inside chat/docs prose. */
+.rea-markdown table tbody tr:nth-child(odd) {
+  background-color: color-mix(in oklab, var(--color-zinc-900) 45%, transparent);
+}
+.rea-markdown table tbody tr:hover {
+  background-color: color-mix(in oklab, var(--color-zinc-800) 55%, transparent);
+}
+
 /* Search-jump flash: briefly highlight a message jumped to from search. */
 @keyframes rea-jump-flash {
   0%,

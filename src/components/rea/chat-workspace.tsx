@@ -1051,7 +1051,7 @@ function MessageMeta({
         <span className="flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
           {hasUsage && (
             <span
-              className="flex items-center gap-0.5"
+              className="flex items-center gap-0.5 whitespace-nowrap"
               title={`Provider-reported tokens — prompt: ${entry.tokensIn ?? "unknown"}, completion: ${entry.tokensOut ?? "unknown"}`}
             >
               <span className="text-zinc-700">↑</span>
@@ -1069,7 +1069,7 @@ function MessageMeta({
           )}
           {costLabel && (
             <span
-              className="text-amber-500/70"
+              className="whitespace-nowrap text-amber-500/70"
               title={`Estimated cost at ${costModel ?? "model"} list price — real bills vary by endpoint, caching and discounts.`}
             >
               {costLabel}

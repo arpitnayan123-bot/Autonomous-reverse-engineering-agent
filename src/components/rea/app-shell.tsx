@@ -9,6 +9,7 @@ import {
   CircleUserRound,
   Download,
   KeyRound,
+  Keyboard,
   LogOut,
   MessageSquare,
   MessagesSquare,
@@ -499,6 +500,17 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
         >
           <SearchIcon className="size-3" aria-hidden />
           <span>⌘K</span>
+        </Button>
+
+        {/* "?" shortcuts cheat-sheet trigger */}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => useReaStore.getState().setShortcutsOpen(true)}
+          aria-label="Keyboard shortcuts"
+          className="hidden size-7 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 sm:inline-flex"
+        >
+          <Keyboard className="size-3.5" aria-hidden />
         </Button>
 
         {/* Model chip → settings */}
@@ -1069,8 +1081,8 @@ function SidebarBody(p: SidebarBodyProps) {
                 setSearch("");
               }
             }}
-            placeholder="Filter chats & files…"
-            aria-label="Filter chats and files"
+            placeholder="Filter & search messages…"
+            aria-label="Filter chats, files and message content"
             className="h-7 w-full rounded-md border border-zinc-800/80 bg-zinc-900/50 pr-2 pl-7 font-mono text-[11px] text-zinc-200 transition-colors placeholder:text-zinc-600 focus:border-emerald-500/40 focus:bg-zinc-900 focus:outline-none [&::-webkit-search-cancel-button]:hidden"
           />
         </div>
