@@ -994,10 +994,19 @@ function SidebarBody(p: SidebarBodyProps) {
                 >
                   {s.title || "New chat"}
                 </span>
-                <span className="block truncate text-[10px] text-zinc-600">
+                <span className="flex items-center gap-1.5 text-[10px] text-zinc-600">
                   {s.targetName ? `${s.targetName} · ` : ""}
                   {s.messageCount > 0 ? `${s.messageCount} msg · ` : ""}
                   {timeAgo(s.updatedAt)}
+                  {s.costUsd != null && (
+                    <span
+                      className="text-amber-500/60 tabular-nums"
+                      title="Estimated cumulative cost for this chat — provider-reported tokens × list price; real bills vary"
+                    >
+                      {" "}
+                      · ~{formatCostUsd(s.costUsd)}
+                    </span>
+                  )}
                 </span>
               </span>
             </button>

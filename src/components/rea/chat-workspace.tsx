@@ -34,6 +34,7 @@ import {
 import { useReaStore } from "@/store/rea-store";
 import { CopyButton, Markdown, humanBytes, humanDuration, humanTokens, toastError } from "@/components/rea/shared";
 import { estimateCostUsd, formatCostUsd } from "@/lib/pricing";
+import { PenLine } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import {
@@ -63,6 +64,11 @@ const TARGET_SUGGESTIONS = [
   "List interesting strings and what they suggest",
   "What are the limitations of this analysis?",
 ];
+
+/** Mirrors MAX_MESSAGE_CHARS server-side (POST /api/chat). */
+const MAX_MESSAGE_CHARS = 8000;
+/** The composer counter appears once the draft approaches the limit. */
+const CHAR_COUNTER_AT = 7000;
 
 interface TraceStep {
   id: string;
@@ -97,10 +103,53 @@ function modelLabel(provider: string, model: string): string {
   return `${provider}/${model}`;
 }
 
+/**
+ * Best-effort parse of a PARTIALLY streamed tool block. The agent protocol is
+ * a ```tool fenced JSON object ({ tool, args }); while it streams, quotes and
+ * braces are unbalanced. Balances them naively to surface the tool name and
+ * whatever arguments are already complete — pure preview, never executed.
+ */
+function parsePartialToolBlock(raw: string): ToolIntent | null {
+  const fence = raw.indexOf("```");
+  if (fence < 0) return null;
+  let body = raw.slice(fence + 3);
+  const nl = body.indexOf("\n");
+  if (nl >= 0) body = body.slice(nl + 1);
+  else body = body.replace(/^tool/, "");
+  const brace = body.indexOf("{");
+  if (brace < 0) return { tool: null, args: null };
+  let partial = body.slice(brace);
+  const quotes = (partial.match(/"/g) ?? []).length;
+  if (quotes % 2 === 1) partial += '"';
+  partial = partial.replace(/,\s*$/, "");
+  const opens = (partial.match(/\{/g) ?? []).length - (partial.match(/\}/g) ?? []).length;
+  partial += "}".repeat(Math.max(0, opens));
+  try {
+    const parsed = JSON.parse(partial) as { tool?: unknown; args?: unknown };
+    return {
+      tool: typeof parsed.tool === "string" ? parsed.tool : null,
+      args: parsed.args ?? null,
+    };
+  } catch {
+    return { tool: null, args: null };
+  }
+}
+
+/** Shallow intent equality — avoids re-rendering the preview on every delta. */
+function sameIntent(a: ToolIntent | null, b: ToolIntent | null): boolean {
+  return a?.tool === b?.tool && JSON.stringify(a?.args ?? null) === JSON.stringify(b?.args ?? null);
+}
+
 interface ModelInfo {
   source: string;
   provider: string;
   model: string;
+}
+
+/** Live preview while the model is still writing a ```tool block. */
+interface ToolIntent {
+  tool: string | null;
+  args: unknown;
 }
 
 let localId = 0;
@@ -172,6 +221,10 @@ export function ChatWorkspace({
    * that turn are dropped so raw tool JSON never flashes in the transcript.
    */
   const turnBecameToolRef = React.useRef(false);
+  /** Raw delta buffer for the current LLM turn (kept even past the tool fence). */
+  const rawTurnRef = React.useRef("");
+  /** Live preview while the model writes a tool block (replaced by the real trace row). */
+  const [toolIntent, setToolIntent] = React.useState<ToolIntent | null>(null);
 
   // ---- Load history when switching sessions / clearing to a draft ---------
   React.useEffect(() => {
@@ -293,6 +346,8 @@ export function ChatWorkspace({
     const assistantEntry: ChatEntry = { id: nextId(), role: "assistant", content: "", trace: [] };
     setEntries((prev) => [...opts.commit(prev), assistantEntry]);
     setStreaming(true);
+    rawTurnRef.current = "";
+    setToolIntent(null);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -339,27 +394,35 @@ export function ChatWorkspace({
           setModelInfo({ source: ev.source, provider: ev.provider, model: ev.model });
           break;
         case "turn_start":
-          // A fresh LLM turn began — reset the live draft buffer.
+          // A fresh LLM turn began — reset the live draft buffer + intent.
           turnBecameToolRef.current = false;
+          rawTurnRef.current = "";
+          setToolIntent(null);
           applyAssistant((e) => ({ ...e, content: "" }));
           break;
         case "delta": {
-          if (turnBecameToolRef.current) break; // tool JSON — never render
-          applyAssistant((e) => {
-            let content = e.content + ev.text;
-            const fence = content.indexOf("```");
-            if (fence >= 0) {
-              // The model started emitting a tool block — keep only the
-              // prose preamble and stop accepting this turn's deltas.
-              turnBecameToolRef.current = true;
-              content = content.slice(0, fence).trimEnd();
-            }
-            return { ...e, content };
-          });
+          // Accumulate the raw turn text ALWAYS — the prose rendering stops at
+          // the tool fence, but the buffer keeps feeding the intent preview.
+          rawTurnRef.current += ev.text;
+          const raw = rawTurnRef.current;
+          const fenceAt = raw.indexOf("```");
+          if (fenceAt >= 0) {
+            // The model started writing a tool block: freeze the prose and
+            // preview the pending call from the partial JSON.
+            turnBecameToolRef.current = true;
+            const intent = parsePartialToolBlock(raw);
+            const next = intent ?? null;
+            setToolIntent((prev) => (sameIntent(prev, next) ? prev : next));
+            const prose = raw.slice(0, fenceAt).trimEnd();
+            applyAssistant((e) => (e.content === prose ? e : { ...e, content: prose }));
+          } else {
+            applyAssistant((e) => (e.content === raw ? e : { ...e, content: raw }));
+          }
           break;
         }
         case "tool_call":
           turnBecameToolRef.current = true;
+          setToolIntent(null); // the real row replaces the live preview
           applyAssistant((e) => ({
             ...e,
             trace: [
@@ -394,9 +457,13 @@ export function ChatWorkspace({
         case "assistant":
           // Authoritative final text — replaces the streamed draft verbatim.
           turnBecameToolRef.current = false;
+          rawTurnRef.current = "";
+          setToolIntent(null);
           applyAssistant((e) => ({ ...e, content: ev.content }));
           break;
         case "error":
+          rawTurnRef.current = "";
+          setToolIntent(null);
           applyAssistant((e) => ({ ...e, error: ev.error }));
           toastError(new Error(ev.error), "Agent error");
           break;
@@ -438,6 +505,10 @@ export function ChatWorkspace({
   const sendWithEvents = (raw: string) => {
     const message = raw.trim();
     if (!message || streaming) return;
+    if (message.length > MAX_MESSAGE_CHARS) {
+      toastError(new Error(`Message too long (${message.length}/8000 characters). Trim it first.`));
+      return;
+    }
     const userEntry: ChatEntry = { id: nextId(), role: "user", content: message, trace: [] };
     setInput("");
     void runTurn({
@@ -609,6 +680,7 @@ export function ChatWorkspace({
                     entry={entry}
                     streaming={streaming && idx === entries.length - 1}
                     model={modelInfo}
+                    intent={streaming && idx === entries.length - 1 ? toolIntent : null}
                     editing={editingId === entry.id}
                     editValue={editValue}
                     onEditValue={setEditValue}
@@ -633,8 +705,8 @@ export function ChatWorkspace({
               {streaming && (() => {
                 const last = entries[entries.length - 1];
                 // Indicator only while nothing visible is happening yet
-                // (no streamed text, no pending tool row).
-                if (last?.content || last?.trace.some((t) => t.pending)) return null;
+                // (no streamed text, no pending tool row, no live intent).
+                if (last?.content || last?.trace.some((t) => t.pending) || toolIntent) return null;
                 return <ThinkingIndicator modelInfo={modelInfo} />;
               })()}
             </div>
@@ -713,6 +785,21 @@ export function ChatWorkspace({
                 )}
               </span>
               <span className="ml-auto" />
+              {!streaming && input.length >= CHAR_COUNTER_AT && (
+                <span
+                  className={cn(
+                    "mr-1 font-mono text-[10px] tabular-nums",
+                    input.length > MAX_MESSAGE_CHARS ? "text-rose-400" : "text-amber-400/80"
+                  )}
+                  title={
+                    input.length > MAX_MESSAGE_CHARS
+                      ? "Over the 8000-character limit — trim the message"
+                      : "Approaching the 8000-character message limit"
+                  }
+                >
+                  {input.length}/{MAX_MESSAGE_CHARS}
+                </span>
+              )}
               {streaming ? (
                 <Button
                   type="button"
@@ -729,7 +816,7 @@ export function ChatWorkspace({
                   type="button"
                   size="sm"
                   onClick={() => void sendWithEvents(input)}
-                  disabled={!input.trim()}
+                  disabled={!input.trim() || input.length > MAX_MESSAGE_CHARS}
                   aria-label="Send message"
                   className="h-7 gap-1.5 bg-emerald-600 px-2.5 text-xs text-white hover:bg-emerald-500 disabled:opacity-40"
                 >
@@ -791,6 +878,7 @@ function MessageRow({
   entry,
   streaming,
   model,
+  intent,
   editing,
   editValue,
   onEditValue,
@@ -806,6 +894,8 @@ function MessageRow({
   entry: ChatEntry;
   streaming?: boolean;
   model?: ModelInfo | null;
+  /** Live tool-call preview while the model writes the block (streaming only). */
+  intent?: ToolIntent | null;
   editing?: boolean;
   editValue?: string;
   onEditValue?: (v: string) => void;
@@ -936,6 +1026,8 @@ function MessageRow({
             ))}
           </div>
         )}
+        {/* Live preview while the model writes the next tool block */}
+        {streaming && intent && <ToolIntentRow intent={intent} />}
         {entry.error && (
           <div
             role="alert"
@@ -1202,6 +1294,36 @@ function TraceRow({ step }: { step: TraceStep }) {
   );
 }
 
+/**
+ * Dimmed live preview shown while the model is still WRITING a tool block
+ * (before the executed tool_call row replaces it). Dashed border + pulsing
+ * caret distinguish "composing" from the amber "running" state.
+ */
+function ToolIntentRow({ intent }: { intent: ToolIntent }) {
+  const preview =
+    intent.args && typeof intent.args === "object" ? argsPreview(intent.args) : "";
+  return (
+    <div
+      aria-live="polite"
+      className="rea-intent-pulse flex items-center gap-2 rounded-md border border-dashed border-zinc-800/80 bg-zinc-900/30 px-2.5 py-1.5 font-mono text-[11px] text-zinc-500"
+    >
+      <PenLine className="size-3 shrink-0 text-zinc-600" aria-hidden />
+      <span className="truncate">
+        {intent.tool ? (
+          <span className="text-zinc-400">{intent.tool}</span>
+        ) : (
+          "composing tool call"
+        )}
+        {preview && <span className="ml-1.5 text-zinc-600">{preview}</span>}
+      </span>
+      <span
+        aria-hidden
+        className="ml-auto inline-block h-3 w-[6px] shrink-0 animate-pulse rounded-[2px] bg-emerald-500/70"
+      />
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Empty state (Claude-Code-like "ready" screen)
 // ---------------------------------------------------------------------------
@@ -1275,8 +1397,33 @@ function EmptyState({
           <KbdHint keys="⌘I" label="inspector" />
           <KbdHint keys="⌘⇧O" label="new chat" />
         </div>
+
+        {/* Engine status line — the real REA engine version, from /api/capabilities */}
+        <EngineLine />
       </div>
     </div>
+  );
+}
+
+/** Tiny mono engine-status line under the keyboard hints. */
+function EngineLine() {
+  const engine = useReaStore((s) => s.capabilities?.engine ?? null);
+  if (!engine) return null;
+  return (
+    <p
+      className="mt-3 flex items-center justify-center gap-1.5 font-mono text-[10px] text-zinc-700"
+      title="The real REA engine runs in a sandboxed child process via MCP stdio"
+    >
+      <span
+        aria-hidden
+        className={cn(
+          "size-1.5 rounded-full",
+          engine.healthy ? "bg-emerald-500/80" : "bg-rose-500/80"
+        )}
+      />
+      engine {engine.version} · {engine.toolCount} tools ·{" "}
+      {engine.healthy ? "ready" : "degraded"}
+    </p>
   );
 }
 

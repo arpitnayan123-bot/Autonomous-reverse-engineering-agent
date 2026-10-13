@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import { audit, clientIp, isSafeId, rateLimit } from "@/lib/security";
+import { estimateCostUsd } from "@/lib/pricing";
 import { runAgentLoop } from "@/server/agent/agent";
 
 export const runtime = "nodejs";
@@ -23,7 +24,8 @@ function toSessionSummary(
     updatedAt: Date;
     target: { originalName: string; detectedFormat: string | null } | null;
     _count: { messages: number };
-  }
+  },
+  costUsd: number | null
 ) {
   return {
     id: s.id,
@@ -33,6 +35,8 @@ function toSessionSummary(
     targetName: s.target?.originalName ?? null,
     detectedFormat: s.target?.detectedFormat ?? null,
     messageCount: s._count.messages,
+    /** Honest cumulative estimate from provider-reported tokens × list price (null = unknown). */
+    costUsd,
     updatedAt: s.updatedAt,
   };
 }
@@ -57,7 +61,29 @@ export async function GET(req: Request) {
           _count: { select: { messages: true } },
         },
       });
-      return NextResponse.json({ ok: true, sessions: sessions.map(toSessionSummary) });
+      // Cumulative per-session cost estimate: sum each assistant turn's
+      // provider-reported tokens priced at THAT turn's persisted model.
+      const msgs = await db.chatMessage.findMany({
+        where: {
+          sessionId: { in: sessions.map((s) => s.id) },
+          role: "assistant",
+        },
+        select: { sessionId: true, tokensIn: true, tokensOut: true, modelId: true },
+        orderBy: { createdAt: "desc" },
+        take: 4000,
+      });
+      const costBySession = new Map<string, number>();
+      for (const m of msgs) {
+        if (m.tokensIn == null && m.tokensOut == null) continue;
+        const c = estimateCostUsd(m.modelId, m.tokensIn, m.tokensOut);
+        if (c != null) {
+          costBySession.set(m.sessionId, (costBySession.get(m.sessionId) ?? 0) + c);
+        }
+      }
+      return NextResponse.json({
+        ok: true,
+        sessions: sessions.map((s) => toSessionSummary(s, costBySession.get(s.id) ?? null)),
+      });
     }
 
     if (!isSafeId(sessionId)) {

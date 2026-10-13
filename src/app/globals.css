@@ -221,6 +221,20 @@ body {
   border-radius: 0.5rem;
 }
 
+/* Tool-intent preview: gentle breathing while the model writes a tool block. */
+@keyframes rea-intent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+.rea-intent-pulse {
+  animation: rea-intent-pulse 1.6s ease-in-out infinite;
+}
+
 /* ---------------------------------------------------------------------------
    Premium 3D redesign utilities (Task 3-b — appended, nothing above replaced).
    Depth system: perspective containers, glass panels, aurora backdrop,
@@ -422,6 +436,9 @@ body {
   }
   .rea-card-shine::after {
     display: none;
+  }
+  .rea-intent-pulse {
+    animation: none;
   }
 }
 

@@ -136,6 +136,8 @@ export interface SessionSummary {
   targetName: string | null;
   detectedFormat: string | null;
   messageCount: number;
+  /** Cumulative cost estimate (USD) from provider tokens × per-turn model pricing; null = unknown. */
+  costUsd?: number | null;
   updatedAt: string;
 }
 
