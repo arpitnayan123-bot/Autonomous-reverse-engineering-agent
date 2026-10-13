@@ -120,11 +120,41 @@ an `owner/repo` pair, or an uploaded target, then:
 Optional capabilities are detected, never faked: install a Chromium runtime
 (`bunx playwright-core install chromium`) to enable rendered screenshots and
 browser-backed verification checks; set `GITHUB_TOKEN` to lift GitHub API rate
-limits; register HTTP or MCP connectors (auth headers are sealed with the same
-AES-256-GCM vault as provider keys) under **Connectors**.
+limits (or register an `api.github.com` HTTP connector — **GitHub research
+automatically uses its sealed auth headers**, no restart needed); register HTTP
+or MCP connectors (auth headers are sealed with the same AES-256-GCM vault as
+provider keys) under **Connectors**.
 
 Third-party licensing is documented in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md);
 the ecosystem audit lives at [`docs/ecosystem-audit.md`](docs/ecosystem-audit.md).
+
+## 🔌 MCP server — drive REA from any coding agent
+
+REA ships an MCP (Model Context Protocol) stdio server that exposes the whole
+platform — projects, pipeline, explorer, recon, research, knowledge graph,
+builder workspace, verifier and connector registry — to external coding agents
+(Claude Code, Cursor, Codex, or any MCP client):
+
+```bash
+bun run mcp:token -- --demo          # mint a session token (or --email/--password)
+REA_MCP_TOKEN=<token> bun run mcp:server
+```
+
+- **18 tools** — `rea_health`, `rea_list_projects`, `rea_create_project`,
+  `rea_crawl`, `rea_recon`, `rea_research`, `rea_graph`, `rea_verify`,
+  `rea_workspace_op`, `rea_orchestrate` (start / approve / cancel gates),
+  `rea_orchestration_status`, `rea_list_connectors`, `rea_connector_action`
+  and friends — every one a 1:1 bridge onto the authenticated REST API.
+- **One source of truth** — the server never touches the database or vault.
+  Auth, ownership scoping, rate limits, sandboxing and auditing all stay in
+  the platform; the token is held in memory only and renews itself when the
+  API slides the session forward.
+- **Honest results** — API errors surface as tool errors with the real HTTP
+  status; nothing is faked to make an agent's life easier.
+
+Point your MCP client at `bun scripts/mcp-server.ts` with
+`REA_MCP_TOKEN` (and optionally `REA_MCP_URL`, default
+`http://127.0.0.1:3000`) in its environment.
 
 ## 🔑 Model providers
 
