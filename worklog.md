@@ -427,3 +427,29 @@ Stage Summary:
 - API: NEW POST /api/tts (auth, 10/min rate limit, audited, wav only).
 - Sandbox rule: this deployment's TTS endpoint rejects mp3/pcm-with-stream:false combos beyond wav — stick to response_format "wav", stream:false.
 - Next candidates: voice INPUT (ASR mic button in composer — pairs with read-aloud), per-message TTS cache (same text → same audio id), chat folders/tags, file compare view, i18n, prompt library user-editable/custom prompts.
+
+---
+Task ID: 15 (product redesign — composer-first home + agent-interaction upgrade)
+Agent: main agent
+Task: User directive "REA — Product Redesign and Competitive Upgrade": audit everything, redesign the post-login experience (composer-first, uncluttered), improve agent interactions (evidence access, errors), restrained charcoal visual direction, verify end-to-end without breaking existing functionality.
+
+Work Log:
+- AUDIT (full read of auth-view, app-shell, home-dashboard, chat-workspace, target-panel, settings-dialog, store, api-client, prisma schema, all API routes): auth/demo/register+scrypt cookie ✓; sidebar with search/pin/rename/time-groups ✓; chat with SSE streaming, tool traces + live timers, edit/regenerate/fork/quote, slash prompts, TTS ✓; inspector with 6 tabs (overview/hex/strings/findings/evidence/docs), re-run + docs ✓; BYOK provider ✓; schema sound (User/Target/AnalysisRun/Evidence/Finding/ChatSession/ChatMessage.modelId/ProviderKey/AuditLog) ✓. Phase STABLE → no blocking bugs found in baseline QA (demo login, streaming round-trip verified before touching anything).
+- REDESIGN 1 — Home rebuilt composer-first (rewrote home-dashboard.tsx, 511→~430 lines):
+  - Greeting ("What are we investigating?") + ONE prominent composer with autofocus (desktop only), auto-resize, Enter-send, "/" prompt library reusing SlashMenu/filterPrompts (scope=free), attach-file button, char-limit guard via NEW shared module chat-limits.ts (MAX_MESSAGE_CHARS/CHAR_COUNTER_AT — prevents a home↔chat-workspace import cycle and can never drift from the docked composer).
+  - Docked composer is now HIDDEN while home is showing (homeOwnsComposer = showEmptyState && !boundTarget) — no duplicate composers; after the first send the docked composer takes over (handoff verified live).
+  - Removed per the brief: 4 stat cards, quick-actions row, hero pill, gradient title, ambient glow/scanline/grid (CSS deleted from globals.css), big REA credit card → replaced by a quiet mono footer line (chats/msgs/files · engine chip → System dialog · model chip → settings) + one-line REA credit link (github.com/morluto/rea · MIT).
+  - Recents kept but lighter: hairline-divided two-column list (3 each, "all N →" opens palette; "upload →" attaches), zero card boxes.
+  - Type-anywhere-to-focus: printable keys on Home land in the composer (keydown delegation, ignores inputs/shortcuts).
+- REDESIGN 2 — Agent interaction:
+  - Evidence deep-link: store openInspector(targetId, tab?) + inspectorTab state (closeInspector resets it); TargetPanel externalTab prop syncs; assistant messages in file chats show a SearchCheck "View the evidence behind this answer" meta button → inspector opens directly on the Evidence ledger (graded OBSERVED/DERIVED entries).
+  - Context strip gains a "Findings" quick link (openInspector(target, "findings")) next to Inspect.
+  - Humanized errors: friendlyError() maps raw failures (429/quota, 401/403 key, 402 billing, timeouts/DNS, 413/size, engine/MCP, abort) to a plain-language title + hint; raw message preserved in a collapsed <details> "Technical details" pre; a Retry button appears when the turn is regenerable. Never fabricates success — real errors stay visible.
+- QA (fresh passes, desktop 1280/1440 + mobile 390×844): demo login → home renders composer-first with autofocus ✓; typed send from home → streamed reply, sidebar pin, docked composer handoff ✓ (hits=4, model chip glm-platform, tok/cost honest); "/" on home → free-scope menu → Enter inserts prompt ✓; type-anywhere-to-focus ✓; starter chip → sends + streams ✓; recents rows navigate ✓; quiet footer engine chip/model chip present ✓; file draft keeps focused empty state + docked composer ✓; Findings button → inspector opens on Findings tab ✓; real tool-driven file chat (10.4k tok, graded conclusions) → evidence meta button → inspector Evidence tab active ✓; old-chat open regression ✓ (2 rows); mobile home no overflow, everything reachable ✓; tsc clean (src/), eslint 0 ✓. Commit de6024e.
+- NOTE: dev.log shows stale "Module not found: chat-limits" traces from the seconds between writing home-dashboard.tsx and creating chat-limits.ts — final ~190 log lines clean, no runtime errors since.
+
+Stage Summary:
+- The post-login screen now matches the brief: one prominent composer (the obvious way to start), few suggestions, light recents, quiet status, no decorative cards/gradients/animation; advanced surfaces (stats, engine, quota) moved to dialogs/status bar where they already lived.
+- Evidence-driven identity strengthened: the answer→evidence path is now one click (chat meta button → inspector Evidence tab), findings one click from the context strip, failures are explained in plain language with raw output still available but collapsed.
+- Files: home-dashboard.tsx (rewritten), chat-limits.ts (new), chat-workspace.tsx (home composer ownership, friendlyError + Retry + details, evidence button, Findings link), rea-store.ts (inspectorTab), app-shell.tsx (tab passthrough ×2), target-panel.tsx (externalTab), globals.css (ambient removed).
+- Next candidates: folders/tags for chats, file-compare view, i18n, per-session cumulative cost column polish, streaming tool-arg partial-JSON polish, pricing-refresh date in UI.
