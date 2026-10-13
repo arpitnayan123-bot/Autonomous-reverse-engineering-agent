@@ -57,7 +57,10 @@ export async function POST(req: Request) {
       );
     }
 
-    await setSessionCookie(user.id, user.email);
+    await setSessionCookie(user.id, user.email, {
+      ip,
+      userAgent: req.headers.get("user-agent"),
+    });
     await audit("auth.login", {
       userId: user.id,
       detail: `login ${email}`,

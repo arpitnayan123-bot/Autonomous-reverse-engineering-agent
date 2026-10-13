@@ -13,8 +13,10 @@ const HISTORY_TURNS = 20;
 const MAX_SESSIONS_PER_USER = 100;
 /** Chat turns allowed per user per 5-minute window (surfaced via header). */
 const CHAT_RATE_LIMIT = 20;
-/** Upper bound of messages inspected for edit/regenerate truncation. */
+/** Upper bound of messages served per session (GET and POST agree on this). */
 const MAX_SESSION_MESSAGES = 400;
+/** Messages loaded on first open; older ones load on demand via all=1. */
+const HISTORY_WINDOW = 80;
 
 /**
  * Sessions with a turn currently being generated (server-side single-writer
@@ -105,13 +107,20 @@ export async function GET(req: Request) {
     if (!session || session.userId !== user.id) {
       return NextResponse.json({ ok: false, error: "Session not found" }, { status: 404 });
     }
-    const messages = await db.chatMessage.findMany({
+    const total = await db.chatMessage.count({ where: { sessionId: session.id } });
+    // Newest-window pagination: default loads the latest HISTORY_WINDOW
+    // messages; all=1 loads everything up to MAX_SESSION_MESSAGES. Rows are
+    // sliced from the END (desc + reverse) so long chats surface the newest
+    // content — an asc take would silently drop the newest turns.
+    const wantAll = new URL(req.url).searchParams.get("all") === "1";
+    const limit = wantAll ? MAX_SESSION_MESSAGES : HISTORY_WINDOW;
+    const skip = Math.max(0, total - limit);
+    const rows = await db.chatMessage.findMany({
       where: { sessionId: session.id },
-      orderBy: { createdAt: "asc" },
-      // Aligned with the POST-side MAX_SESSION_MESSAGES so the UI and the
-      // agent loop always agree on what history exists.
-      take: MAX_SESSION_MESSAGES,
+      orderBy: { createdAt: "desc" },
+      take: limit,
     });
+    rows.reverse();
     return NextResponse.json({
       ok: true,
       session: {
@@ -121,7 +130,7 @@ export async function GET(req: Request) {
         targetName: session.target?.originalName ?? null,
         detectedFormat: session.target?.detectedFormat ?? null,
       },
-      messages: messages.map((m) => ({
+      messages: rows.map((m) => ({
         id: m.id,
         role: m.role,
         content: m.content,
@@ -133,6 +142,8 @@ export async function GET(req: Request) {
         modelId: m.modelId,
         createdAt: m.createdAt,
       })),
+      total,
+      hasMore: skip > 0,
       pinned: session.pinned,
     });
   } catch (err) {
@@ -330,11 +341,15 @@ export async function POST(req: Request) {
     }
 
     // ---- History / edit / regenerate -------------------------------------
-    const allRows = await db.chatMessage.findMany({
+    // Newest MAX_SESSION_MESSAGES rows (desc + reverse) so the loop and the
+    // edit/regenerate truncation always operate on the RECENT end of long
+    // chats — an asc take would grab the oldest rows and miss new turns.
+    const recentRowsDesc = await db.chatMessage.findMany({
       where: { sessionId: session.id },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       take: MAX_SESSION_MESSAGES,
     });
+    const allRows = recentRowsDesc.reverse();
 
     /** The turn the agent answers (new or existing user text). */
     let turnMessage = message;

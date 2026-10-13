@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getSessionUser } from "@/lib/auth";
+import {
+  getSessionUser,
+  listActiveSessions,
+  revokeOtherSessions,
+} from "@/lib/auth";
+import { audit, clientIp, rateLimit } from "@/lib/security";
 import { rea } from "@/server/engine/rea-bridge";
 import {
   ANALYSIS_TIMEOUT_MS,
@@ -70,7 +75,7 @@ export async function GET() {
         control: "Session cookies",
         status: "partial",
         detail:
-          "HMAC-SHA256 signed, HttpOnly, SameSite=Lax, 7-day expiry. Signing secret provisioned at runtime (env or generated+persisted). Secure flag is active in production; this sandbox serves plain HTTP over a tunnel.",
+          "HMAC-SHA256 signed, HttpOnly, SameSite=Lax, 7-day expiry, backed by revocable server-side session records — logout and 'sign out other sessions' invalidate outstanding cookies immediately. Secure flag is active in production; this sandbox serves plain HTTP.",
       },
       {
         control: "Tenant isolation",
@@ -111,15 +116,65 @@ export async function GET() {
       take: 10,
     });
 
+    const sessions = await listActiveSessions(user.id);
+
     return NextResponse.json({
       ok: true,
       posture,
       engineDiag: rea.getDiagnostics(),
       recentThreats,
+      sessions,
     });
   } catch {
     return NextResponse.json(
       { ok: false, error: "Could not compute security posture" },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * POST /api/security { signOutOthers: true } — revoke every live session of
+ * the account except the one making the request. A stolen cookie from another
+ * device stops working immediately; the current device stays signed in.
+ */
+export async function POST(req: Request) {
+  try {
+    const user = await getSessionUser();
+    if (!user) {
+      return NextResponse.json(
+        { ok: false, error: "Authentication required" },
+        { status: 401 }
+      );
+    }
+    const rl = rateLimit(`secops:${user.id}`, 6, 60_000);
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { ok: false, error: "Rate limit exceeded", retryAfterSec: rl.retryAfterSec },
+        { status: 429 }
+      );
+    }
+    const body = (await req.json().catch(() => null)) as {
+      signOutOthers?: unknown;
+    } | null;
+    if (body?.signOutOthers !== true) {
+      return NextResponse.json(
+        { ok: false, error: "signOutOthers must be true" },
+        { status: 400 }
+      );
+    }
+    const revoked = await revokeOtherSessions(user.id);
+    await audit("auth.sessions_revoked", {
+      userId: user.id,
+      ip: clientIp(req),
+      detail: `signed out ${revoked} other session(s)`,
+      severity: revoked > 0 ? "warn" : "info",
+    });
+    const sessions = await listActiveSessions(user.id);
+    return NextResponse.json({ ok: true, revoked, sessions });
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "Could not revoke sessions" },
       { status: 500 }
     );
   }

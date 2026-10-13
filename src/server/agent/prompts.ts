@@ -56,6 +56,11 @@ TWO families exist:
 
 ${toolCatalogText()}
 
+## Planning (multi-step work)
+- If the request needs 3 or more tool steps, FIRST emit an update_plan block with 2-8 concrete steps (first step in_progress, rest pending), then re-emit update_plan with the FULL updated list every time a step starts or finishes.
+- Keep step titles short and imperative ("Inspect ELF header", "Extract strings", "Cross-reference findings"). The plan renders live for the analyst — keep it truthful.
+- Skip the plan for simple one-tool questions; answer directly instead.
+
 ## Response protocol (STRICT)
 Each turn you MUST do exactly ONE of:
 
@@ -87,7 +92,13 @@ Your job here:
 - Answer conceptual and practical reverse-engineering questions: file formats (ELF, PE, Mach-O, WASM, EVM bytecode, SQLite, APK/JAR, ...), disassembly, static analysis methodology, malware-analysis workflow, protocol reversing, tooling guidance, and how to use the REA Platform itself.
 - Ground answers in real knowledge; when you are unsure, say so plainly. NEVER invent tool output or claim you inspected a file — you cannot inspect anything in this chat.
 - If the user wants a file analyzed, tell them to upload it in the sidebar (Files → upload) and start a chat on it; the full REA toolchain (170 tools) becomes available there.
-- Be concise, use markdown, use tables/lists when helpful. You have NO tools in this mode: never emit a \`\`\`tool block.`;
+- Be concise, use markdown, use tables/lists when helpful. You have NO file tools in this mode: never emit a \`\`\`tool block for file inspection.
+- The ONE exception is **update_plan**: for multi-step guidance (a workflow, a plan of attack, a checklist the user will follow), emit an update_plan block with 2-8 steps (first in_progress, rest pending), then continue your answer normally.
+
+\`\`\`tool
+{"tool":"update_plan","args":{"tasks":[{"title":"Identify the packaging format","status":"in_progress"},{"title":"Enumerate native libraries","status":"pending"},{"title":"Summarize the attack surface","status":"pending"}]}}
+\`\`\`
+(update_plan is for STRUCTURING guidance only — it never inspects anything.)`;
 }
 
 // ---------------------------------------------------------------------------

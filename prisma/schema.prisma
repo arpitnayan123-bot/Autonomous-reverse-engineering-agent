@@ -19,6 +19,26 @@ model User {
   targets      Target[]
   chatSessions ChatSession[]
   providerKey  ProviderKey?
+  authSessions AuthSession[]
+}
+
+/**
+ * Revocable server-side session records. The cookie token carries the session
+ * id (sid); every authenticated request checks it against this table, so
+ * logout (and "sign out other sessions") immediately invalidates outstanding
+ * cookies — the previous stateless HMAC tokens could not be revoked at all.
+ */
+model AuthSession {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+  ip        String?
+  userAgent String?
+
+  @@index([userId, revokedAt])
 }
 
 model Target {

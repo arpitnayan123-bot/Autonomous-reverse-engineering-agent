@@ -189,6 +189,16 @@ export interface StringsPage {
   pageSize: number;
 }
 
+/** One live (unrevoked) login session, as shown in the security view. */
+export interface AuthSessionInfo {
+  id: string;
+  createdAt: string;
+  ip: string | null;
+  userAgent: string | null;
+  /** True for the session this browser is currently using. */
+  current: boolean;
+}
+
 export interface SecurityData {
   posture: { control: string; status: string; detail: string }[];
   engineDiag: { running: boolean; stderr: string | null };
@@ -199,6 +209,7 @@ export interface SecurityData {
     severity: string;
     createdAt: string;
   }[];
+  sessions?: AuthSessionInfo[];
 }
 
 export interface AuditEvent {
@@ -243,13 +254,24 @@ export async function listChatSessions(): Promise<SessionSummary[]> {
 }
 
 /** GET /api/chat?sessionId= — session detail + full message history. */
+/** Shape of GET /api/chat?sessionId= — a paged window over one session. */
+export interface ChatHistoryResponse {
+  session: ChatSessionDetail;
+  messages: ChatMessageRow[];
+  /** Total persisted messages in the session. */
+  total: number;
+  /** True when older messages exist beyond this window (load via all=1). */
+  hasMore: boolean;
+}
+
 export async function getChatSession(
-  sessionId: string
-): Promise<{ session: ChatSessionDetail; messages: ChatMessageRow[] }> {
-  return apiGet<{ session: ChatSessionDetail; messages: ChatMessageRow[] }>(
-    "/api/chat",
-    { sessionId }
-  );
+  sessionId: string,
+  opts?: { all?: boolean }
+): Promise<ChatHistoryResponse> {
+  return apiGet<ChatHistoryResponse>("/api/chat", {
+    sessionId,
+    ...(opts?.all ? { all: "1" } : {}),
+  });
 }
 
 /** DELETE /api/chat?sessionId= — delete one session. */

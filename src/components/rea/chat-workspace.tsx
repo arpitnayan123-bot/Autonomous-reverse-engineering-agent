@@ -7,8 +7,10 @@ import {
   Binary,
   Check,
   ChevronDown,
+  ChevronUp,
   CircleAlert,
   GitFork,
+  ListTodo,
   Loader2,
   Paperclip,
   PanelRightOpen,
@@ -190,6 +192,9 @@ export function ChatWorkspace({
 
   const [entries, setEntries] = React.useState<ChatEntry[]>([]);
   const [historyLoading, setHistoryLoading] = React.useState(false);
+  /** Server-side window metadata for the loaded transcript (older pages exist?). */
+  const [historyMeta, setHistoryMeta] = React.useState<{ total: number; hasMore: boolean } | null>(null);
+  const [loadingEarlier, setLoadingEarlier] = React.useState(false);
   const [streaming, setStreaming] = React.useState(false);
   const [modelInfo, setModelInfo] = React.useState<ModelInfo | null>(null);
   const [input, setInput] = React.useState("");
@@ -230,14 +235,16 @@ export function ChatWorkspace({
     setInput("");
     if (!activeSessionId) {
       setEntries([]);
+      setHistoryMeta(null);
       return;
     }
     let cancelled = false;
     setHistoryLoading(true);
     getChatSession(activeSessionId)
-      .then(({ messages }) => {
+      .then(({ messages, total, hasMore }) => {
         if (cancelled) return;
         setEntries(messages.map(rowToEntry));
+        setHistoryMeta({ total, hasMore });
       })
       .catch((err) => {
         if (!cancelled) toastError(err, "Could not load chat history");
@@ -249,6 +256,39 @@ export function ChatWorkspace({
       cancelled = true;
     };
   }, [activeSessionId]);
+
+  /**
+   * Load the older window of the transcript (server newest-window paging).
+   * Prepends rows and re-anchors the scroll so the user keeps looking at the
+   * same message instead of jumping.
+   */
+  const loadEarlier = React.useCallback(async () => {
+    if (!activeSessionId || loadingEarlier) return;
+    const el = scrollRef.current;
+    const prevHeight = el?.scrollHeight ?? 0;
+    const prevTop = el?.scrollTop ?? 0;
+    setLoadingEarlier(true);
+    try {
+      const { messages, total } = await getChatSession(activeSessionId, { all: true });
+      setEntries((prev) => {
+        const known = new Set(prev.map((e) => e.id));
+        const older = messages.map(rowToEntry).filter((e) => !known.has(e.id));
+        return older.length > 0 ? [...older, ...prev] : prev;
+      });
+      setHistoryMeta({ total, hasMore: false });
+      requestAnimationFrame(() => {
+        const node = scrollRef.current;
+        if (!node) return;
+        node.scrollTop = Math.max(0, node.scrollHeight - prevHeight + prevTop);
+      });
+    } catch (err) {
+      toastError(err, "Could not load earlier messages");
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [activeSessionId, loadingEarlier]);
+  const loadEarlierRef = React.useRef(loadEarlier);
+  loadEarlierRef.current = loadEarlier;
 
   // ---- Autoscroll (only while pinned to bottom) ---------------------------
   // Home dashboard (empty transcript): land on the hero at the top. The reset
@@ -291,22 +331,44 @@ export function ChatWorkspace({
     if (!jumpToMessageId || historyLoading) return;
     // Let the transcript settle a tick before measuring positions.
     const t = window.setTimeout(() => {
-      const el = document.querySelector<HTMLElement>(
-        `[data-message-id="${CSS.escape(jumpToMessageId)}"]`
-      );
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        setAtBottom(false);
-        setJumpFlashId(jumpToMessageId);
-        window.setTimeout(
-          () => setJumpFlashId((cur) => (cur === jumpToMessageId ? null : cur)),
-          1900
+      const flash = () => {
+        const el = document.querySelector<HTMLElement>(
+          `[data-message-id="${CSS.escape(jumpToMessageId)}"]`
         );
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          setAtBottom(false);
+          setJumpFlashId(jumpToMessageId);
+          window.setTimeout(
+            () => setJumpFlashId((cur) => (cur === jumpToMessageId ? null : cur)),
+            1900
+          );
+          return true;
+        }
+        return false;
+      };
+      if (flash()) {
+        clearJumpToMessage();
+        return;
+      }
+      // The hit may live in the unloaded older window — pull the full history
+      // once, then retry the jump before giving up.
+      if (historyMeta?.hasMore) {
+        void loadEarlierRef.current().then(() => {
+          window.setTimeout(() => {
+            if (!flash()) {
+              // Beyond even the server cap — the palette hit still shows the
+              // message content, so silence is honest here.
+            }
+            clearJumpToMessage();
+          }, 180);
+        });
+        return;
       }
       clearJumpToMessage();
     }, 90);
     return () => window.clearTimeout(t);
-  }, [jumpToMessageId, historyLoading, clearJumpToMessage]);
+  }, [jumpToMessageId, historyLoading, historyMeta, clearJumpToMessage]);
 
   const onMessagesScroll = () => {
     const el = scrollRef.current;
@@ -767,6 +829,29 @@ export function ChatWorkspace({
           />
         ) : (
           <div className="mx-auto w-full max-w-3xl px-4 py-6">
+            {/* Older window loader — only when the server has more rows */}
+            {historyMeta?.hasMore && !historyLoading && (
+              <div className="flex justify-center pb-3">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void loadEarlier()}
+                  disabled={loadingEarlier}
+                  aria-label="Load earlier messages"
+                  className="h-7 gap-1.5 text-[11px] text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
+                >
+                  {loadingEarlier ? (
+                    <Loader2 className="size-3 animate-spin" aria-hidden />
+                  ) : (
+                    <ChevronUp className="size-3" aria-hidden />
+                  )}
+                  {loadingEarlier
+                    ? "Loading earlier messages…"
+                    : `Load earlier messages (${Math.max(0, historyMeta.total - entries.length)})`}
+                </Button>
+              </div>
+            )}
             <div className="flex flex-col gap-5">
               {entries.map((entry, idx) => (
                 <motion.div
@@ -997,6 +1082,100 @@ function friendlyError(raw: string): { title: string; hint?: string } {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Plan rendering (update_plan tool calls → live checklist card)
+// ---------------------------------------------------------------------------
+
+interface PlanTask {
+  title: string;
+  status: "pending" | "in_progress" | "done";
+}
+
+/**
+ * Extract the LATEST plan state from a message's tool trace (the last
+ * update_plan call wins — earlier revisions of the same plan stay history).
+ * Returns null when the message carries no well-formed plan.
+ */
+function extractPlan(trace: TraceStep[]): PlanTask[] | null {
+  for (let i = trace.length - 1; i >= 0; i--) {
+    const step = trace[i];
+    if (step.tool !== "update_plan") continue;
+    const tasks = (step.args as { tasks?: unknown } | undefined)?.tasks;
+    if (!Array.isArray(tasks) || tasks.length < 1 || tasks.length > 8) continue;
+    const parsed: PlanTask[] = [];
+    let ok = true;
+    for (const t of tasks) {
+      if (!t || typeof t !== "object") {
+        ok = false;
+        break;
+      }
+      const title = (t as { title?: unknown }).title;
+      const status = (t as { status?: unknown }).status;
+      if (typeof title !== "string" || !title.trim()) {
+        ok = false;
+        break;
+      }
+      parsed.push({
+        title: title.trim().slice(0, 160),
+        status:
+          status === "in_progress" ? "in_progress" : status === "done" ? "done" : "pending",
+      });
+    }
+    if (ok) return parsed;
+  }
+  return null;
+}
+
+function PlanCard({ tasks }: { tasks: PlanTask[] }) {
+  const doneCount = tasks.filter((t) => t.status === "done").length;
+  const allDone = doneCount === tasks.length;
+  return (
+    <div
+      className={cn(
+        "rounded-lg border px-3 py-2.5 transition-colors",
+        allDone ? "border-emerald-500/20 bg-emerald-500/[0.04]" : "border-zinc-800 bg-zinc-900/40"
+      )}
+      role="list"
+      aria-label={allDone ? "Completed agent plan" : "Agent plan in progress"}
+    >
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <ListTodo className={cn("size-3", allDone ? "text-emerald-500" : "text-emerald-500/80")} aria-hidden />
+        <span className="font-mono text-[10px] uppercase tracking-widest text-zinc-500">
+          {allDone ? "Plan complete" : "Plan"}
+        </span>
+        <span className="ml-auto font-mono text-[10px] text-zinc-600">
+          {doneCount}/{tasks.length}
+        </span>
+      </div>
+      <ol className="space-y-1">
+        {tasks.map((t, i) => (
+          <li key={i} role="listitem" className="flex items-start gap-2 text-xs leading-relaxed">
+            {t.status === "done" ? (
+              <Check className="mt-0.5 size-3 shrink-0 text-emerald-500" aria-hidden />
+            ) : t.status === "in_progress" ? (
+              <Loader2 className="mt-0.5 size-3 shrink-0 animate-spin text-emerald-400" aria-hidden />
+            ) : (
+              <span className="mt-[3px] size-2.5 shrink-0 rounded-full border border-zinc-700" aria-hidden />
+            )}
+            <span
+              className={cn(
+                "min-w-0 break-words",
+                t.status === "done"
+                  ? "text-zinc-500 line-through decoration-zinc-700"
+                  : t.status === "in_progress"
+                    ? "font-medium text-zinc-100"
+                    : "text-zinc-400"
+              )}
+            >
+              {t.title}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 function rowToEntry(m: ChatMessageRow): ChatEntry {
   let trace: TraceStep[] = [];
   if (m.toolCalls) {
@@ -1175,16 +1354,24 @@ function MessageRow({
     );
   }
 
+  const entryPlan = entry.role === "assistant" ? extractPlan(entry.trace) : null;
+  /** update_plan rows are owned by the PlanCard; hide them only when it renders. */
+  const traceRows = entryPlan
+    ? entry.trace.filter((s) => s.tool !== "update_plan")
+    : entry.trace;
+
   return (
     <div className="group flex items-start gap-2.5">
       <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border border-emerald-500/30 bg-emerald-500/10">
         <Binary className="size-3 text-emerald-400" aria-hidden />
       </span>
       <div className="min-w-0 flex-1 space-y-2">
+        {/* Live plan checklist (update_plan calls) */}
+        {entryPlan && <PlanCard tasks={entryPlan} />}
         {/* Tool trace */}
-        {entry.trace.length > 0 && (
+        {traceRows.length > 0 && (
           <div className="flex flex-col gap-1">
-            {entry.trace.map((step) => (
+            {traceRows.map((step) => (
               <TraceRow key={step.id} step={step} />
             ))}
           </div>

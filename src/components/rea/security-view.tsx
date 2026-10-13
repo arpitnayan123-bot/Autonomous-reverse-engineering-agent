@@ -5,14 +5,17 @@ import {
   Activity,
   AlertTriangle,
   Lock,
+  MonitorSmartphone,
   ShieldCheck,
   TerminalSquare,
 } from "lucide-react";
 
-import { apiGet, type SecurityData } from "@/lib/api-client";
+import { apiGet, apiPost, type SecurityData } from "@/lib/api-client";
 import { EmptyState, SectionCard, timeAgo, toastError } from "@/components/rea/shared";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "@/hooks/use-toast";
 
 const POSTURE_STYLES: Record<string, string> = {
   enforced: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
@@ -27,9 +30,53 @@ const SEVERITY_STYLES: Record<string, string> = {
   info: "border-zinc-700 bg-zinc-800/60 text-zinc-400",
 };
 
+/** Human-readable device label from a raw User-Agent (browser · OS). */
+function deviceLabel(ua: string | null): string {
+  if (!ua) return "Unknown device";
+  const os =
+    /Windows/i.test(ua) ? "Windows"
+    : /Android/i.test(ua) ? "Android"
+    : /iPhone|iPad|iPod/i.test(ua) ? "iOS"
+    : /Mac OS X|Macintosh/i.test(ua) ? "macOS"
+    : /Linux/i.test(ua) ? "Linux"
+    : null;
+  const browser =
+    /Edg\//i.test(ua) ? "Edge"
+    : /OPR\//i.test(ua) ? "Opera"
+    : /SamsungBrowser/i.test(ua) ? "Samsung Internet"
+    : /Firefox/i.test(ua) ? "Firefox"
+    : /Chrome/i.test(ua) ? "Chrome"
+    : /Safari/i.test(ua) ? "Safari"
+    : null;
+  return [browser, os].filter(Boolean).join(" · ") || "Unknown device";
+}
+
 export function SecurityView() {
   const [data, setData] = React.useState<SecurityData | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const [signingOutOthers, setSigningOutOthers] = React.useState(false);
+
+  const signOutOthers = async () => {
+    setSigningOutOthers(true);
+    try {
+      const res = await apiPost<{ ok: boolean; revoked: number; sessions: SecurityData["sessions"] }>(
+        "/api/security",
+        { signOutOthers: true }
+      );
+      setData((prev) => (prev ? { ...prev, sessions: res.sessions } : prev));
+      toast({
+        title: res.revoked > 0 ? `Signed out ${res.revoked} other session${res.revoked === 1 ? "" : "s"}` : "No other active sessions",
+        description:
+          res.revoked > 0
+            ? "Those devices must sign in again. This device stays signed in."
+            : "This browser is the only active session for your account.",
+      });
+    } catch (err) {
+      toastError(err, "Could not sign out other sessions");
+    } finally {
+      setSigningOutOthers(false);
+    }
+  };
 
   React.useEffect(() => {
     let cancelled = false;
@@ -128,6 +175,67 @@ export function SecurityView() {
             {data.engineDiag.stderr?.trim() ? data.engineDiag.stderr : "stderr is empty — no engine warnings."}
           </pre>
         </div>
+      </SectionCard>
+
+      <SectionCard
+        title="Active sessions"
+        description="Devices currently signed in to this account"
+        icon={MonitorSmartphone}
+        contentClassName="p-0!"
+      >
+        <div className="flex items-center justify-between gap-3 px-4 pt-3">
+          <p className="text-xs leading-relaxed text-zinc-500">
+            Sessions are stored server-side and can be revoked — a stolen cookie
+            stops working immediately, before its 7-day expiry.
+          </p>
+          {(data.sessions?.length ?? 0) > 1 && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => void signOutOthers()}
+              disabled={signingOutOthers}
+              className="h-7 shrink-0 gap-1.5 border-zinc-700 px-2.5 text-[11px] text-zinc-300 hover:bg-zinc-800"
+            >
+              {signingOutOthers ? "Signing out…" : "Sign out other sessions"}
+            </Button>
+          )}
+        </div>
+        {!data.sessions || data.sessions.length === 0 ? (
+          <div className="p-4">
+            <EmptyState
+              icon={MonitorSmartphone}
+              title="No active sessions listed"
+              description="Live sessions appear here as devices sign in."
+              className="border-none bg-transparent"
+            />
+          </div>
+        ) : (
+          <div className="rea-scroll max-h-72 divide-y divide-zinc-800/70 overflow-y-auto rounded-b-lg">
+            {data.sessions.map((s) => (
+              <div key={s.id} className="flex items-start gap-3 px-4 py-3">
+                <MonitorSmartphone className="mt-0.5 size-3.5 shrink-0 text-zinc-500" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="flex flex-wrap items-center gap-2 text-xs font-medium text-zinc-200">
+                    {deviceLabel(s.userAgent)}
+                    {s.current && (
+                      <Badge
+                        variant="outline"
+                        className="border-emerald-500/30 bg-emerald-500/10 font-mono text-[10px] uppercase tracking-widest text-emerald-400"
+                      >
+                        this device
+                      </Badge>
+                    )}
+                  </p>
+                  <p className="mt-0.5 font-mono text-[11px] leading-relaxed text-zinc-500">
+                    signed in {timeAgo(s.createdAt)}
+                    {s.ip ? ` · ${s.ip}` : ""}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </SectionCard>
 
       <SectionCard

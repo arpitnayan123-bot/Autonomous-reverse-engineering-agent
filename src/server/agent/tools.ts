@@ -512,10 +512,96 @@ const sqlQueryTool: AgentTool = {
 };
 
 // ---------------------------------------------------------------------------
+// Planning (visible multi-step progress for the analyst)
+// ---------------------------------------------------------------------------
+
+export interface PlanTask {
+  title: string;
+  status: "pending" | "in_progress" | "done";
+}
+
+const PLAN_STATUSES = new Set(["pending", "in_progress", "done"]);
+
+/**
+ * Validate + normalize an update_plan payload. Returns null when malformed.
+ * At most one step may be in_progress (later duplicates are downgraded to
+ * pending) so the rendered plan always has an honest single focus.
+ */
+export function parsePlanTasks(args: Record<string, unknown>): PlanTask[] | null {
+  const raw = args?.tasks;
+  if (!Array.isArray(raw) || raw.length < 2 || raw.length > 8) return null;
+  const tasks: PlanTask[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return null;
+    const t = item as { title?: unknown; status?: unknown };
+    if (typeof t.title !== "string") return null;
+    const title = t.title.trim().slice(0, 160);
+    if (!title) return null;
+    const status =
+      typeof t.status === "string" && PLAN_STATUSES.has(t.status)
+        ? (t.status as PlanTask["status"])
+        : "pending";
+    tasks.push({ title, status });
+  }
+  let seenActive = false;
+  return tasks.map((t) => {
+    if (t.status === "in_progress") {
+      if (seenActive) return { ...t, status: "pending" as const };
+      seenActive = true;
+    }
+    return t;
+  });
+}
+
+/**
+ * Execute an update_plan call. Pure planning — no target, no I/O — so it is
+ * also available in FREE chats (the agent.ts loop routes it here explicitly).
+ */
+export async function applyPlanUpdate(args: Record<string, unknown>): Promise<string> {
+  const tasks = parsePlanTasks(args ?? {});
+  if (!tasks) {
+    return "Error: tasks must be an array of 2-8 items, each {\"title\": string, \"status\": \"pending\"|\"in_progress\"|\"done\"}. Re-emit the FULL list each time (it replaces the previous plan).";
+  }
+  const done = tasks.filter((t) => t.status === "done").length;
+  const active = tasks.find((t) => t.status === "in_progress");
+  return `Plan updated: ${tasks.length} steps (${done} done${active ? `, now working on: ${active.title}` : ""}).`;
+}
+
+const planTool: AgentTool = {
+  name: "update_plan",
+  description:
+    "Maintain a visible task plan for multi-step work. Call FIRST with 2-8 concrete steps (first in_progress, rest pending), then re-emit the FULL updated list whenever a step starts or finishes. The plan renders live in the UI as a checklist.",
+  args: {
+    type: "object",
+    properties: {
+      tasks: {
+        type: "array",
+        description: "2-8 steps, in execution order.",
+        items: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Short imperative step, e.g. 'Extract strings'." },
+            status: { type: "string", enum: ["pending", "in_progress", "done"] },
+          },
+          required: ["title", "status"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["tasks"],
+    additionalProperties: false,
+  },
+  async run(args) {
+    return applyPlanUpdate(args ?? {});
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
 export const AGENT_TOOLS: AgentTool[] = [
+  planTool,
   targetInfoTool,
   listFindingsTool,
   getEvidenceTool,

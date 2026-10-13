@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { MAX_CHAT_ITERATIONS } from "@/lib/security";
 import { documentationPrompt, freeChatSystemPrompt, systemPrompt } from "./prompts";
-import { buildTargetContext, executeAgentTool, type AgentToolContext } from "./tools";
+import { buildTargetContext, executeAgentTool, applyPlanUpdate, type AgentToolContext } from "./tools";
 import {
   resolveLlmForUser,
   type LlmMessage,
@@ -187,7 +187,22 @@ export async function runAgentLoop(opts: {
       break;
     }
     if (!ctx) {
-      // Free chat: the model emitted a tool block despite the system prompt.
+      // Free chat: every file-bound tool is unavailable — EXCEPT update_plan,
+      // which is pure planning (no target, no I/O) and stays fully functional
+      // so long multi-step guidance still gets visible task structure.
+      if (action.tool === "update_plan") {
+        events?.onToolCall?.(action.tool, action.args);
+        const result = await applyPlanUpdate(action.args);
+        events?.onToolResult?.(action.tool, result);
+        toolTrace.push({ tool: action.tool, args: action.args, result });
+        messages.push({ role: "assistant", content: text });
+        messages.push({
+          role: "user",
+          content: `TOOL RESULT for ${action.tool}:\n${result}`,
+        });
+        continue;
+      }
+      // The model emitted a tool block despite the system prompt.
       // Redirect once per occurrence; the iteration budget still bounds it.
       messages.push({ role: "assistant", content: text });
       messages.push({
