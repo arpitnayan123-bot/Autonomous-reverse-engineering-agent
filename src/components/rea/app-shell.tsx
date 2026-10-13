@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Image from "next/image";
 import {
   Binary,
   Check,
@@ -451,7 +452,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           <SheetContent side="left" className="w-72 border-zinc-800 bg-zinc-950 p-0">
             <SheetHeader className="border-b border-zinc-800/80 px-4 py-3">
               <SheetTitle className="flex items-center gap-2 font-mono text-xs tracking-widest text-zinc-200">
-                <Binary className="size-3.5 text-emerald-400" aria-hidden />
+                <Image src="/rea-logo-256.png" alt="" width={16} height={16} className="size-4 rounded-[5px] ring-1 ring-zinc-700/60" aria-hidden />
                 REA
               </SheetTitle>
             </SheetHeader>
@@ -508,7 +509,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           aria-label="REA home — start a fresh chat"
           className="flex items-center gap-2 rounded font-mono text-xs font-bold tracking-widest text-zinc-200 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
         >
-          <Binary className="size-3.5 text-emerald-400" aria-hidden />
+          <Image src="/rea-logo-256.png" alt="" width={20} height={20} className="size-5 rounded-md ring-1 ring-zinc-700/60" aria-hidden />
           REA
         </button>
 

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="public/logo.svg" width="104" alt="REA — Reverse Engineer Anything" />
+<img src="public/rea-logo.png" width="120" alt="REA — Reverse Engineer Anything" />
 
 # REA — Reverse Engineer Anything
 

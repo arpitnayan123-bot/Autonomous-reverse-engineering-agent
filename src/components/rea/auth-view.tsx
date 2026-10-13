@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Eye, EyeOff, Loader2, Terminal } from "lucide-react";
+import Image from "next/image";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 
 import { apiPost, type ReaUser } from "@/lib/api-client";
 import { toastError } from "@/components/rea/shared";
@@ -22,9 +23,14 @@ export function AuthView({ onAuthenticated }: { onAuthenticated: (user: ReaUser)
       <div className="w-full max-w-sm">
         {/* Wordmark */}
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <span className="grid size-10 place-items-center rounded-md border border-zinc-800 bg-zinc-900">
-            <Terminal className="size-5 text-emerald-400" aria-hidden />
-          </span>
+          <Image
+            src="/rea-logo-256.png"
+            alt="REA logo — a deconstructed cube under scan"
+            width={64}
+            height={64}
+            priority
+            className="rounded-2xl ring-1 ring-zinc-800 shadow-[0_0_36px_-6px_rgba(16,185,129,0.5)]"
+          />
           <div>
             <h1 className="font-mono text-lg font-bold tracking-widest text-zinc-100">REA</h1>
             <p className="mt-1 text-xs text-zinc-500">Autonomous reverse engineering agent</p>

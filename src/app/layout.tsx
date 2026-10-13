@@ -26,7 +26,8 @@ export const metadata: Metadata = {
     "AI agent",
   ],
   icons: {
-    icon: "/logo.svg",
+    icon: "/rea-logo-256.png",
+    apple: "/rea-logo-180.png",
   },
   openGraph: {
     title: "REA Platform — Reverse Engineer Anything",
@@ -34,11 +35,20 @@ export const metadata: Metadata = {
       "Professional reverse engineering, as easy as chatting with an AI.",
     siteName: "REA Platform",
     type: "website",
+    images: [
+      {
+        url: "/rea-logo.png",
+        width: 1024,
+        height: 1024,
+        alt: "REA — Reverse Engineer Anything",
+      },
+    ],
   },
   twitter: {
     card: "summary",
     title: "REA Platform — Reverse Engineer Anything",
     description: "Evidence-first AI reverse engineering in the browser.",
+    images: ["/rea-logo.png"],
   },
 };
 
