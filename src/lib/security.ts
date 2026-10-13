@@ -57,9 +57,17 @@ export function rateLimit(
 }
 
 export function clientIp(req: Request): string {
+  // Behind Caddy both headers are overwritten with the real remote host.
+  // Prefer x-real-ip; if absent, take the LAST XFF hop (the hop added by our
+  // own proxy) rather than the first (client-spoofable) one.
+  const real = req.headers.get("x-real-ip");
+  if (real) return real.trim();
   const fwd = req.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return req.headers.get("x-real-ip") || "local";
+  if (fwd) {
+    const hops = fwd.split(",").map((h) => h.trim()).filter(Boolean);
+    if (hops.length > 0) return hops[hops.length - 1];
+  }
+  return "local";
 }
 
 // ---------------------------------------------------------------------------

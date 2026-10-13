@@ -187,12 +187,10 @@ export async function POST(req: Request) {
       },
     });
   } catch (err) {
+    console.error("target upload error:", err);
+    // Generic client message — fs errors can embed absolute server paths.
     return NextResponse.json(
-      {
-        ok: false,
-        error:
-          err instanceof Error ? err.message : "Upload failed unexpectedly",
-      },
+      { ok: false, error: "Upload failed. The file may be too large or unreadable — try again." },
       { status: 500 }
     );
   }

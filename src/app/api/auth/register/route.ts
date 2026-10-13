@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import {
   hashPassword,
@@ -66,18 +67,37 @@ export async function POST(req: Request) {
       });
       return NextResponse.json(
         { ok: false, error: "Email already registered" },
-        { status: 400 }
+        { status: 409 }
       );
     }
 
-    const user = await db.user.create({
-      data: {
-        email,
-        name: name || null,
-        passwordHash: hashPassword(password),
-      },
-      select: { id: true, email: true, name: true, role: true, isDemo: true, createdAt: true },
-    });
+    let user: {
+      id: string;
+      email: string;
+      name: string | null;
+      role: string;
+      isDemo: boolean;
+      createdAt: Date;
+    };
+    try {
+      user = await db.user.create({
+        data: {
+          email,
+          name: name || null,
+          passwordHash: hashPassword(password),
+        },
+        select: { id: true, email: true, name: true, role: true, isDemo: true, createdAt: true },
+      });
+    } catch (err) {
+      // Concurrent first-use race: unique-constraint violation → 409, not 500.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+        return NextResponse.json(
+          { ok: false, error: "Email already registered" },
+          { status: 409 }
+        );
+      }
+      throw err;
+    }
 
     await setSessionCookie(user.id, user.email);
     await audit("auth.register", {

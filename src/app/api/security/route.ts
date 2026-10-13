@@ -70,7 +70,13 @@ export async function GET() {
         control: "Session cookies",
         status: "partial",
         detail:
-          "HMAC-SHA256 signed, HttpOnly, SameSite=Lax, 7-day expiry. Secure flag is off because this sandbox serves plain HTTP.",
+          "HMAC-SHA256 signed, HttpOnly, SameSite=Lax, 7-day expiry. Signing secret provisioned at runtime (env or generated+persisted). Secure flag is active in production; this sandbox serves plain HTTP over a tunnel.",
+      },
+      {
+        control: "Tenant isolation",
+        status: "enforced",
+        detail:
+          "Every chat, file, analysis, provider key, and audit event is scoped to the owning account; cross-account access returns 404.",
       },
       {
         control: "Audit logging",
@@ -98,8 +104,9 @@ export async function GET() {
       },
     ];
 
+    // TENANT ISOLATION: threats relevant to THIS user's account only.
     const recentThreats = await db.auditLog.findMany({
-      where: { severity: { not: "info" } },
+      where: { severity: { not: "info" }, userId: user.id },
       orderBy: { createdAt: "desc" },
       take: 10,
     });

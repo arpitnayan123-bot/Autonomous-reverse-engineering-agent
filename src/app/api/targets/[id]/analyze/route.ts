@@ -72,12 +72,10 @@ export async function POST(
 
     return NextResponse.json({ ok: true, runId });
   } catch (err) {
+    console.error("analyze start error:", err);
+    // Generic client message — engine failures can embed paths/stack detail.
     return NextResponse.json(
-      {
-        ok: false,
-        error:
-          err instanceof Error ? err.message : "Could not start analysis",
-      },
+      { ok: false, error: "Could not start analysis. The engine may be busy or the format unsupported — try again." },
       { status: 500 }
     );
   }

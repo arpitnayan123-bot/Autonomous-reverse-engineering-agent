@@ -166,11 +166,18 @@ export async function DELETE(req: Request) {
   return NextResponse.json({ ok: true });
 }
 
-/** Sanity ping of the currently stored key. */
-export async function PUT() {
+/** Sanity ping of the currently stored key. Each ping costs a real LLM call. */
+export async function PUT(req: Request) {
   const user = await getSessionUser();
   if (!user) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+  const rl = rateLimit(`provider-ping:${user.id}`, 6, 60_000);
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { ok: false, error: "Too many verification pings — try again shortly", retryAfterSec: rl.retryAfterSec },
+      { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } }
+    );
   }
   try {
     const llm = await resolveLlmForUser(user.id);
@@ -186,11 +193,12 @@ export async function PUT() {
       reply: text.trim().slice(0, 40),
     });
   } catch (err) {
+    // Upstream failures are already scrubbed (vault.scrubSecrets) and are
+    // genuinely useful here (quota/billing/key errors) — but cap the length
+    // so stack noise / absolute paths can't leak.
+    const msg = err instanceof Error ? err.message : "Model ping failed";
     return NextResponse.json(
-      {
-        ok: false,
-        error: err instanceof Error ? err.message : "Model ping failed",
-      },
+      { ok: false, error: msg.slice(0, 300) },
       { status: 400 }
     );
   }

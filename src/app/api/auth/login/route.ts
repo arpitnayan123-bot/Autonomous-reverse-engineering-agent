@@ -5,6 +5,12 @@ import { audit, clientIp, rateLimit } from "@/lib/security";
 
 export const runtime = "nodejs";
 
+/**
+ * Constant-work dummy hash so "unknown email" and "wrong password" take the
+ * same scrypt cost — otherwise response time is a user-enumeration oracle.
+ */
+const DUMMY_HASH = `scrypt$${"0".repeat(32)}$${"0".repeat(128)}`;
+
 interface LoginBody {
   email?: unknown;
   password?: unknown;
@@ -38,7 +44,8 @@ export async function POST(req: Request) {
     }
 
     const user = await db.user.findUnique({ where: { email } });
-    if (!user || !verifyPassword(password, user.passwordHash)) {
+    const ok = user ? verifyPassword(password, user.passwordHash) : verifyPassword(password, DUMMY_HASH);
+    if (!user || !ok) {
       await audit("auth.login_failed", {
         detail: `invalid credentials for ${email}`,
         ip,

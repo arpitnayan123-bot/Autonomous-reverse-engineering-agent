@@ -14,7 +14,10 @@ export async function GET() {
       );
     }
 
+    // TENANT ISOLATION: users see only their own audit trail — never other
+    // accounts' events (emails/IPs were previously disclosed cross-tenant).
     const events = await db.auditLog.findMany({
+      where: { userId: user.id },
       orderBy: { createdAt: "desc" },
       take: 200,
     });

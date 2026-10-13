@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { hashPassword, setSessionCookie } from "@/lib/auth";
 import { audit, clientIp, rateLimit } from "@/lib/security";
@@ -25,16 +26,30 @@ export async function POST(req: Request) {
     const email = "demo@rea.platform";
     let user = await db.user.findUnique({ where: { email } });
     if (!user) {
-      user = await db.user.create({
-        data: {
-          email,
-          name: "Demo Analyst",
-          passwordHash: hashPassword(`demo-${Date.now()}-${Math.random()}`),
-          role: "demo",
-          isDemo: true,
-        },
-      });
-      await audit("auth.demo_created", { userId: user.id, ip });
+      try {
+        user = await db.user.create({
+          data: {
+            email,
+            name: "Demo Analyst",
+            passwordHash: hashPassword(`demo-${Date.now()}-${Math.random()}`),
+            role: "demo",
+            isDemo: true,
+          },
+        });
+        await audit("auth.demo_created", { userId: user.id, ip });
+      } catch (err) {
+        // Concurrent first-use race on the shared demo account: re-read.
+        if (
+          err instanceof Prisma.PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        ) {
+          const existing = await db.user.findUnique({ where: { email } });
+          if (!existing) throw err;
+          user = existing;
+        } else {
+          throw err;
+        }
+      }
     }
     await setSessionCookie(user.id, user.email);
     await audit("auth.login", {

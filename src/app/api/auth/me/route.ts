@@ -7,7 +7,13 @@ export async function GET() {
   try {
     const user = await getSessionUser();
     return NextResponse.json({ ok: true, user });
-  } catch {
-    return NextResponse.json({ ok: true, user: null });
+  } catch (err) {
+    // A DB outage must not look like "logged out" (clients would loop the
+    // login flow) — surface a real failure.
+    console.error("auth/me error:", err);
+    return NextResponse.json(
+      { ok: false, error: "Could not verify session" },
+      { status: 503 }
+    );
   }
 }

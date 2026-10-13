@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
-import { audit, clientIp, isSafeId } from "@/lib/security";
+import { audit, clientIp, isSafeId, rateLimit } from "@/lib/security";
 
 export const runtime = "nodejs";
 
@@ -23,6 +23,15 @@ export async function POST(req: Request) {
     const user = await getSessionUser();
     if (!user) {
       return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+
+    // Forks copy up to 400 messages — bound the copy rate.
+    const rl = rateLimit(`fork:${user.id}`, 10, 60_000);
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { ok: false, error: "Too many forks — try again in a moment", retryAfterSec: rl.retryAfterSec },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } }
+      );
     }
 
     const body = (await req.json().catch(() => null)) as {
@@ -50,7 +59,7 @@ export async function POST(req: Request) {
           ok: false,
           error: `Session limit reached (${MAX_SESSIONS_PER_USER}). Delete old chats first.`,
         },
-        { status: 400 }
+        { status: 409 }
       );
     }
 

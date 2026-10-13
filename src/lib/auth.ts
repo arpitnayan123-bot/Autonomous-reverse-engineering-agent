@@ -1,21 +1,21 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { cookies } from "next/headers";
 import { db } from "./db";
+import { getRuntimeSecret } from "./runtime-secret";
 
 /**
  * Authentication for the REA platform.
  * - Passwords hashed with scrypt (node:crypto), per-user random salt.
  * - Sessions: HMAC-SHA256 signed payload stored in an HttpOnly cookie.
+ * - The signing secret is provisioned at runtime (env → persisted random);
+ *   it is never a hardcoded value.
  */
 
 const SESSION_COOKIE = "rea_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 
 function sessionSecret(): string {
-  return (
-    process.env.REA_SESSION_SECRET ||
-    "rea-platform-dev-secret-change-in-production-0e5f2a"
-  );
+  return getRuntimeSecret("REA_SESSION_SECRET", "sessionSecret");
 }
 
 export function hashPassword(password: string): string {
@@ -102,7 +102,8 @@ export async function setSessionCookie(userId: string, email: string) {
   store.set(SESSION_COOKIE, createSessionToken(userId, email), {
     httpOnly: true,
     sameSite: "lax",
-    secure: false,
+    // HTTPS only in production; the sandbox/dev server runs plain HTTP.
+    secure: process.env.NODE_ENV === "production",
     maxAge: SESSION_TTL_MS / 1000,
     path: "/",
   });

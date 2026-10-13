@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
-import { audit, clientIp, rateLimit } from "@/lib/security";
+import { audit, clientIp, isSafeId, rateLimit } from "@/lib/security";
 import { generateDocumentation } from "@/server/agent/agent";
 
 export const runtime = "nodejs";
@@ -17,6 +17,9 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
+    if (!isSafeId(id)) {
+      return NextResponse.json({ ok: false, error: "Invalid target id" }, { status: 400 });
+    }
     const user = await getSessionUser();
     if (!user) {
       return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
@@ -46,8 +49,10 @@ export async function POST(
     return NextResponse.json({ ok: true, docs, summary });
   } catch (err) {
     console.error("report generate error:", err);
+    // Generic client message — raw LLM/provider errors can embed upstream
+    // request bodies; they stay in the server log only.
     return NextResponse.json(
-      { ok: false, error: err instanceof Error ? err.message : "Documentation generation failed" },
+      { ok: false, error: "Documentation generation failed. Check that a working model is configured, then try again." },
       { status: 500 }
     );
   }

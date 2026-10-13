@@ -445,7 +445,7 @@ const sqlSchemaTool: AgentTool = {
 };
 
 const SQL_FORBIDDEN_RE =
-  /\b(insert|update|delete|drop|alter|attach|detach|pragma|create|vacuum|reindex)\b/i;
+  /\b(insert|update|delete|drop|alter|attach|detach|pragma|create|vacuum|reindex|replace)\b/i;
 
 const sqlQueryTool: AgentTool = {
   name: "sql_query",
@@ -472,7 +472,7 @@ const sqlQueryTool: AgentTool = {
     if (q.endsWith(";")) q = q.slice(0, -1).trim();
     if (q.includes(";")) return "Error: multiple statements are not allowed (remove the semicolon).";
     if (SQL_FORBIDDEN_RE.test(q)) {
-      return "Error: forbidden keyword detected (insert/update/delete/drop/alter/attach/detach/pragma/create/vacuum/reindex). SELECT only.";
+      return "Error: forbidden keyword detected (insert/update/delete/drop/alter/attach/detach/pragma/create/vacuum/reindex/replace). SELECT only.";
     }
     // Force a LIMIT unless one is already present (ignore LIMITs inside string literals).
     const withoutLiterals = q.replace(/'(?:[^']|'')*'/g, "''");

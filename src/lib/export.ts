@@ -159,14 +159,16 @@ function evidenceMarkdown(evidence: EvidenceRow[]): string {
 }
 
 export async function buildTargetReportMarkdown(target: TargetDetail): Promise<string> {
-  const [findingsRes, evidenceRes, docsRes] = await Promise.all([
+  const [findingsRes, evidenceRes] = await Promise.all([
     fetch(`/api/targets/${target.id}/findings?limit=500`).then((r) => r.json()).catch(() => null),
     fetch(`/api/targets/${target.id}/evidence`).then((r) => r.json()).catch(() => null),
-    fetch(`/api/targets/${target.id}/docs`).then((r) => r.json()).catch(() => null),
   ]);
   const findings = ((findingsRes && findingsRes.ok && findingsRes.findings) || []) as Finding[];
   const evidence = ((evidenceRes && evidenceRes.ok && evidenceRes.evidence) || []) as EvidenceRow[];
-  const docs = ((docsRes && docsRes.ok && docsRes.docs) || "") as string;
+  // Docs come from the target detail payload itself (GET /api/targets/[id]
+  // already returns `docs`) — the old code fetched a /docs endpoint that has
+  // never existed, so this section was always empty.
+  const docs = (target.docs ?? "") as string;
 
   const latestRun = target.runs?.[0];
   const sections: string[] = [

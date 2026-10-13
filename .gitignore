@@ -53,3 +53,8 @@ server.log
 # Skills directory
 /skills/tool-results/
 tool-results/
+
+# Runtime data — never commit user DBs, uploads, or secrets
+/db/
+/storage/
+/db/.secrets.json

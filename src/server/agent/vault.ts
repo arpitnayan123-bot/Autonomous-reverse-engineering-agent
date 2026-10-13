@@ -4,6 +4,7 @@ import {
   randomBytes,
   scryptSync,
 } from "crypto";
+import { getRuntimeSecret } from "@/lib/runtime-secret";
 
 /**
  * API-key vault — BYOK provider keys are encrypted at rest with AES-256-GCM.
@@ -11,20 +12,20 @@ import {
  * Security invariants:
  * - Plaintext keys NEVER leave the server: API responses only ever include
  *   `keyLast4`; logs and audit entries are scrubbed via scrubSecrets().
- * - The vault secret comes from REA_VAULT_SECRET (or a deployment default)
- *   and is stretched with scrypt.
+ * - The vault secret is provisioned at runtime (env → persisted random) —
+ *   never hardcoded — and is stretched with scrypt.
  * - Ciphertext, IV and auth tag are stored separately in the database.
  */
 
-const VAULT_SECRET =
-  process.env.REA_VAULT_SECRET ||
-  "rea-platform-vault-default-3f9c1a7e-do-not-use-in-prod";
+function vaultSecret(): string {
+  return getRuntimeSecret("REA_VAULT_SECRET", "vaultSecret");
+}
 
 let cachedKey: Buffer | null = null;
 
 function vaultKey(): Buffer {
   if (!cachedKey) {
-    cachedKey = scryptSync(VAULT_SECRET, "rea-vault-salt-v1", 32);
+    cachedKey = scryptSync(vaultSecret(), "rea-vault-salt-v1", 32);
   }
   return cachedKey;
 }

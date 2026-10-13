@@ -31,7 +31,7 @@ export function detectFormat(
 
   // --- Native executables ---
   if (hex.startsWith("7f454c46"))
-    return { format: "elf", family: "native", label: "ELF executable / object", confidence: "high", details: `ELF class ${buf[4] === 2 ? "64-bit" : buf[4] === 1 ? "32-bit" : "?"}, machine 0x${buf.readUInt16LE(18).toString(16)}` };
+    return { format: "elf", family: "native", label: "ELF executable / object", confidence: "high", details: `ELF class ${buf.length > 4 ? (buf[4] === 2 ? "64-bit" : buf[4] === 1 ? "32-bit" : "?") : "?"}, machine ${buf.length >= 20 ? `0x${buf.readUInt16LE(18).toString(16)}` : "?"}` };
   if (ascii.startsWith("MZ"))
     return { format: "pe", family: "native", label: "Windows PE executable", confidence: "high", details: "DOS/PE header detected" };
   if (hex.startsWith("cffaedfe") || hex.startsWith("feedfacf") || hex.startsWith("cafebabe") || hex.startsWith("bebafeca"))
@@ -39,7 +39,7 @@ export function detectFormat(
 
   // --- Bytecode ---
   if (hex.startsWith("0061736d"))
-    return { format: "wasm", family: "bytecode", label: "WebAssembly module", confidence: "high", details: `WASM version ${buf.readUInt32LE(4)}` };
+    return { format: "wasm", family: "bytecode", label: "WebAssembly module", confidence: "high", details: `WASM version ${buf.length >= 8 ? buf.readUInt32LE(4) : "?"}` };
   if (lower.endsWith(".evm") || lower.endsWith(".bin") || lower.endsWith(".hex"))
     return { format: "evm", family: "bytecode", label: "EVM bytecode", confidence: "medium", details: "EVM extension hint (.evm/.bin/.hex)" };
 

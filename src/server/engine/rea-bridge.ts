@@ -57,6 +57,14 @@ class ReaMcpClient {
   private starting: Promise<void> | null = null;
   private toolCatalog: McpToolDef[] | null = null;
   private lock: Promise<unknown> = Promise.resolve();
+  /**
+   * >0 while a withTarget session body is executing. Calls made from inside
+   * the session (the session already holds the lock) must NOT re-queue on the
+   * lock — doing so deadlocks: withTarget awaits fn() → fn awaits callTool →
+   * callTool awaits the lock held by withTarget. Re-entrant calls run
+   * directly; external calls keep queueing normally.
+   */
+  private sessionDepth = 0;
   private stderrTail: string[] = [];
 
   private spawnProc(): ChildProcessWithoutNullStreams {
@@ -97,6 +105,11 @@ class ReaMcpClient {
 
   private onStdout(chunk: string) {
     this.buffer += chunk;
+    // Bound the buffer: a hostile/noisy engine line without a newline must
+    // not grow memory unbounded. Cap at ~4 MB, keep the tail.
+    if (this.buffer.length > 4 * 1024 * 1024) {
+      this.buffer = this.buffer.slice(-2 * 1024 * 1024);
+    }
     let idx: number;
     while ((idx = this.buffer.indexOf("\n")) >= 0) {
       const line = this.buffer.slice(0, idx).trim();
@@ -152,17 +165,6 @@ class ReaMcpClient {
     return this.starting;
   }
 
-  private killProc() {
-    if (this.proc) {
-      try {
-        this.proc.kill("SIGKILL");
-      } catch {
-        /* already dead */
-      }
-      this.proc = null;
-    }
-  }
-
   private request(
     method: string,
     params: unknown,
@@ -206,53 +208,73 @@ class ReaMcpClient {
   /**
    * Execute one REA MCP tool. Serialized globally (the engine holds a single
    * binary session). Returns {structured?, text, isError}.
+   *
+   * Re-entrancy: when called from inside a withTarget session (which already
+   * holds the lock), the request runs directly instead of queueing on the
+   * lock — re-queueing would deadlock the session body.
    */
   async callTool(
     name: string,
     args: Record<string, unknown>,
     timeoutMs = ANALYSIS_TIMEOUT_MS
   ): Promise<{ structured: unknown; text: string; isError: boolean }> {
-    await this.ensureStarted();
+    if (this.sessionDepth > 0) {
+      return this.runToolRequest(name, args, timeoutMs);
+    }
     // Global serialization: run each call chained on the previous one.
-    const run = async () => {
-      const res = await this.request(
-        "tools/call",
-        { name, arguments: args },
-        timeoutMs
-      );
-      if (res.error) {
-        return {
-          structured: null,
-          text: `REA engine error: ${res.error.message}`,
-          isError: true,
-        };
-      }
-      const result = (res.result ?? {}) as {
-        content?: Array<{ type: string; text?: string }>;
-        structuredContent?: unknown;
-        isError?: boolean;
-      };
-      let text = "";
-      for (const c of result.content ?? []) {
-        if (c.type === "text" && c.text) text += (text ? "\n" : "") + c.text;
-      }
-      if (text.length > MAX_OUTPUT_BYTES) {
-        text =
-          text.slice(0, MAX_OUTPUT_BYTES) +
-          "\n…[truncated by platform output budget]";
-      }
-      return {
-        structured: result.structuredContent ?? null,
-        text,
-        isError: Boolean(result.isError),
-      };
-    };
-    const chained = this.lock.then(run, run);
+    const chained = this.lock.then(
+      () => this.runToolRequest(name, args, timeoutMs),
+      () => this.runToolRequest(name, args, timeoutMs)
+    );
     this.lock = chained.catch(() => undefined);
     return chained;
   }
 
-  /** Serialized open → run tools → close around a single analysis target. */
+  /** Single tools/call request — assumes the caller already holds the lock. */
+  private async runToolRequest(
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs: number
+  ): Promise<{ structured: unknown; text: string; isError: boolean }> {
+    await this.ensureStarted();
+    const res = await this.request(
+      "tools/call",
+      { name, arguments: args },
+      timeoutMs
+    );
+    if (res.error) {
+      return {
+        structured: null,
+        text: `REA engine error: ${res.error.message}`,
+        isError: true,
+      };
+    }
+    const result = (res.result ?? {}) as {
+      content?: Array<{ type: string; text?: string }>;
+      structuredContent?: unknown;
+      isError?: boolean;
+    };
+    let text = "";
+    for (const c of result.content ?? []) {
+      if (c.type === "text" && c.text) text += (text ? "\n" : "") + c.text;
+    }
+    if (text.length > MAX_OUTPUT_BYTES) {
+      text =
+        text.slice(0, MAX_OUTPUT_BYTES) +
+        "\n…[truncated by platform output budget]";
+    }
+    return {
+      structured: result.structuredContent ?? null,
+      text,
+      isError: Boolean(result.isError),
+    };
+  }
+
+  /**
+   * Serialized open → run tools → close around a single analysis target.
+   * The session body runs while the global lock is held; tools invoked from
+   * inside fn() (the common chat-agent pattern) execute re-entrantly.
+   */
   async withTarget<T>(
     targetPath: string,
     fn: () => Promise<T>,
@@ -260,27 +282,44 @@ class ReaMcpClient {
   ): Promise<T> {
     const run = async (): Promise<T> => {
       await this.ensureStarted();
-      const open = await this.callTool(
-        "open_binary",
-        { path: targetPath },
-        openTimeoutMs
-      );
-      if (open.isError) {
-        throw new Error(
-          `REA could not open target: ${open.text.slice(0, 500)}`
-        );
-      }
+      this.sessionDepth++;
       try {
-        return await fn();
-      } finally {
-        await this.callTool("close_binary", {}, 15_000).catch(
-          () => undefined
+        const open = await this.runToolRequest(
+          "open_binary",
+          { path: targetPath },
+          openTimeoutMs
         );
+        if (open.isError) {
+          throw new Error(
+            `REA could not open target: ${open.text.slice(0, 500)}`
+          );
+        }
+        try {
+          return await fn();
+        } finally {
+          await this.runToolRequest("close_binary", {}, 15_000).catch(
+            () => undefined
+          );
+        }
+      } finally {
+        this.sessionDepth--;
       }
     };
     const chained = this.lock.then(run, run);
     this.lock = chained.catch(() => undefined);
     return chained;
+  }
+
+  /** Terminate the engine child process (used on init failure + shutdown). */
+  killProc() {
+    if (this.proc) {
+      try {
+        this.proc.kill("SIGKILL");
+      } catch {
+        /* already dead */
+      }
+      this.proc = null;
+    }
   }
 
   getDiagnostics(): { running: boolean; stderr: string } {
@@ -292,9 +331,33 @@ class ReaMcpClient {
 }
 
 // Module-level singleton (survives Next.js HMR via globalThis).
-const globalForRea = globalThis as unknown as { reaClient?: ReaMcpClient };
+const globalForRea = globalThis as unknown as {
+  reaClient?: ReaMcpClient;
+  __reaShutdownHook?: boolean;
+};
 export const rea: ReaMcpClient =
   globalForRea.reaClient ?? (globalForRea.reaClient = new ReaMcpClient());
+
+// Kill the MCP child on server shutdown so it never outlives the platform.
+if (!globalForRea.__reaShutdownHook) {
+  globalForRea.__reaShutdownHook = true;
+  const shutdown = () => {
+    try {
+      rea.killProc();
+    } catch {
+      /* best effort */
+    }
+  };
+  process.once("exit", shutdown);
+  process.once("SIGTERM", () => {
+    shutdown();
+    process.exit(0);
+  });
+  process.once("SIGINT", () => {
+    shutdown();
+    process.exit(0);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // One-shot CLI helper (for capabilities/doctor and simple commands).

@@ -86,6 +86,8 @@ export interface TargetDetail extends TargetSummary {
   formatLabel?: string;
   formatConfidence?: string;
   formatDetails?: string;
+  /** AI-generated RE documentation (GET /api/targets/[id] returns it). */
+  docs?: string;
   runs: Run[];
 }
 
@@ -451,7 +453,13 @@ export async function streamChat(
     }),
     signal,
   });
-  const rateLimitRemaining = Number(res.headers.get("X-RateLimit-Remaining"));
+  // `Number(null) === 0` — a missing header must stay null, not "quota
+  // exhausted", or every chat looks rate-limited when a proxy strips it.
+  const remainingRaw = res.headers.get("X-RateLimit-Remaining");
+  const rateLimitRemaining =
+    remainingRaw === null || remainingRaw.trim() === ""
+      ? null
+      : Number(remainingRaw);
   if (!res.ok || !res.body) {
     let msg = `Chat failed (${res.status})`;
     try {

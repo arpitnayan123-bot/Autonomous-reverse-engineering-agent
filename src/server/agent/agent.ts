@@ -118,6 +118,8 @@ export async function runAgentLoop(opts: {
   userMessage: string;
   history: LoopMessage[];
   events?: AgentEventHandlers;
+  /** Aborted when the client disconnects — ends hung LLM calls promptly. */
+  signal?: AbortSignal;
 }): Promise<AgentLoopResult> {
   const { sessionId, target, userMessage, history, events } = opts;
   const ctx: AgentToolContext | null = target
@@ -166,7 +168,10 @@ export async function runAgentLoop(opts: {
       usage.tokensOut = (usage.tokensOut ?? 0) + u.completionTokens;
     }
   };
-  const callOpts = { onUsage: accumulateUsage };
+  const callOpts: { onUsage: (u: TokenUsage) => void; signal?: AbortSignal } = {
+    onUsage: accumulateUsage,
+    signal: opts.signal,
+  };
   const startedAt = Date.now();
 
   for (let i = 0; i < MAX_CHAT_ITERATIONS; i++) {

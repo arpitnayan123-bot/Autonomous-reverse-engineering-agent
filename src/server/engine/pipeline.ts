@@ -27,9 +27,10 @@ import {
  *  - `inspect_evm_interface` takes `{path, encoding}` and needs no session.
  *  - `inspect_plist` requires an open session despite accepting `path`.
  *  - v6.4.0 has NO sqlite/wasm tools → platform-local fallbacks/limitations.
- *  - We deliberately do NOT use rea.withTarget() here: the bridge serializes
- *    callTool on the same lock that withTarget holds, so calling tools inside
- *    withTarget would deadlock. We open/close the session manually.
+ *  - We open/close the session manually (rather than rea.withTarget) because
+ *    a pipeline runs MANY tools per session; withTarget would reopen the
+ *    binary for every single call. (withTarget itself is now re-entrancy
+ *    safe — the chat agent's rea_tool uses it.)
  */
 
 const ENGINE_VERSION = "rea-6.4.0";
@@ -58,6 +59,21 @@ export async function startAnalysis(
   targetId: string,
   goal?: string
 ): Promise<string> {
+  // Reap orphans: a server restart mid-run leaves queued/running rows that
+  // would otherwise block re-analysis forever.
+  await db.analysisRun.updateMany({
+    where: {
+      targetId,
+      status: { in: ["queued", "running"] },
+      createdAt: { lt: new Date(Date.now() - 30 * 60_000) },
+    },
+    data: {
+      status: "failed",
+      error: "Aborted: the platform restarted while this run was in progress.",
+      finishedAt: new Date(),
+    },
+  });
+
   // Concurrency guard: never stack runs on the same target.
   const existing = await db.analysisRun.findFirst({
     where: { targetId, status: { in: ["queued", "running"] } },

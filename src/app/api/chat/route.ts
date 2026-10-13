@@ -11,8 +11,17 @@ export const maxDuration = 300;
 const MAX_MESSAGE_CHARS = 8000;
 const HISTORY_TURNS = 20;
 const MAX_SESSIONS_PER_USER = 100;
+/** Chat turns allowed per user per 5-minute window (surfaced via header). */
+const CHAT_RATE_LIMIT = 20;
 /** Upper bound of messages inspected for edit/regenerate truncation. */
 const MAX_SESSION_MESSAGES = 400;
+
+/**
+ * Sessions with a turn currently being generated (server-side single-writer
+ * guard). Two concurrent turns on one session could interleave their history
+ * truncations and duplicate assistant rows — the second request now gets 409.
+ */
+const inFlightTurns = new Set<string>();
 
 /** Shape of a chat session row as returned by the list endpoint. */
 function toSessionSummary(
@@ -99,7 +108,9 @@ export async function GET(req: Request) {
     const messages = await db.chatMessage.findMany({
       where: { sessionId: session.id },
       orderBy: { createdAt: "asc" },
-      take: 200,
+      // Aligned with the POST-side MAX_SESSION_MESSAGES so the UI and the
+      // agent loop always agree on what history exists.
+      take: MAX_SESSION_MESSAGES,
     });
     return NextResponse.json({
       ok: true,
@@ -219,7 +230,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
     }
 
-    const rl = rateLimit(`chat:${user.id}`, 20, 5 * 60_000);
+    const rl = rateLimit(`chat:${user.id}`, CHAT_RATE_LIMIT, 5 * 60_000);
     if (!rl.allowed) {
       return NextResponse.json(
         { ok: false, error: "Rate limit exceeded", retryAfterSec: rl.retryAfterSec },
@@ -289,7 +300,7 @@ export async function POST(req: Request) {
       if (count >= MAX_SESSIONS_PER_USER) {
         return NextResponse.json(
           { ok: false, error: `Session limit reached (${MAX_SESSIONS_PER_USER}). Delete old chats first.` },
-          { status: 400 }
+          { status: 409 }
         );
       }
       let targetId: string | null = null;
@@ -330,6 +341,8 @@ export async function POST(req: Request) {
     let historyRows: { role: string; content: string }[];
     /** Whether a fresh user row must be persisted for this turn. */
     let createUserRow = true;
+    /** Rows to remove (edit/regenerate truncation), applied atomically below. */
+    let deleteIds: string[] = [];
 
     if (regenerate) {
       // Drop trailing assistant rows (completed runs), then the turn re-runs
@@ -348,9 +361,7 @@ export async function POST(req: Request) {
         );
       }
       turnMessage = allRows[lastIdx].content.slice(0, MAX_MESSAGE_CHARS);
-      if (trailing.length > 0) {
-        await db.chatMessage.deleteMany({ where: { id: { in: trailing } } });
-      }
+      deleteIds = trailing;
       historyRows = allRows.slice(0, lastIdx).slice(-HISTORY_TURNS);
       createUserRow = false;
     } else if (rawEditId) {
@@ -360,8 +371,7 @@ export async function POST(req: Request) {
       if (editIdx < 0 || allRows[editIdx].role !== "user") {
         return NextResponse.json({ ok: false, error: "Message not found" }, { status: 404 });
       }
-      const ids = allRows.slice(editIdx).map((m) => m.id);
-      await db.chatMessage.deleteMany({ where: { id: { in: ids } } });
+      deleteIds = allRows.slice(editIdx).map((m) => m.id);
       historyRows = allRows.slice(0, editIdx).slice(-HISTORY_TURNS);
       if (editIdx === 0) {
         await db.chatSession
@@ -380,11 +390,34 @@ export async function POST(req: Request) {
       }
     }
 
-    const userMessage = createUserRow
-      ? await db.chatMessage.create({
-          data: { sessionId: session.id, role: "user", content: message },
-        })
-      : null;
+    // Single-writer guard: reject a second concurrent turn on this session.
+    if (inFlightTurns.has(session.id)) {
+      return NextResponse.json(
+        { ok: false, error: "A response is already being generated for this chat. Wait for it to finish or cancel it first." },
+        { status: 409 }
+      );
+    }
+    inFlightTurns.add(session.id);
+
+    // Truncation + user-row creation happen atomically so a concurrent turn
+    // can never observe half-applied edit/regenerate state.
+    let userMessage: { id: string } | null = null;
+    try {
+      await db.$transaction(async (tx) => {
+        if (deleteIds.length > 0) {
+          await tx.chatMessage.deleteMany({ where: { id: { in: deleteIds } } });
+        }
+        if (createUserRow) {
+          userMessage = await tx.chatMessage.create({
+            data: { sessionId: session.id, role: "user", content: message },
+            select: { id: true },
+          });
+        }
+      });
+    } catch (err) {
+      inFlightTurns.delete(session.id);
+      throw err;
+    }
 
     await audit("chat.message", {
       userId: user.id,
@@ -426,6 +459,8 @@ export async function POST(req: Request) {
               role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
               content: m.content.slice(0, 4000),
             })),
+            // Client disconnects propagate into LLM calls (timeout+abort).
+            signal: req.signal,
             events: {
               onModelResolved: (info) => send({ type: "model", ...info }),
               onTurnStart: (turn) => send({ type: "turn_start", turn }),
@@ -452,6 +487,7 @@ export async function POST(req: Request) {
         } finally {
           send({ type: "done" });
           closed = true;
+          inFlightTurns.delete(session!.id);
           try {
             controller.close();
           } catch {
@@ -461,6 +497,7 @@ export async function POST(req: Request) {
       },
       cancel() {
         closed = true;
+        if (session) inFlightTurns.delete(session.id);
       },
     });
 
@@ -469,7 +506,7 @@ export async function POST(req: Request) {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
-        "X-RateLimit-Limit": "20",
+        "X-RateLimit-Limit": String(CHAT_RATE_LIMIT),
         "X-RateLimit-Remaining": String(rl.remaining),
       },
     });

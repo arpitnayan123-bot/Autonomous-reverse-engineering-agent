@@ -9,6 +9,59 @@ import type { CallOpts, DeltaSink, LlmMessage, TokenUsage } from "./providers";
 type ZaiClient = Awaited<ReturnType<typeof ZAI.create>>;
 const globalForZai = globalThis as unknown as { __reaZai?: ZaiClient };
 
+/** Hard ceiling for one platform LLM call — a hung SDK call must not stall
+ * the SSE turn (and the billable stream) forever. */
+const PLATFORM_CALL_TIMEOUT_MS = 120_000;
+
+/** Thrown when the client disconnects / aborts the turn. */
+export class TurnAbortedError extends Error {
+  constructor() {
+    super("Turn cancelled");
+    this.name = "TurnAbortedError";
+  }
+}
+
+/**
+ * Race a promise against (a) the request abort signal and (b) a timeout.
+ * The underlying SDK call cannot be cancelled, but the turn ends promptly
+ * instead of hanging; the orphaned result is simply discarded.
+ */
+function withTimeoutAndAbort<T>(
+  p: Promise<T>,
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new TurnAbortedError());
+      return;
+    }
+    let settled = false;
+    const done = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const timer = setTimeout(() => {
+      done(() =>
+        reject(
+          new Error(
+            `Platform model did not respond within ${Math.round(timeoutMs / 1000)}s`
+          )
+        )
+      );
+    }, timeoutMs);
+    const onAbort = () => done(() => reject(new TurnAbortedError()));
+    signal?.addEventListener("abort", onAbort);
+    p.then(
+      (v) => done(() => resolve(v)),
+      (e) => done(() => reject(e instanceof Error ? e : new Error(String(e))))
+    );
+  });
+}
+
 async function getZai(): Promise<ZaiClient> {
   if (!globalForZai.__reaZai) {
     globalForZai.__reaZai = await ZAI.create();
@@ -22,14 +75,21 @@ export async function zaiPlatformChat(
 ): Promise<string> {
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (opts?.signal?.aborted) throw new TurnAbortedError();
     try {
       const zai = await getZai();
-      const completion = (await zai.chat.completions.create({
-        messages,
-        thinking: { type: "disabled" },
-      })) as { choices?: Array<{ message?: { content?: string } }> } & {
-        usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
-      };
+      const completion = await withTimeoutAndAbort(
+        zai.chat.completions.create({
+          messages,
+          thinking: { type: "disabled" },
+        }) as Promise<
+          { choices?: Array<{ message?: { content?: string } }> } & {
+            usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
+          }
+        >,
+        opts?.signal,
+        PLATFORM_CALL_TIMEOUT_MS
+      );
       if (completion?.usage && typeof completion.usage === "object" && opts?.onUsage) {
         opts.onUsage({
           promptTokens:
@@ -67,13 +127,18 @@ export async function zaiPlatformChatStream(
   const usageRef: { value: TokenUsage | null } = { value: null };
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (opts?.signal?.aborted) throw new TurnAbortedError();
     try {
       const zai = await getZai();
-      const result = (await zai.chat.completions.create({
-        messages,
-        thinking: { type: "disabled" },
-        stream: true,
-      })) as unknown;
+      const result = await withTimeoutAndAbort(
+        zai.chat.completions.create({
+          messages,
+          thinking: { type: "disabled" },
+          stream: true,
+        }) as Promise<unknown>,
+        opts?.signal,
+        PLATFORM_CALL_TIMEOUT_MS
+      );
 
       // Async-iterable stream path (raw SSE bytes, strings, or parsed chunks).
       if (
@@ -86,6 +151,7 @@ export async function zaiPlatformChatStream(
         });
         const decoder = new TextDecoder();
         for await (const chunk of result as AsyncIterable<unknown>) {
+          if (opts?.signal?.aborted) throw new TurnAbortedError();
           if (typeof chunk === "string") {
             parser.push(chunk);
           } else if (chunk instanceof Uint8Array) {
@@ -129,6 +195,8 @@ export async function zaiPlatformChatStream(
       }
       lastErr = new Error("Model returned an empty completion");
     } catch (err) {
+      // A cancelled turn is never retried.
+      if (err instanceof TurnAbortedError) throw err;
       lastErr = err;
       // Streaming may be unsupported server-side — retry once without streaming.
       try {
@@ -136,6 +204,7 @@ export async function zaiPlatformChatStream(
         onDelta(text);
         return text;
       } catch (fallbackErr) {
+        if (fallbackErr instanceof TurnAbortedError) throw fallbackErr;
         lastErr = fallbackErr;
       }
     }
