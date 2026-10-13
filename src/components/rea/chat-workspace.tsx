@@ -34,6 +34,8 @@ import {
 import { useReaStore } from "@/store/rea-store";
 import { CopyButton, Markdown, humanBytes, humanDuration, humanTokens, toastError } from "@/components/rea/shared";
 import { HomeDashboard } from "@/components/rea/home-dashboard";
+import { SlashMenu, filterPrompts, slashTokenOf, type PromptEntry } from "@/components/rea/prompt-library";
+import { SpeakButton } from "@/components/rea/speak-button";
 import { estimateCostUsd, formatCostUsd } from "@/lib/pricing";
 import { PenLine } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
@@ -599,6 +601,22 @@ export function ChatWorkspace({
     textareaRef.current?.focus();
   };
 
+  // ---- Slash-command prompt library ("/" at the start of the composer) ----
+  const [slashIndex, setSlashIndex] = React.useState(0);
+  const slashToken = slashTokenOf(input);
+  const slashScope: "file" | "free" = boundTarget ? "file" : "free";
+  const slashEntries = React.useMemo(
+    () => filterPrompts(slashScope, slashToken),
+    [slashScope, slashToken]
+  );
+  const slashOpen = slashToken !== null && slashEntries.length > 0 && !streaming;
+  React.useEffect(() => setSlashIndex(0), [input]);
+
+  const pickPrompt = React.useCallback((entry: PromptEntry) => {
+    setInput(entry.prompt);
+    textareaRef.current?.focus();
+  }, []);
+
   const cancelEdit = () => {
     setEditingId(null);
     setEditValue("");
@@ -610,6 +628,30 @@ export function ChatWorkspace({
   };
 
   const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Slash menu owns navigation keys while open.
+    if (slashOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex((i) => (i + 1) % slashEntries.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex((i) => (i - 1 + slashEntries.length) % slashEntries.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const picked = slashEntries[slashIndex] ?? slashEntries[0];
+        if (picked) pickPrompt(picked);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setInput("");
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void sendWithEvents(input);
@@ -756,8 +798,15 @@ export function ChatWorkspace({
           )}
 
           <div
-            className="rounded-xl border border-zinc-800 bg-zinc-900/60 shadow-lg shadow-black/20 transition-all duration-200 focus-within:border-emerald-500/30 focus-within:shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_12px_32px_-16px_rgba(16,185,129,0.25)]"
+            className="relative rounded-xl border border-zinc-800 bg-zinc-900/60 shadow-lg shadow-black/20 transition-all duration-200 focus-within:border-emerald-500/30 focus-within:shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_12px_32px_-16px_rgba(16,185,129,0.25)]"
           >
+            <SlashMenu
+              visible={slashOpen}
+              entries={slashEntries}
+              activeIndex={slashIndex}
+              onPick={pickPrompt}
+              onHover={setSlashIndex}
+            />
             <Textarea
               ref={textareaRef}
               value={input}
@@ -838,7 +887,7 @@ export function ChatWorkspace({
             </div>
           </div>
           <p className="mt-1.5 text-center font-mono text-[10px] text-zinc-700">
-            Enter to send · Shift+Enter for a new line · file chats run real REA tools
+            Enter to send · Shift+Enter new line · <span className="text-zinc-600">/</span> prompts · file chats run real REA tools
           </p>
         </div>
       </div>
@@ -1054,7 +1103,7 @@ function MessageRow({
             {streaming && <StreamingCaret />}
           </div>
         )}
-        <MessageMeta entry={entry} model={model}>
+        <MessageMeta entry={entry} model={model} streaming={streaming}>
           {canFork && (
             <MetaButton
               label="Fork chat from this message"
@@ -1130,10 +1179,13 @@ function MetaButton({
 function MessageMeta({
   entry,
   model,
+  streaming,
   children,
 }: {
   entry: ChatEntry;
   model?: ModelInfo | null;
+  /** True while this message is still streaming (read-aloud hidden — text incomplete). */
+  streaming?: boolean;
   children?: React.ReactNode;
 }) {
   const copyLabel =
@@ -1206,6 +1258,9 @@ function MessageMeta({
       )}
       <div className="ml-auto flex items-center gap-1">
         {children}
+        {entry.role === "assistant" && entry.content && !streaming && (
+          <SpeakButton content={entry.content} />
+        )}
         <CopyButton value={entry.content} label={copyLabel} small />
       </div>
     </div>

@@ -506,6 +506,28 @@ body {
   }
 }
 
+/* rea: read-aloud equalizer — three bars bounce while TTS audio plays. */
+.rea-eq-bar {
+  height: 12px;
+  transform-origin: bottom;
+  animation: rea-eq 0.9s ease-in-out infinite;
+}
+@keyframes rea-eq {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rea-eq-bar {
+    animation: none;
+    transform: scaleY(0.7);
+  }
+}
+
 /* rea: touch reveal — hover-gated affordances must stay reachable on
    touch devices (no hover capability): show them at rest instead of
    hiding them behind an interaction that cannot happen. */
