@@ -534,7 +534,19 @@ export async function executeAgentTool(
 ): Promise<string> {
   const tool = AGENT_TOOLS.find((t) => t.name === name);
   if (!tool) {
-    return `Error: unknown tool "${name}". Available tools: ${AGENT_TOOLS.map((t) => t.name).join(", ")}.`;
+    // LLMs sometimes call a REA engine tool directly (inspect_artifact,
+    // list_strings, …). Those are reachable ONLY through rea_tool — route the
+    // call there transparently so the model's tool choice still works. The
+    // routing keeps every guarantee: allowlist, path-key scrubbing, forced
+    // target binding, session open/close, output truncation.
+    if (REA_ALLOWLIST.has(name)) {
+      return executeAgentTool(
+        "rea_tool",
+        { tool: name, args: args ?? {} },
+        ctx
+      );
+    }
+    return `Error: unknown tool "${name}". Available tools: ${AGENT_TOOLS.map((t) => t.name).join(", ")}. REA engine tools (inspect_artifact, list_strings, …) run via the rea_tool wrapper.`;
   }
   try {
     const result = await tool.run(args ?? {}, ctx);

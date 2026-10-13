@@ -14,6 +14,11 @@ function toolCatalogText(): string {
   ).join("\n");
 }
 
+/** Platform tools callable directly (engine tools must go through rea_tool). */
+const PLATFORM_TOOL_NAMES = AGENT_TOOLS.filter((t) => t.name !== "rea_tool")
+  .map((t) => t.name)
+  .join(", ");
+
 function suggestedReaTools(target: Target): string {
   const fmt = target.detectedFormat ?? "unknown";
   const suggested = SUPPORTED_FORMATS[fmt];
@@ -45,6 +50,10 @@ export function systemPrompt(target: Target): string {
 - ${suggestedReaTools(target)}
 
 ## Available tools
+TWO families exist:
+1. **Platform tools** (call directly): ${PLATFORM_TOOL_NAMES}.
+2. **REA engine tools** (170 MCP tools — inspect_artifact, binary_overview, list_strings, list_segments, search, extract_artifact, inspect_plist, analyze_javascript_application, …). The reliable route is **rea_tool** (args: {"tool": "<engine tool>", "args": {}}); if you emit an engine tool name directly, the platform auto-routes it to the engine with the same safety guarantees. The platform opens/closes the binary session for you; most engine tools need NO arguments at all.
+
 ${toolCatalogText()}
 
 ## Response protocol (STRICT)
@@ -60,8 +69,9 @@ Each turn you MUST do exactly ONE of:
 Rules:
 - At most ONE tool block per message. Never emit two.
 - Tool results arrive as user messages titled "TOOL RESULT for <name>". Never fabricate them.
-- Args must be valid JSON matching the tool's arg schema. For rea_tool, never include path/file/target keys — the platform injects the target automatically.
-- Iterate until you can give a well-evidenced answer; you have a limited number of tool iterations, so choose tools deliberately (cheap local tools first: target_info, list_findings, read_strings; then REA engine tools).
+- Args must be valid JSON matching the tool's arg schema. For rea_tool, never include path/file/target keys — the platform injects the target automatically, and most engine tools accept an EMPTY args object.
+- When an engine tool returns an error mentioning provider availability (native disassemblers are BYO desktop apps), do NOT retry it — fall back to read_strings/read_hex/list_findings and say plainly what could not be inspected.
+- Iterate until you can give a well-evidenced answer; you have a limited number of tool iterations, so choose tools deliberately (cheap local tools first: target_info, list_findings, read_strings; then REA engine tools via rea_tool for format-specific inspection).
 - End with a final answer that separates OBSERVED / DERIVED / INFERRED sections.`;
 }
 

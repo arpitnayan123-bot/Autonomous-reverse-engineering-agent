@@ -263,6 +263,9 @@ export function ChatWorkspace({
       if (navKeyRef.current !== navKey) {
         navKeyRef.current = navKey;
         el.scrollTop = 0;
+        // A previous chat's scrolled-up state must not leak a
+        // scroll-to-bottom button onto the Home dashboard.
+        setAtBottom(true);
       }
       return;
     }
@@ -817,8 +820,9 @@ export function ChatWorkspace({
         )}
       </div>
 
-      {/* Scroll-to-bottom (appears when the user scrolled up) */}
-      {!atBottom && (
+      {/* Scroll-to-bottom (appears when the user scrolled up) — messages only,
+          never over the Home dashboard. */}
+      {!atBottom && !showEmptyState && (
         <button
           type="button"
           onClick={jumpToBottom}
