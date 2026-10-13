@@ -322,3 +322,33 @@ Stage Summary:
 - SSE protocol: additive `usage` event (backward compatible).
 - Contracts: ChatMessageRow +{tokensIn?, tokensOut?, durationMs?}; POST /api/chat SSE +usage event.
 - Next candidates: streaming tool-arg preview while pending (live args), server-side chat search (>100 sessions), file compare view, i18n, chat folders/tags, per-provider cost estimate from token counts.
+
+---
+Task ID: 11 (cron review round 6 — QA + message search + cost estimation + shortcuts)
+Agent: main agent (webDevReview)
+Task: Assess status, QA via agent-browser, fix bugs / add features + styling details.
+
+Work Log:
+- Status assessment: dev server healthy, tsc clean (src/), lint clean, git at round-5 commit. Live QA pass (fresh browser): auth page ✓, demo login ✓, free-chat streaming ✓, provider BYOK dialog ✓, Engine&security dialog (healthy v6.4.0 · 170 tools) ✓ → phase STABLE → features.
+- BUG FOUND & FIXED (QA): GFM pipe tables rendered as raw "| a | b |" text in chat — react-markdown had no table parser. Installed remark-gfm@4 and wired `remarkPlugins={[remarkGfm]}` in the shared Markdown component. GFM tables, strikethrough (del), and task-list checkboxes (disabled inputs) now render. Table styling polished: max-h-96 scroll container, sticky uppercase header row, cell borders, zebra striping + row hover (globals.css, .rea-markdown table). Verified live: the -O0..-O3 comparison table renders as a real bordered table with code chips in cells.
+- Feature 1 — Server-side message search (works past the 100-session sidebar cap):
+  - NEW GET /api/chat/search?q=: auth + rate limit (30/min), strips LIKE wildcards, SQLite `contains` over the user's sessions (user+assistant rows, last 2000 scanned), returns ≤40 hits with sessionTitle/target/role/snippet(±48 chars)/createdAt; ranked by earliest match position then newest; audited `chat.message_search`.
+  - api-client: MessageSearchHit + searchChatMessages(q).
+  - Sidebar: filter input now debounces 350ms and, when q≥2, renders a MESSAGES section (skeleton → hits) above FILES with role icons, session title, timeAgo and <mark>-highlighted emerald snippets; click → openMessageHit() → store.requestJumpToMessage(messageId) + openSession if different chat.
+  - chat-workspace: jump-to-message effect — after history load, scrolls the target row to viewport center and flash-highlights it (new .rea-jump-flash keyframes: emerald wash + inset accent bar, 1.8s); motion rows now carry data-message-id.
+  - Store: jumpToMessageId + request/clear actions; shortcutsOpen + setter.
+- Feature 2 — Cost estimation from token counts (honest "est."):
+  - NEW src/lib/pricing.ts: MODEL_PRICING (USD per 1M in/out for all catalog models + glm-platform), prefix fallback lookup ("vendor/model" tolerated), estimateCostUsd(), formatCostUsd() (≥$1 two decimals, <$0.0001 shows "<$0.0001").
+  - MessageMeta: amber `$0.0005 est` chip after tok/duration (model from the streaming turn, else the active provider's model; hidden when the model has no pricing entry or usage unknown; tooltip discloses that real bills vary by endpoint/caching/discounts).
+  - StatusBar: `tok: ↑x ↓y · ~$0.0005` session total (lg+).
+- Feature 3 — Keyboard shortcuts cheat-sheet:
+  - NEW ShortcutsDialog (2×2 group grid: Workspace / Composer / Message actions (hover) / Security) with kbd chips; opened by "?" (outside inputs) or from ⌘K palette ("Keyboard shortcuts", Keyboard icon) or the NEW top-bar "?" button.
+- Styling details: table zebra/hover, top-bar Keyboard button, filter placeholder now "Filter & search messages…" (content search discoverability), meta token+cost chips whitespace-nowrap (no mobile wrap).
+- Hygiene: tool-results/ removed from the repo AGAIN and .gitignore'd (a persisted Read output snuck into the round-6 commit).
+- QA verification (fresh browser each pass): search API via in-session fetch returns ranked hits ✓; sidebar MESSAGES (1) with emerald highlight ✓; click → chat opened, view centered on the target message with flash ✓; table renders as real HTML table ✓; cost chips in message meta + status bar ✓ (241/163 tok → ~$0.0005 at glm-platform pricing — math verified); "?" opens cheat-sheet ✓ (4 groups, kbd chips); palette item present ✓; mobile 390×844: layout, streaming chat, touch-visible meta with nowrap cost chip ✓; fresh-session console 0 errors ✓; tsc clean (src/) ✓; eslint 0 problems ✓.
+
+Stage Summary:
+- Platform gained: full-text message search across all chats with jump-to-message flash (Cursor-parity), per-turn + per-session cost estimates for every catalog model (clearly labeled estimates), a keyboard cheat-sheet with three entry points, and real GFM markdown tables.
+- API: NEW GET /api/chat/search?q= (auth, rate-limited 30/min, audited).
+- Contracts: MessageSearchHit; store +{jumpToMessageId, shortcutsOpen}; Markdown component now remark-gfm.
+- Next candidates: streaming tool-arg preview while pending (live args), per-message model id persisted on ChatMessageRow (cost accuracy when provider changes mid-session), chat folders/tags, file compare view, i18n, provider pricing refresh date surfaced in UI.
