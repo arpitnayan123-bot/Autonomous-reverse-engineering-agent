@@ -696,9 +696,12 @@ Work Log:
 - Push dry-run: `GIT_TERMINAL_PROMPT=0 git push --dry-run origin main` → "fatal: could not read Username" — no write credentials exist.
 - Exhaustive credential sweep (all output masked, real-PAT pattern `ghp_[A-Za-z0-9]{36}` searched): /tmp/.ghpat (gone, shredded by design), ~/.git-credentials (absent), credential.helper (unset), env vars (none), gh CLI (not installed), ~/.ssh (absent), ~/.netrc (absent), bash history (none), .env (DATABASE_URL only), db/custom.db + storage uploads + tool-results (0 real tokens — only masked `ghp_***` strings and binary noise). VERDICT: no usable PAT on disk; push is impossible until the user re-supplies the token.
 - Re-armed the recurring webDevReview cron: job 457583, `0 */15 * * * ?` (every 15 min, Asia/Calcutta) — the previous job 457387 no longer exists.
+- TOKEN SUPPLIED → runbook executed: PAT stored at /tmp/.ghpat (0700) + askpass helper (Username→arpitnayan123-bot, Password→token); `GET /user` → HTTP 200, login `arpitnayan123-bot`.
+- PUSHED commit-by-commit, 5 fast-forward pushes verified by git output: 1296e22→f9399f8 (mcp server) →7e7b615 (connector wiring) →07b74a9 (ci) →a33ca5c (docs) →c91305e (worklog r22). main synced with origin/main.
+- Attribution + CI verified via authenticated API after the push (results recorded below).
 
 Stage Summary:
-- 4 verified commits sit ready on local main; remote main is at 1296e22. Nothing was faked: the push did NOT happen and was reported as blocked, not silently skipped.
+- Round-21 + round-22 work is now LIVE on GitHub: 5 commits pushed one-by-one (grows the user's commit count per the standing convention), followed by this 6th docs commit.
 - PUSH RUNBOOK (execute the moment a fresh PAT arrives, e.g. next cron round or user message):
   1. `umask 077; printf '%s' '<PAT>' > /tmp/.ghpat` (never echo/log the value; always render as `ghp_***`)
   2. `printf '#!/bin/sh\ncase "$1" in *Username*) echo arpitnayan123-bot;; *Password*) cat /tmp/.ghpat;; esac\n' > /tmp/gh-askpass && chmod 700 /tmp/gh-askpass`
@@ -707,5 +710,5 @@ Stage Summary:
   5. Cleanup: `shred -u /tmp/.ghpat /tmp/gh-askpass`.
 
 Next candidates:
-- AWAITING USER: fresh PAT → run the runbook above, then report pushed SHAs + Actions result.
-- Then resume round-21 next candidates: per-chat evidence rows for platform tool calls, README screenshots, repo topics/description via API, release tags, MCP end-to-end pipeline run.
+- Check the first real GitHub Actions CI run (triggered by these pushes) and fix anything it surfaces.
+- Resume round-21 next candidates: per-chat evidence rows for platform tool calls, README screenshots, repo topics/description via API, release tags, MCP end-to-end pipeline run.
