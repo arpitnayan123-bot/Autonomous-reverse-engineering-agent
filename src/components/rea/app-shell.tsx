@@ -4,29 +4,21 @@ import * as React from "react";
 import {
   Binary,
   Check,
-  ChevronRight,
   CircleDot,
   CircleUserRound,
   Download,
-  Github,
   KeyRound,
-  Keyboard,
   LogOut,
   MessageSquare,
-  MessagesSquare,
   MonitorDot,
-  Pencil,
+  MoreHorizontal,
   PanelLeft,
   PanelRightClose,
   PanelRightOpen,
-  Pin,
-  PinOff,
   Plus,
   SearchIcon,
   Settings2,
   Sparkles,
-  TextQuote,
-  Trash2,
   Upload,
   X,
 } from "lucide-react";
@@ -48,7 +40,7 @@ import {
   type TargetSummary,
 } from "@/lib/api-client";
 import { exportChat, exportTargetReport } from "@/lib/export";
-import { estimateCostUsd, formatCostUsd } from "@/lib/pricing";
+import { formatCostUsd } from "@/lib/pricing";
 import { useReaStore } from "@/store/rea-store";
 import { refreshProviderInStore } from "@/components/rea/rea-app";
 import { ChatWorkspace } from "@/components/rea/chat-workspace";
@@ -58,7 +50,7 @@ import { SettingsDialog } from "@/components/rea/settings-dialog";
 import { ShortcutsDialog } from "@/components/rea/shortcuts-dialog";
 import { SystemDialog } from "@/components/rea/system-dialog";
 import { TargetPanel } from "@/components/rea/target-panel";
-import { FormatBadge, humanBytes, humanTokens, timeAgo, toastError } from "@/components/rea/shared";
+import { humanBytes, timeAgo, toastError } from "@/components/rea/shared";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -74,7 +66,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -479,6 +470,8 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
                 setDialog("system");
                 setMobileNavOpen(false);
               }}
+              user={user}
+              onLogout={() => void doLogout()}
             />
           </SheetContent>
         </Sheet>
@@ -489,38 +482,14 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           onClick={() => newFreeChat()}
           title="Back to Home"
           aria-label="REA home — start a fresh chat"
-          className="hidden items-center gap-2 rounded font-mono text-xs font-bold tracking-widest text-zinc-200 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none md:flex"
+          className="flex items-center gap-2 rounded font-mono text-xs font-bold tracking-widest text-zinc-200 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
         >
           <Binary className="size-3.5 text-emerald-400" aria-hidden />
           REA
         </button>
-        <ChevronRight className="hidden size-3 text-zinc-700 md:block" aria-hidden />
 
         {/* Context title */}
         <span className="min-w-0 flex-1 truncate text-sm text-zinc-300">{topBarTitle}</span>
-
-        {/* ⌘K command palette trigger */}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => useReaStore.getState().setPaletteOpen(true)}
-          aria-label="Open command palette (Command K)"
-          className="hidden h-7 gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/60 px-2 font-mono text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 md:inline-flex"
-        >
-          <SearchIcon className="size-3" aria-hidden />
-          <span>⌘K</span>
-        </Button>
-
-        {/* "?" shortcuts cheat-sheet trigger */}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => useReaStore.getState().setShortcutsOpen(true)}
-          aria-label="Keyboard shortcuts"
-          className="hidden size-7 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 sm:inline-flex"
-        >
-          <Keyboard className="size-3.5" aria-hidden />
-        </Button>
 
         {/* Model chip → settings */}
         <ModelChip />
@@ -561,51 +530,6 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           )}
         </Button>
 
-        {/* User menu */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              className="gap-2 px-2 text-zinc-300 hover:bg-zinc-900 hover:text-zinc-100"
-              aria-label={`Account menu for ${user.name}`}
-            >
-              <span className="grid size-6 place-items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 font-mono text-[10px] text-emerald-400">
-                {(user.name?.[0] ?? "U").toUpperCase()}
-              </span>
-              <span className="hidden max-w-[120px] truncate text-xs sm:block">{user.name}</span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52 border-zinc-800 bg-zinc-900">
-            <DropdownMenuLabel className="space-y-0.5">
-              <p className="flex items-center gap-1.5 truncate text-xs text-zinc-200">
-                {user.name}
-                {user.isDemo && (
-                  <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 font-mono text-[9px] tracking-wider text-emerald-400">
-                    DEMO
-                  </span>
-                )}
-              </p>
-              <p className="truncate font-mono text-[11px] text-zinc-500">{user.email}</p>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator className="bg-zinc-800" />
-            <DropdownMenuItem onClick={() => setDialog("settings")} className="gap-2">
-              <KeyRound className="size-3.5" aria-hidden />
-              API key & model
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setDialog("system")} className="gap-2">
-              <MonitorDot className="size-3.5" aria-hidden />
-              Engine & security
-            </DropdownMenuItem>
-            <DropdownMenuSeparator className="bg-zinc-800" />
-            <DropdownMenuItem
-              onClick={() => void doLogout()}
-              className="gap-2 text-rose-400 focus:bg-rose-500/10 focus:text-rose-300"
-            >
-              <LogOut className="size-3.5" aria-hidden />
-              Sign out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
       </header>
 
       {/* ============================ Body row ============================== */}
@@ -642,6 +566,8 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
             onInspect={(id) => useReaStore.getState().openInspector(id)}
             onOpenSettings={() => setDialog("settings")}
             onOpenSystem={() => setDialog("system")}
+            user={user}
+            onLogout={() => void doLogout()}
           />
         </aside>
 
@@ -709,9 +635,6 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           </SheetContent>
         </Sheet>
       )}
-
-      {/* ============================ Status bar ============================ */}
-      <StatusBar />
 
       {/* ========================= Command palette ========================== */}
       <CommandPalette
@@ -799,12 +722,7 @@ function ModelChip() {
       variant="ghost"
       onClick={() => setDialog("settings")}
       aria-label={`Active AI model: ${label}. Open API key settings.`}
-      className={cn(
-        "h-7 gap-1.5 rounded-full border px-2.5 font-mono text-[10px] tracking-wide",
-        hasProviderKey === false
-          ? "border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
-          : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-      )}
+      className="hidden h-7 gap-1.5 rounded-full border border-zinc-800 bg-zinc-900 px-2.5 font-mono text-[10px] tracking-wide text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 sm:inline-flex"
     >
       <CircleDot
         className={cn(
@@ -813,9 +731,8 @@ function ModelChip() {
         )}
         aria-hidden
       />
-      <span className="max-w-[180px] truncate">{label}</span>
+      <span className="max-w-[160px] truncate">{label}</span>
       {!providerLoaded && <span className="text-zinc-600">…</span>}
-      {hasProviderKey === false && <KeyRound className="size-3" aria-hidden />}
     </Button>
   );
 }
@@ -848,6 +765,8 @@ interface SidebarBodyProps {
   onInspect: (targetId: string) => void;
   onOpenSettings: () => void;
   onOpenSystem: () => void;
+  user: ReaUser;
+  onLogout: () => void;
 }
 
 function SidebarBody(p: SidebarBodyProps) {
@@ -994,72 +913,53 @@ function SidebarBody(p: SidebarBodyProps) {
               ) : (
                 <MessageSquare className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
               )}
-              <span className="min-w-0 flex-1">
-                <span
-                  className={cn(
-                    "block truncate text-xs",
-                    active ? "text-zinc-100" : "text-zinc-400"
-                  )}
-                >
-                  {s.title || "New chat"}
-                </span>
-                <span className="flex items-center gap-1.5 text-[10px] text-zinc-600">
-                  {s.targetName ? `${s.targetName} · ` : ""}
-                  {s.messageCount > 0 ? `${s.messageCount} msg · ` : ""}
-                  {timeAgo(s.updatedAt)}
-                  {s.costUsd != null && (
-                    <span
-                      className="text-amber-500/60 tabular-nums"
-                      title="Estimated cumulative cost for this chat — provider-reported tokens × list price; real bills vary"
-                    >
-                      {" "}
-                      · ~{formatCostUsd(s.costUsd)}
-                    </span>
-                  )}
-                </span>
+              <span
+                className={cn(
+                  "block min-w-0 flex-1 truncate text-[13px]",
+                  active ? "text-zinc-100" : "text-zinc-400"
+                )}
+                title={[
+                  s.targetName,
+                  s.messageCount > 0 ? `${s.messageCount} messages` : null,
+                  timeAgo(s.updatedAt),
+                  s.costUsd != null ? `est. ~${formatCostUsd(s.costUsd)}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              >
+                {s.title || "New chat"}
               </span>
             </button>
-            <span className="flex shrink-0 items-center">
-              {/* Pin — always visible on pinned rows, hover-only otherwise. */}
-              <button
-                type="button"
-                aria-label={s.pinned ? `Unpin chat: ${s.title}` : `Pin chat: ${s.title}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  p.onTogglePin(s);
-                }}
-                className={cn(
-                  "rounded p-1 transition-all group-focus-within:opacity-100 focus-visible:ring-2 focus-visible:ring-amber-500/50 focus-visible:outline-none",
-                  s.pinned
-                    ? "text-amber-400 opacity-100"
-                    : "touch-visible text-zinc-600 opacity-0 group-hover:opacity-100 hover:text-amber-400"
-                )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={`Chat options: ${s.title}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="touch-visible mr-0.5 shrink-0 rounded p-1 text-zinc-500 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                >
+                  <MoreHorizontal className="size-3.5" aria-hidden />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="w-44 border-zinc-800 bg-zinc-900"
               >
-                {s.pinned ? <PinOff className="size-3.5" aria-hidden /> : <Pin className="size-3.5" aria-hidden />}
-              </button>
-              <button
-                type="button"
-                aria-label={`Rename chat: ${s.title}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  p.onStartRename(s);
-                }}
-                className="touch-visible rounded p-1 text-zinc-600 opacity-0 transition-colors group-focus-within:opacity-100 group-hover:opacity-100 hover:text-emerald-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-              >
-                <Pencil className="size-3.5" aria-hidden />
-              </button>
-              <button
-                type="button"
-                aria-label={`Delete chat: ${s.title}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  p.onDeleteSession(s);
-                }}
-                className="touch-visible rounded p-1 text-zinc-600 opacity-0 transition-colors group-focus-within:opacity-100 group-hover:opacity-100 hover:text-rose-400 focus-visible:ring-2 focus-visible:ring-rose-500/50 focus-visible:outline-none"
-              >
-                <Trash2 className="size-3.5" aria-hidden />
-              </button>
-            </span>
+                <DropdownMenuItem onClick={() => p.onTogglePin(s)}>
+                  {s.pinned ? "Unpin" : "Pin"}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => p.onStartRename(s)}>
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuSeparator className="bg-zinc-800" />
+                <DropdownMenuItem
+                  onClick={() => p.onDeleteSession(s)}
+                  className="text-rose-400 focus:bg-rose-500/10 focus:text-rose-300"
+                >
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </>
         )}
       </div>
@@ -1150,13 +1050,13 @@ function SidebarBody(p: SidebarBodyProps) {
       <div className="min-h-0 flex-1 overflow-y-auto rea-scroll">
         {/* Pinned chats */}
         {p.sessionsLoaded && shownPinned.length > 0 && (
-          <SidebarSection icon={Pin} label={`Pinned${q ? ` (${shownPinned.length})` : ""}`}>
+          <SidebarSection label={`Pinned${q ? ` (${shownPinned.length})` : ""}`}>
             {shownPinned.map(renderSessionRow)}
           </SidebarSection>
         )}
 
         {/* Chats */}
-        <SidebarSection icon={MessagesSquare} label={`Chats${q ? ` (${shownChats.length})` : ""}`}>
+        <SidebarSection label={`Chats${q ? ` (${shownChats.length})` : ""}`}>
           {!p.sessionsLoaded ? (
             <div className="space-y-1.5 px-2 py-1">
               <div className="h-6 animate-pulse rounded bg-zinc-900" />
@@ -1178,7 +1078,6 @@ function SidebarBody(p: SidebarBodyProps) {
         {/* Messages (server-side content search; only when filtering) */}
         {q.length >= 2 && (
           <SidebarSection
-            icon={TextQuote}
             label={`Messages${
               msgSearching ? " · searching…" : msgHits.length > 0 ? ` (${msgHits.length})` : ""
             }`}
@@ -1229,7 +1128,6 @@ function SidebarBody(p: SidebarBodyProps) {
 
         {/* Files */}
         <SidebarSection
-          icon={Binary}
           label={`Files${q ? ` (${shownTargets.length})` : ""}`}
           action={
           <button
@@ -1259,7 +1157,7 @@ function SidebarBody(p: SidebarBodyProps) {
               <div
                 key={t.id}
                 className={cn(
-                  "group flex items-center gap-1 rounded-md pr-1 transition-colors",
+                  "group flex items-center rounded-md transition-colors",
                   t.id === p.draftTargetId ? "bg-zinc-800/80" : "hover:bg-zinc-900"
                 )}
               >
@@ -1267,27 +1165,22 @@ function SidebarBody(p: SidebarBodyProps) {
                   type="button"
                   onClick={() => p.onOpenTargetChat(t.id)}
                   aria-label={`Start a chat about ${t.originalName}`}
+                  title={`${t.detectedFormat ?? "file"} · ${humanBytes(t.sizeBytes)} · analysis: ${t.status}`}
                   className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
                 >
                   <Binary className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs text-zinc-400 group-hover:text-zinc-200">
-                      {t.originalName}
-                    </span>
-                    <span className="flex items-center gap-1.5 text-[10px] text-zinc-600">
-                      <FormatBadge format={t.detectedFormat} className="scale-90" />
-                      {humanBytes(t.sizeBytes)}
-                      <span
-                        aria-label={`Analysis status: ${t.status}`}
-                        title={`analysis: ${t.status}`}
-                        className={cn(
-                          "size-1.5 shrink-0 rounded-full",
-                          targetStatusDot(t.status)
-                        )}
-                      />
-                    </span>
+                  <span className="block min-w-0 flex-1 truncate text-[13px] text-zinc-400 group-hover:text-zinc-200">
+                    {t.originalName}
                   </span>
                 </button>
+                <span
+                  aria-label={`Analysis status: ${t.status}`}
+                  title={`analysis: ${t.status}`}
+                  className={cn(
+                    "mr-0.5 size-1.5 shrink-0 rounded-full",
+                    targetStatusDot(t.status)
+                  )}
+                />
                 <button
                   type="button"
                   aria-label={`Inspect ${t.originalName}`}
@@ -1295,7 +1188,7 @@ function SidebarBody(p: SidebarBodyProps) {
                     e.stopPropagation();
                     p.onInspect(t.id);
                   }}
-                  className="touch-visible rounded p-1 text-zinc-600 opacity-0 transition-all hover:text-emerald-400 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                  className="touch-visible mr-0.5 shrink-0 rounded p-1 text-zinc-600 opacity-0 transition-all hover:text-emerald-400 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
                 >
                   <MonitorDot className="size-3.5" aria-hidden />
                 </button>
@@ -1305,48 +1198,76 @@ function SidebarBody(p: SidebarBodyProps) {
         </SidebarSection>
       </div>
 
-      {/* Bottom utilities */}
+      {/* Account — Claude-style bottom user card (menu: keys, engine, sign out) */}
       <div className="shrink-0 border-t border-zinc-800/80 p-2">
-        <button
-          type="button"
-          onClick={p.onOpenSettings}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-900 hover:text-zinc-200 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-        >
-          <KeyRound className="size-3.5" aria-hidden />
-          API key & model
-        </button>
-        <button
-          type="button"
-          onClick={p.onOpenSystem}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-900 hover:text-zinc-200 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-        >
-          <Settings2 className="size-3.5" aria-hidden />
-          Engine & security
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="Account options"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-zinc-900 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+            >
+              <span className="grid size-7 shrink-0 place-items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 font-mono text-[11px] text-emerald-400">
+                {(p.user.name?.[0] ?? "U").toUpperCase()}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate text-xs text-zinc-300">{p.user.name}</span>
+                  {p.user.isDemo && (
+                    <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 font-mono text-[8px] tracking-wider text-emerald-400">
+                      DEMO
+                    </span>
+                  )}
+                </span>
+                <span className="block truncate font-mono text-[10px] text-zinc-600">
+                  {p.user.email}
+                </span>
+              </span>
+              <Settings2 className="size-3.5 shrink-0 text-zinc-500" aria-hidden />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            side="top"
+            align="start"
+            className="w-56 border-zinc-800 bg-zinc-900"
+          >
+            <DropdownMenuItem onClick={p.onOpenSettings} className="gap-2">
+              <KeyRound className="size-3.5" aria-hidden />
+              API key & model
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={p.onOpenSystem} className="gap-2">
+              <MonitorDot className="size-3.5" aria-hidden />
+              Engine & security
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="bg-zinc-800" />
+            <DropdownMenuItem
+              onClick={p.onLogout}
+              className="gap-2 text-rose-400 focus:bg-rose-500/10 focus:text-rose-300"
+            >
+              <LogOut className="size-3.5" aria-hidden />
+              Sign out
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   );
 }
 
 function SidebarSection({
-  icon: Icon,
   label,
   action,
   children,
 }: {
-  icon: typeof Binary;
   label: string;
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="px-2 pb-2" aria-label={label}>
-      <div className="flex items-center gap-1.5 px-2 pt-2 pb-1">
-        <Icon className="size-3 text-zinc-600" aria-hidden />
-        <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-600">
-          {label}
-        </span>
-        {action && <span className="ml-auto">{action}</span>}
+      <div className="flex items-center justify-between px-2 pt-3 pb-1">
+        <span className="text-[11px] font-medium tracking-wide text-zinc-500">{label}</span>
+        {action && <span className="pr-1">{action}</span>}
       </div>
       <div className="flex flex-col gap-0.5">{children}</div>
     </section>
@@ -1371,88 +1292,7 @@ function targetStatusDot(status: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Status bar (VSCode-style)
+// Status bar — intentionally removed. All of that information still exists in
+// its honest home: engine/model in Settings & System dialog, quota next to the
+// composer (only when it matters), per-message tokens on hover.
 // ---------------------------------------------------------------------------
-
-function StatusBar() {
-  const { capabilities, providerActive, sessions, targets, user, chatQuota, sessionTokens } =
-    useReaStore();
-  const sessionCost = sessionTokens
-    ? estimateCostUsd(providerActive?.model ?? "glm-platform", sessionTokens.tokensIn, sessionTokens.tokensOut)
-    : null;
-  const sessionCostLabel = formatCostUsd(sessionCost);
-
-  return (
-    <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-zinc-800/80 bg-zinc-950 px-3 font-mono text-[10px] text-zinc-500">
-      {/* REA engine credit — links to the upstream repo (user request: give credit). */}
-      <a
-        href="https://github.com/morluto/rea"
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label={`REA engine by morluto on GitHub — ${capabilities?.engine.healthy ? "healthy" : "unavailable"}`}
-        title="Powered by REA — Reverse Engineer Anything · github.com/morluto/rea (MIT)"
-        className="flex items-center gap-1.5 rounded px-1 py-0.5 -mx-1 transition-colors hover:text-emerald-300"
-      >
-        <span
-          className={cn(
-            "size-1.5 rounded-full",
-            capabilities ? (capabilities.engine.healthy ? "bg-emerald-500" : "bg-rose-500") : "bg-zinc-600"
-          )}
-          aria-hidden
-        />
-        <Github className="hidden size-3 text-zinc-600 sm:inline" aria-hidden />
-        <span>
-          rea-agents {capabilities?.engine.version ?? "v6.4.0"}
-          <span className="hidden text-zinc-700 md:inline"> · morluto/rea</span>
-        </span>
-      </a>
-      <span className="hidden sm:inline">
-        model: {providerActive ? `${providerActive.provider}/${providerActive.model}` : "platform"}
-      </span>
-      {chatQuota && (
-        <span
-          className={cn(
-            "hidden md:inline",
-            chatQuota.remaining <= 3 && chatQuota.remaining > 0 && "text-amber-400",
-            chatQuota.remaining === 0 && "text-rose-400"
-          )}
-          aria-label={`Message quota: ${chatQuota.remaining} of ${chatQuota.limit} remaining in this window`}
-        >
-          quota: {chatQuota.remaining}/{chatQuota.limit} msgs · 5 min
-        </span>
-      )}
-      {sessionTokens && (
-        <span
-          className="hidden lg:inline"
-          aria-label={`Session tokens — prompt ${sessionTokens.tokensIn}, completion ${sessionTokens.tokensOut}`}
-          title="Provider-reported tokens across this chat (↑ prompt · ↓ completion)"
-        >
-          <span className="text-zinc-600">tok:</span> ↑{humanTokens(sessionTokens.tokensIn)} ↓
-          {humanTokens(sessionTokens.tokensOut)}
-          {sessionCostLabel && (
-            <span className="text-amber-500/70" title="Estimated cost at the active model's list price — real bills vary.">
-              {" "}
-              · ~{sessionCostLabel}
-            </span>
-          )}
-        </span>
-      )}
-      <span className="hidden md:inline">{targets.length} files</span>
-      <span className="hidden md:inline">{sessions.length} chats</span>
-      <span className="ml-auto hidden sm:inline text-zinc-600">evidence-first analysis</span>
-      <button
-        type="button"
-        onClick={() => useReaStore.getState().setPaletteOpen(true)}
-        aria-label="Open command palette"
-        className="hidden rounded border border-zinc-800 bg-zinc-900/60 px-1.5 text-[9px] text-zinc-500 transition-colors hover:text-zinc-300 sm:inline"
-      >
-        ⌘K
-      </button>
-      {user?.isDemo && (
-        <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1 text-emerald-400">
-          DEMO
-        </span>
-      )}
-    </footer>
-  );
-}

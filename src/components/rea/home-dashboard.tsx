@@ -1,35 +1,23 @@
 "use client";
 
 import * as React from "react";
-import {
-  ArrowRight,
-  Binary,
-  FileUp,
-  Github,
-  KeyRound,
-  MessageSquare,
-  Paperclip,
-  ScanSearch,
-  SendHorizontal,
-  Zap,
-} from "lucide-react";
+import { FileUp, Github, SendHorizontal } from "lucide-react";
 
 import { useReaStore } from "@/store/rea-store";
 import { cn } from "@/lib/utils";
 import { MAX_MESSAGE_CHARS } from "@/components/rea/chat-limits";
 import { SlashMenu, filterPrompts, slashTokenOf, type PromptEntry } from "@/components/rea/prompt-library";
-import { FormatBadge, humanBytes, timeAgo, toastError } from "@/components/rea/shared";
+import { toastError } from "@/components/rea/shared";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 
 // ---------------------------------------------------------------------------
 // HomeDashboard — the first screen after sign-in (empty state of a free chat).
 //
-// Design brief: composer-first and restrained. One prominent prompt composer,
-// a few suggested tasks, recent investigations, and quiet status/credit lines.
-// Everything the user already has elsewhere (full stats, quick actions, engine
-// diagnostics) lives in the sidebar, palette, status bar and dialogs — this
-// screen only needs to answer "how do I start?".
+// Design brief (Claude-grade restraint): one greeting, ONE composer, a handful
+// of starter prompts, and two whisper-quiet footer lines. Everything else
+// (stats, recents, engine diagnostics, BYOK state) lives in the sidebar,
+// palette and dialogs — this screen must answer only "how do I start?".
 // ---------------------------------------------------------------------------
 
 const REA_REPO_URL = "https://github.com/morluto/rea";
@@ -52,18 +40,7 @@ export function HomeDashboard({
   /** Opens the file picker (upload → auto-analyze → file-bound draft chat). */
   onAttachFile?: () => void;
 }) {
-  const sessions = useReaStore((s) => s.sessions);
-  const targets = useReaStore((s) => s.targets);
-  const capabilities = useReaStore((s) => s.capabilities);
-  const providerActive = useReaStore((s) => s.providerActive);
-  const openSession = useReaStore((s) => s.openSession);
-  const openInspector = useReaStore((s) => s.openInspector);
   const setDialog = useReaStore((s) => s.setDialog);
-  const setPaletteOpen = useReaStore((s) => s.setPaletteOpen);
-
-  const engine = capabilities?.engine ?? null;
-  const recentChats = React.useMemo(() => sessions.slice(0, 3), [sessions]);
-  const recentFiles = React.useMemo(() => targets.slice(0, 3), [targets]);
 
   // ---- Home composer (the entry point; the docked composer takes over
   // after the first message) ------------------------------------------------
@@ -149,28 +126,23 @@ export function HomeDashboard({
     }
   };
 
-  const totalMessages = React.useMemo(
-    () => sessions.reduce((acc, s) => acc + s.messageCount, 0),
-    [sessions]
-  );
-
   return (
     <div className="min-h-full" onKeyDown={onHomeKeyDown}>
-      <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pt-[9vh] pb-8 sm:px-6">
+      <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pt-[14vh] pb-8 sm:px-6">
         {/* ===================== Greeting + composer ===================== */}
-        <h1 className="text-balance text-xl font-semibold tracking-tight text-zinc-100 sm:text-2xl">
+        <h1 className="text-balance text-2xl font-semibold tracking-tight text-zinc-100 sm:text-[28px]">
           What are we investigating?
         </h1>
-        <p className="mt-1.5 text-pretty text-[13px] leading-relaxed text-zinc-500">
+        <p className="mt-2 text-pretty text-sm leading-relaxed text-zinc-500">
           Ask anything, attach a file, or press{" "}
           <kbd className="rounded border border-zinc-800 bg-zinc-900 px-1 py-px font-mono text-[10px] text-zinc-400">
             /
           </kbd>{" "}
-          for prompts. File chats run the real REA engine and grade every claim.
+          for prompts.
         </p>
 
         {/* --- Prominent composer --- */}
-        <div className="relative mt-4">
+        <div className="relative mt-5">
           <SlashMenu
             visible={slashOpen}
             entries={slashEntries}
@@ -223,21 +195,6 @@ export function HomeDashboard({
               </Button>
             </div>
           </div>
-
-          {/* BYOK hint — only when the platform model is in use. */}
-          {hasKey === false && (
-            <button
-              type="button"
-              onClick={() => setDialog("settings")}
-              className="mt-2 flex w-full items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-left text-[11px] text-amber-300/90 transition-colors hover:bg-amber-500/10 focus-visible:ring-2 focus-visible:ring-amber-500/50 focus-visible:outline-none"
-            >
-              <KeyRound className="size-3.5 shrink-0" aria-hidden />
-              <span className="flex-1">
-                Running on the built-in platform model. Add your own API key for full control.
-              </span>
-              <span className="font-mono text-[10px] text-amber-400">ADD KEY</span>
-            </button>
-          )}
         </div>
 
         {/* ===================== Suggested tasks ===================== */}
@@ -256,178 +213,28 @@ export function HomeDashboard({
           </div>
         </section>
 
-        {/* ===================== Recent activity ===================== */}
-        <section
-          aria-label="Recent investigations and files"
-          className="mt-10 grid grid-cols-1 gap-x-8 gap-y-4 md:grid-cols-2"
-        >
-          {/* Investigations */}
-          <div className="min-w-0">
-            <div className="flex items-baseline justify-between border-b border-zinc-800/70 pb-1.5">
-              <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
-                Recent investigations
-              </h2>
-              {sessions.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setPaletteOpen(true)}
-                  aria-label="Browse all chats in the command palette"
-                  className="rounded px-1 font-mono text-[10px] text-zinc-600 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                >
-                  all {sessions.length} →
-                </button>
-              )}
-            </div>
-            {recentChats.length === 0 ? (
-              <p className="pt-2.5 text-xs leading-relaxed text-zinc-600">
-                No chats yet — your investigations will appear here.
-              </p>
-            ) : (
-              <ul>
-                {recentChats.map((chat) => (
-                  <li key={chat.id}>
-                    <button
-                      type="button"
-                      onClick={() => openSession(chat.id)}
-                      className="group flex w-full items-center gap-2.5 border-b border-zinc-800/40 px-1 py-2 text-left transition-colors last:border-b-0 hover:bg-zinc-900/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                    >
-                      <MessageSquare className="size-3.5 shrink-0 text-zinc-600 transition-colors group-hover:text-emerald-400" aria-hidden />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs text-zinc-300 group-hover:text-zinc-100">
-                          {chat.title || "Untitled chat"}
-                        </span>
-                        <span className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
-                          {chat.targetName && (
-                            <span className="max-w-[90px] truncate text-emerald-500/70">{chat.targetName}</span>
-                          )}
-                          <span>{chat.messageCount} msg</span>
-                          <span>·</span>
-                          <span>{timeAgo(chat.updatedAt)}</span>
-                        </span>
-                      </span>
-                      <ArrowRight
-                        className="size-3.5 shrink-0 -translate-x-1 text-zinc-700 opacity-0 transition-all group-hover:translate-x-0 group-hover:text-zinc-400 group-hover:opacity-100"
-                        aria-hidden
-                      />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          {/* Files */}
-          <div className="min-w-0">
-            <div className="flex items-baseline justify-between border-b border-zinc-800/70 pb-1.5">
-              <h2 className="font-mono text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
-                Files
-              </h2>
-              {onAttachFile && (
-                <button
-                  type="button"
-                  onClick={onAttachFile}
-                  aria-label="Upload a file to investigate"
-                  className="rounded px-1 font-mono text-[10px] text-zinc-600 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                >
-                  upload →
-                </button>
-              )}
-            </div>
-            {recentFiles.length === 0 ? (
-              <p className="pt-2.5 text-xs leading-relaxed text-zinc-600">
-                Nothing uploaded yet. Drop a binary anywhere, or use{" "}
-                <button
-                  type="button"
-                  onClick={onAttachFile}
-                  className="font-mono text-[11px] text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                >
-                  attach file
-                </button>
-                .
-              </p>
-            ) : (
-              <ul>
-                {recentFiles.map((file) => (
-                  <li key={file.id}>
-                    <button
-                      type="button"
-                      onClick={() => openInspector(file.id)}
-                      className="group flex w-full items-center gap-2.5 border-b border-zinc-800/40 px-1 py-2 text-left transition-colors last:border-b-0 hover:bg-zinc-900/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-                    >
-                      <FormatBadge format={file.detectedFormat} className="shrink-0 text-[9px]" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs text-zinc-300 group-hover:text-zinc-100">
-                          {file.originalName}
-                        </span>
-                        <span className="mt-0.5 flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
-                          <span>{humanBytes(file.sizeBytes)}</span>
-                          <span>·</span>
-                          <span>{timeAgo(file.createdAt)}</span>
-                          {file.lastRun && (
-                            <>
-                              <span>·</span>
-                              <span className="text-emerald-500/70">{file.lastRun.status}</span>
-                            </>
-                          )}
-                        </span>
-                      </span>
-                      <ArrowRight
-                        className="size-3.5 shrink-0 -translate-x-1 text-zinc-700 opacity-0 transition-all group-hover:translate-x-0 group-hover:text-zinc-400 group-hover:opacity-100"
-                        aria-hidden
-                      />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </section>
-
-        {/* ================= Quiet status + credit ================= */}
-        <footer className="mt-auto pt-10">
-          {/* One quiet mono line instead of stat cards — each part still navigates. */}
-          <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5 font-mono text-[10px] text-zinc-600">
-            <span>
-              {sessions.length} chats{totalMessages > 0 ? ` · ${totalMessages} msgs` : ""} · {targets.length} files
-            </span>
-            <span aria-hidden className="text-zinc-800">·</span>
-            {engine && (
-              <button
-                type="button"
-                onClick={() => setDialog("system")}
-                title="Engine & security details"
-                className="inline-flex items-center gap-1 rounded px-1 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
-              >
-                <ScanSearch className="size-3" aria-hidden />
-                engine v{engine.version} · {engine.toolCount} tools
-              </button>
-            )}
-            <span aria-hidden className="text-zinc-800">·</span>
+        {/* ================= Quiet footer ================= */}
+        <footer className="mt-auto pt-12">
+          {/* BYOK state — one whisper-quiet line, only when it matters. */}
+          {hasKey === false && (
             <button
               type="button"
               onClick={() => setDialog("settings")}
-              title="Model & API key settings"
-              className="inline-flex items-center gap-1 rounded px-1 transition-colors hover:text-zinc-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+              className="mx-auto mb-2.5 block w-fit text-[11px] text-zinc-600 transition-colors hover:text-zinc-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
             >
-              <Zap className="size-3 text-amber-400/70" aria-hidden />
-              {providerActive ? `${providerActive.provider}/${providerActive.model}` : "platform model"}
+              Using the built-in platform model — add your API key for full control
             </button>
-          </div>
-
+          )}
           <a
             href={REA_REPO_URL}
             target="_blank"
             rel="noopener noreferrer"
             title="REA is open source (MIT) — github.com/morluto/rea"
-            className="mx-auto mt-3 flex w-fit items-center gap-1.5 rounded font-mono text-[10px] text-zinc-700 transition-colors hover:text-zinc-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+            className="mx-auto flex w-fit items-center gap-1.5 rounded font-mono text-[10px] text-zinc-700 transition-colors hover:text-zinc-400 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
           >
             <Github className="size-3" aria-hidden />
             Powered by REA — Reverse Engineer Anything · MIT
-            <span className="text-zinc-600">github.com/morluto/rea</span>
           </a>
-          <span className="sr-only">
-            <Binary aria-hidden /> REA evidence-first reverse engineering workspace
-          </span>
         </footer>
       </div>
     </div>

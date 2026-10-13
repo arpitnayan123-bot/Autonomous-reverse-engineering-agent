@@ -9,7 +9,6 @@ import {
   ChevronDown,
   CircleAlert,
   GitFork,
-  KeyRound,
   Loader2,
   Paperclip,
   PanelRightOpen,
@@ -174,7 +173,6 @@ export function ChatWorkspace({
     setActiveSessionId,
     setDraftTargetId,
     openInspector,
-    setDialog,
   } = useReaStore();
 
   const activeSession = React.useMemo(
@@ -725,7 +723,6 @@ export function ChatWorkspace({
             hasKey={hasKey}
             onSuggest={(text) => void sendWithEvents(text)}
             onAttachFile={onAttachFile}
-            onOpenSettings={() => setDialog("settings")}
           />
         ) : (
           <div className="mx-auto w-full max-w-3xl px-4 py-6">
@@ -799,21 +796,6 @@ export function ChatWorkspace({
       {!homeOwnsComposer && (
       <div className="shrink-0 px-3 pb-3 pt-1 sm:px-4 sm:pb-4" id="rea-composer">
         <div className="mx-auto w-full max-w-3xl">
-          {/* First-run hint: platform model */}
-          {hasKey === false && entries.length === 0 && (
-            <button
-              type="button"
-              onClick={() => setDialog("settings")}
-              className="mb-2 flex w-full items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-left text-[11px] text-amber-300/90 transition-colors hover:bg-amber-500/10 focus-visible:ring-2 focus-visible:ring-amber-500/50 focus-visible:outline-none"
-            >
-              <KeyRound className="size-3.5 shrink-0" aria-hidden />
-              <span className="flex-1">
-                Running on the built-in platform model. Add your own API key for full control.
-              </span>
-              <span className="font-mono text-[10px] text-amber-400">ADD KEY</span>
-            </button>
-          )}
-
           <div
             className="relative rounded-xl border border-zinc-800 bg-zinc-900/60 shadow-lg shadow-black/20 transition-all duration-200 focus-within:border-emerald-500/30 focus-within:shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_12px_32px_-16px_rgba(16,185,129,0.25)]"
           >
@@ -904,7 +886,8 @@ export function ChatWorkspace({
             </div>
           </div>
           <p className="mt-1.5 text-center font-mono text-[10px] text-zinc-700">
-            Enter to send · Shift+Enter new line · <span className="text-zinc-600">/</span> prompts · file chats run real REA tools
+            Enter to send · Shift+Enter new line · <span className="text-zinc-600">/</span> prompts
+            <QuotaHint />
           </p>
         </div>
       </div>
@@ -1513,13 +1496,11 @@ function EmptyState({
   hasKey,
   onSuggest,
   onAttachFile,
-  onOpenSettings,
 }: {
   boundTarget: TargetSummary | null;
   hasKey: boolean | null;
   onSuggest: (text: string) => void;
   onAttachFile?: () => void;
-  onOpenSettings: () => void;
 }) {
   if (!boundTarget) {
     return <HomeDashboard hasKey={hasKey} onSuggest={onSuggest} onAttachFile={onAttachFile} />;
@@ -1542,17 +1523,6 @@ function EmptyState({
           every claim with graded evidence.
         </p>
 
-        {hasKey === false && (
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="mx-auto mt-3 flex items-center gap-1.5 rounded-full border border-amber-500/25 bg-amber-500/5 px-3 py-1 font-mono text-[10px] text-amber-300 transition-colors hover:bg-amber-500/15"
-          >
-            <KeyRound className="size-3" aria-hidden />
-            platform model in use — add your API key
-          </button>
-        )}
-
         <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
           {suggestions.map((s) => (
             <button
@@ -1566,19 +1536,31 @@ function EmptyState({
           ))}
         </div>
 
-        {/* Keyboard hints (Cursor-style) */}
-        <div className="mt-8 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 border-t border-zinc-800/60 pt-4">
-          <KbdHint keys="⌘K" label="command palette" />
-          <KbdHint keys="⌘B" label="toggle sidebar" />
-          <KbdHint keys="⌘F" label="filter" />
-          <KbdHint keys="⌘I" label="inspector" />
-          <KbdHint keys="⌘⇧O" label="new chat" />
-        </div>
-
         {/* Engine status line — the real REA engine version, from /api/capabilities */}
         <EngineLine />
       </div>
     </div>
+  );
+}
+
+/**
+ * Whisper-quiet quota notice — appears ONLY when the 5-minute message window
+ * is nearly exhausted (≤3 left). Zero noise when quota is healthy.
+ */
+function QuotaHint() {
+  const chatQuota = useReaStore((s) => s.chatQuota);
+  if (!chatQuota || chatQuota.remaining > 3) return null;
+  return (
+    <span
+      className={cn(
+        "text-amber-400/80",
+        chatQuota.remaining === 0 && "text-rose-400/90"
+      )}
+      aria-label={`Message quota: ${chatQuota.remaining} of ${chatQuota.limit} remaining in this window`}
+    >
+      {" · "}
+      {chatQuota.remaining === 0 ? "quota used — wait a moment" : `${chatQuota.remaining} left this window`}
+    </span>
   );
 }
 
@@ -1604,13 +1586,4 @@ function EngineLine() {
   );
 }
 
-function KbdHint({ keys, label }: { keys: string; label: string }) {
-  return (
-    <span className="flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
-      <kbd className="rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-400">
-        {keys}
-      </kbd>
-      {label}
-    </span>
-  );
-}
+
