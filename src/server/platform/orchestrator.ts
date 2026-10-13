@@ -41,6 +41,8 @@ interface StepTemplate {
   dependsOn: string[];
   timeoutMs: number;
   maxAttempts?: number;
+  /** Optional steps record their error but mark "skipped" — the pipeline continues. */
+  optional?: boolean;
 }
 
 interface Ctx {
@@ -63,11 +65,14 @@ function websitePipeline(): StepTemplate[] {
 
 function githubPipeline(): StepTemplate[] {
   return [
-    { stage: "discover", name: "discover:repo", dependsOn: [], timeoutMs: 60_000 },
-    { stage: "collect", name: "collect:materialize", dependsOn: ["discover:repo"], timeoutMs: 180_000 },
+    // discover:repo uses the GitHub REST API which is rate-limited
+    // unauthenticated — it is OPTIONAL evidence. The tarball materialization
+    // goes through codeload.github.com and works without the API.
+    { stage: "discover", name: "discover:repo", dependsOn: [], timeoutMs: 60_000, optional: true },
+    { stage: "collect", name: "collect:materialize", dependsOn: [], timeoutMs: 180_000 },
     { stage: "understand", name: "understand:parse", dependsOn: ["collect:materialize"], timeoutMs: 180_000 },
     { stage: "map", name: "map:architecture", dependsOn: ["understand:parse"], timeoutMs: 60_000 },
-    { stage: "research", name: "research:web", dependsOn: ["discover:repo"], timeoutMs: 120_000 },
+    { stage: "research", name: "research:web", dependsOn: [], timeoutMs: 120_000 },
     { stage: "plan", name: "plan:reconstruction", dependsOn: ["understand:parse", "map:architecture", "research:web"], timeoutMs: 120_000 },
     { stage: "build", name: "build:scaffold", dependsOn: ["plan:reconstruction"], timeoutMs: 90_000 },
     { stage: "test", name: "test:workspace", dependsOn: ["build:scaffold"], timeoutMs: 120_000 },
@@ -370,6 +375,7 @@ export async function createOrchestration(
           name: t.name,
           maxAttempts: t.maxAttempts ?? 2,
           dependsOn: JSON.stringify(t.dependsOn),
+          checkpoint: JSON.stringify({ optional: t.optional ?? false }),
         })),
       },
     },
@@ -418,9 +424,19 @@ export async function runOrchestration(orchestrationId: string): Promise<void> {
     });
 
     if (runnable.length === 0) {
-      const pendingLeft = steps.filter((s) => s.status === "pending" || s.status === "awaiting_approval").length;
+      const busyLeft = steps.some((s) => s.status === "running" || s.status === "awaiting_approval");
+      const pendingLeft = steps.filter((s) => s.status === "pending").length;
+      if (!busyLeft && pendingLeft > 0) {
+        // Unreachable steps: their dependencies failed/cancelled. Mark them
+        // skipped so the orchestration terminates honestly instead of wedging.
+        await db.orchestrationStep.updateMany({
+          where: { orchestrationId, status: "pending" },
+          data: { status: "skipped", error: "skipped — upstream dependency did not complete", finishedAt: new Date() },
+        });
+        continue; // re-evaluate → termination branch below
+      }
       const anyFailed = steps.some((s) => s.status === "failed");
-      if (pendingLeft === 0) {
+      if (!busyLeft && pendingLeft === 0) {
         const allDone = steps.every((s) => s.status === "done" || s.status === "skipped");
         await db.orchestration.update({
           where: { id: orchestrationId },
@@ -459,9 +475,13 @@ export async function runOrchestration(orchestrationId: string): Promise<void> {
       data: { currentStage: wave.map((s) => s.stage).join("+") },
     });
 
-    await Promise.all(wave.map((step) =>
-      runStepWithRetry(orchestrationId, orch.projectId, project, ctx, step.id, step.name, step.maxAttempts)
-    ));
+    await Promise.all(wave.map((step) => {
+      const checkpoint = safeParseObj(step.checkpoint);
+      return runStepWithRetry(
+        orchestrationId, orch.projectId, project, ctx, step.id, step.name,
+        step.maxAttempts, checkpoint.optional === true
+      );
+    }));
 
     // Persist accumulated context (bounded) and progress.
     const after = await db.orchestrationStep.findMany({ where: { orchestrationId } });
@@ -488,7 +508,8 @@ async function runStepWithRetry(
   ctx: Ctx,
   stepId: string,
   stepName: string,
-  maxAttempts: number
+  maxAttempts: number,
+  optional = false
 ): Promise<void> {
   const goal = await getGoal(orchestrationId);
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -526,7 +547,22 @@ async function runStepWithRetry(
           durationMs: Date.now() - t0,
         },
       });
-      if (last) return;
+      if (last) {
+        if (optional) {
+          // Optional step: record the reason, mark skipped, keep going.
+          await db.orchestrationStep.update({
+            where: { id: stepId },
+            data: {
+              status: "skipped",
+              error: msg.slice(0, 1_000),
+              finishedAt: new Date(),
+              durationMs: Date.now() - t0,
+            },
+          });
+          return;
+        }
+        return;
+      }
       await sleep(1_500 * attempt); // backoff before retry
     }
   }

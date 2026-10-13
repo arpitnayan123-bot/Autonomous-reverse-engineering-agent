@@ -164,6 +164,7 @@ export function PlatformView() {
         )}
         {view.kind === "project" && (
           <PlatformProject
+            key={view.projectId}
             projectId={view.projectId}
             onDeleted={() => {
               setView({ kind: "welcome" });
