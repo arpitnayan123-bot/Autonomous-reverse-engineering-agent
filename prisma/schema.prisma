@@ -1,0 +1,151 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  name         String?
+  passwordHash String
+  role         String        @default("analyst")
+  isDemo       Boolean       @default(false)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  targets      Target[]
+  chatSessions ChatSession[]
+  providerKey  ProviderKey?
+}
+
+model Target {
+  id             String        @id @default(cuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  originalName   String
+  storedPath     String
+  sizeBytes      Int
+  sha256         String
+  mimeType       String?
+  detectedFormat String?
+  formatFamily   String?
+  status         String        @default("uploaded")
+  summary        String?
+  docs           String?
+  docsAt         DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  runs           AnalysisRun[]
+  chatSessions   ChatSession[]
+
+  @@index([userId, createdAt])
+}
+
+model AnalysisRun {
+  id           String     @id @default(cuid())
+  targetId     String
+  target       Target     @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  status       String     @default("queued")
+  progress     Int        @default(0)
+  currentStep  String?
+  engine       String     @default("rea")
+  engineTools  String?
+  goal         String?
+  result       String?
+  error        String?
+  durationMs   Int?
+  createdAt    DateTime   @default(now())
+  finishedAt   DateTime?
+  evidence     Evidence[]
+  findings     Finding[]
+
+  @@index([targetId, createdAt])
+}
+
+model Evidence {
+  id            String      @id @default(cuid())
+  runId         String
+  run           AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  evidenceId    String?
+  kind          String
+  predicateType String?
+  operation     String?
+  subjectName   String?
+  confidence    String?
+  authority     String?
+  payload       String
+  createdAt     DateTime    @default(now())
+
+  @@index([runId])
+}
+
+model Finding {
+  id        String      @id @default(cuid())
+  runId     String
+  run       AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  type      String
+  name      String
+  address   String?
+  sizeBytes Int?
+  meta      String?
+  createdAt DateTime    @default(now())
+
+  @@index([runId, type])
+  @@index([type, name])
+}
+
+model ChatSession {
+  id        String        @id @default(cuid())
+  targetId  String
+  target    Target        @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String        @default("New investigation")
+  createdAt DateTime      @default(now())
+  messages  ChatMessage[]
+
+  @@unique([targetId, userId])
+  @@index([userId])
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String
+  content   String
+  toolCalls String?
+  createdAt DateTime    @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+model ProviderKey {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider  String
+  model     String
+  keyCipher String
+  keyIv     String
+  keyTag    String
+  keyLast4  String
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  detail    String?
+  ip        String?
+  severity  String   @default("info")
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
