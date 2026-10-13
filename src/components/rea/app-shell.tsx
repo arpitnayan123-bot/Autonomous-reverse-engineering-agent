@@ -6,6 +6,7 @@ import {
   Check,
   ChevronRight,
   CircleDot,
+  CircleUserRound,
   Download,
   KeyRound,
   LogOut,
@@ -21,6 +22,8 @@ import {
   Plus,
   SearchIcon,
   Settings2,
+  Sparkles,
+  TextQuote,
   Trash2,
   Upload,
   X,
@@ -34,6 +37,7 @@ import {
   getChatSession,
   listChatSessions,
   renameChatSession,
+  searchChatMessages,
   setChatSessionPinned,
   type Capabilities,
   type ReaUser,
@@ -45,6 +49,7 @@ import { exportChat, exportTargetReport } from "@/lib/export";
 import { useReaStore } from "@/store/rea-store";
 import { refreshProviderInStore } from "@/components/rea/rea-app";
 import { ChatWorkspace } from "@/components/rea/chat-workspace";
+import type { MessageSearchHit } from "@/lib/api-client";
 import { CommandPalette } from "@/components/rea/command-palette";
 import { SettingsDialog } from "@/components/rea/settings-dialog";
 import { SystemDialog } from "@/components/rea/system-dialog";
@@ -331,6 +336,16 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     setMobileNavOpen(false);
   };
 
+  /** Open a message search hit in its chat and flash-highlight the message. */
+  const openMessageHit = (hit: MessageSearchHit) => {
+    const st = useReaStore.getState();
+    st.requestJumpToMessage(hit.messageId);
+    if (hit.sessionId !== st.activeSessionId) {
+      openSession(hit.sessionId);
+    }
+    setMobileNavOpen(false);
+  };
+
   // ---- Drag & drop upload (whole shell; only real file drags) ------------
   const isFileDrag = (e: React.DragEvent) =>
     Array.from(e.dataTransfer?.types ?? []).includes("Files");
@@ -422,6 +437,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
                 setMobileNavOpen(false);
               }}
               onOpenSession={openSessionAndClose}
+              onOpenMessageHit={openMessageHit}
               onDeleteSession={(s) => setDeletingSession(s)}
               onStartRename={startRename}
               onCommitRename={() => void commitRename()}
@@ -578,6 +594,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
             setRenameValue={setRenameValue}
             onNewChat={newFreeChat}
             onOpenSession={openSession}
+            onOpenMessageHit={openMessageHit}
             onDeleteSession={(s) => setDeletingSession(s)}
             onStartRename={startRename}
             onCommitRename={() => void commitRename()}
@@ -779,6 +796,7 @@ interface SidebarBodyProps {
   setRenameValue: (v: string) => void;
   onNewChat: () => void;
   onOpenSession: (id: string) => void;
+  onOpenMessageHit: (hit: MessageSearchHit) => void;
   onDeleteSession: (s: SessionSummary) => void;
   onStartRename: (s: SessionSummary) => void;
   onCommitRename: () => void;
@@ -795,6 +813,64 @@ function SidebarBody(p: SidebarBodyProps) {
   /** Client-side filter for chats + files (Cursor-style quick search). */
   const [search, setSearch] = React.useState("");
   const q = search.trim().toLowerCase();
+
+  /** Server-side message-content search results (debounced, q ≥ 2 chars). */
+  const [msgHits, setMsgHits] = React.useState<MessageSearchHit[]>([]);
+  const [msgSearching, setMsgSearching] = React.useState(false);
+  const searchQuery = search.trim();
+  React.useEffect(() => {
+    if (searchQuery.length < 2) {
+      setMsgHits([]);
+      setMsgSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setMsgSearching(true);
+    const t = setTimeout(() => {
+      searchChatMessages(searchQuery)
+        .then((hits) => {
+          if (!cancelled) setMsgHits(hits.slice(0, 8));
+        })
+        .catch(() => {
+          if (!cancelled) setMsgHits([]);
+        })
+        .finally(() => {
+          if (!cancelled) setMsgSearching(false);
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [searchQuery]);
+
+  /** Wrap occurrences of the query in an emerald <mark> inside a snippet. */
+  const highlight = (snippet: string, query: string): React.ReactNode => {
+    if (!query) return snippet;
+    const parts: React.ReactNode[] = [];
+    const lower = snippet.toLowerCase();
+    const needle = query.toLowerCase();
+    let i = 0;
+    let key = 0;
+    while (true) {
+      const at = lower.indexOf(needle, i);
+      if (at === -1) {
+        parts.push(snippet.slice(i));
+        break;
+      }
+      if (at > i) parts.push(snippet.slice(i, at));
+      parts.push(
+        <mark
+          key={key++}
+          className="rounded-sm bg-emerald-500/20 px-0.5 text-emerald-300"
+        >
+          {snippet.slice(at, at + needle.length)}
+        </mark>
+      );
+      i = at + needle.length;
+    }
+    return parts;
+  };
   const matchSessions = q
     ? p.sessions.filter(
         (s) =>
@@ -1007,6 +1083,58 @@ function SidebarBody(p: SidebarBodyProps) {
             shownChats.map(renderSessionRow)
           )}
         </SidebarSection>
+
+        {/* Messages (server-side content search; only when filtering) */}
+        {q.length >= 2 && (
+          <SidebarSection
+            icon={TextQuote}
+            label={`Messages${
+              msgSearching ? " · searching…" : msgHits.length > 0 ? ` (${msgHits.length})` : ""
+            }`}
+          >
+            {msgSearching && msgHits.length === 0 ? (
+              <div className="space-y-1.5 px-2 py-1">
+                <div className="h-7 animate-pulse rounded bg-zinc-900" />
+                <div className="h-7 animate-pulse rounded bg-zinc-900" />
+              </div>
+            ) : msgHits.length === 0 ? (
+              <p className="px-2 py-1 font-mono text-[10px] text-zinc-600">
+                no message content matches
+              </p>
+            ) : (
+              msgHits.map((hit) => (
+                <div
+                  key={hit.messageId}
+                  className="group rounded-md transition-colors hover:bg-zinc-900"
+                >
+                  <button
+                    type="button"
+                    onClick={() => p.onOpenMessageHit(hit)}
+                    aria-label={`Open ${hit.sessionTitle} at matching message`}
+                    className="w-full rounded-md px-2 py-1.5 text-left focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      {hit.role === "user" ? (
+                        <CircleUserRound className="size-3 shrink-0 text-sky-500/70" aria-hidden />
+                      ) : (
+                        <Sparkles className="size-3 shrink-0 text-emerald-500/70" aria-hidden />
+                      )}
+                      <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-500">
+                        {hit.sessionTitle || "New chat"}
+                      </span>
+                      <span className="shrink-0 text-[9px] text-zinc-600">
+                        {timeAgo(hit.createdAt)}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 block line-clamp-2 text-[11px] leading-snug text-zinc-400 group-hover:text-zinc-300">
+                      {highlight(hit.snippet, searchQuery)}
+                    </span>
+                  </button>
+                </div>
+              ))
+            )}
+          </SidebarSection>
+        )}
 
         {/* Files */}
         <SidebarSection

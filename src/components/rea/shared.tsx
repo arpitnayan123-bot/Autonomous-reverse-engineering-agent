@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   motion,
   useMotionTemplate,
@@ -640,6 +641,7 @@ export function Markdown({ children, className }: { children: string; className?
   return (
     <div className={cn("rea-markdown text-sm leading-relaxed text-zinc-300", className)}>
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         components={{
           h1: (props) => <h1 className="mt-4 mb-2 border-b border-zinc-800 pb-1 text-lg font-semibold text-zinc-100" {...props} />,
           h2: (props) => <h2 className="mt-4 mb-2 text-base font-semibold text-zinc-100" {...props} />,
@@ -650,6 +652,14 @@ export function Markdown({ children, className }: { children: string; className?
           ol: (props) => <ol className="mb-2 list-decimal space-y-1 pl-5" {...props} />,
           li: (props) => <li className="text-zinc-300" {...props} />,
           strong: (props) => <strong className="font-semibold text-zinc-100" {...props} />,
+          del: (props) => <del className="text-zinc-500" {...props} />,
+          input: (props) => (
+            <input
+              {...props}
+              disabled
+              className="mr-1.5 align-middle accent-emerald-500"
+            />
+          ),
           blockquote: (props) => <blockquote className="mb-2 border-l-2 border-emerald-500/40 pl-3 text-zinc-400" {...props} />,
           code: ({ className: cls, children: kids, ...rest }) => {
             const isBlock = /language-/.test(cls ?? "");
@@ -673,12 +683,13 @@ export function Markdown({ children, className }: { children: string; className?
             <CodeBlockShell>{children}</CodeBlockShell>
           ),
           table: (props) => (
-            <div className="rea-scroll mb-2 max-h-80 overflow-auto rounded-md border border-zinc-800">
+            <div className="rea-scroll mb-2 max-h-96 overflow-auto rounded-md border border-zinc-800 bg-zinc-950/40">
               <table className="w-full border-collapse text-xs" {...props} />
             </div>
           ),
-          th: (props) => <th className="border-b border-zinc-800 bg-zinc-900 px-2 py-1.5 text-left font-semibold text-zinc-200" {...props} />,
-          td: (props) => <td className="border-b border-zinc-800/60 px-2 py-1.5 align-top" {...props} />,
+          thead: (props) => <thead className="sticky top-0 z-10" {...props} />,
+          th: (props) => <th className="border-b border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-left text-[11px] font-semibold tracking-wide text-zinc-200 uppercase" {...props} />,
+          td: (props) => <td className="border-b border-zinc-800/60 px-2.5 py-1.5 align-top text-zinc-300 [&:not(:last-child)]:border-r [&:not(:last-child)]:border-zinc-800/40" {...props} />,
           hr: () => <hr className="my-3 border-zinc-800" />,
         }}
       >

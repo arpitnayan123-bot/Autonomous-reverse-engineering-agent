@@ -271,6 +271,24 @@ export async function forkChatSession(
   return res.session;
 }
 
+/** One message match from the server-side content search. */
+export interface MessageSearchHit {
+  messageId: string;
+  sessionId: string;
+  sessionTitle: string;
+  targetName: string | null;
+  detectedFormat: string | null;
+  role: "user" | "assistant";
+  snippet: string;
+  createdAt: string;
+}
+
+/** GET /api/chat/search?q= — search message content across all sessions. */
+export async function searchChatMessages(q: string): Promise<MessageSearchHit[]> {
+  const res = await apiGet<{ results: MessageSearchHit[] }>("/api/chat/search", { q });
+  return res.results;
+}
+
 // ---------------------------------------------------------------------------
 // Envelope handling
 // ---------------------------------------------------------------------------

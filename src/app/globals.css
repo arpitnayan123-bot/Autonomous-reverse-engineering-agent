@@ -196,6 +196,23 @@ body {
   margin-top: 0;
 }
 
+/* Search-jump flash: briefly highlight a message jumped to from search. */
+@keyframes rea-jump-flash {
+  0%,
+  18% {
+    background-color: color-mix(in oklab, var(--color-emerald-500) 16%, transparent);
+    box-shadow: inset 2px 0 0 0 var(--color-emerald-500);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 2px 0 0 0 transparent;
+  }
+}
+.rea-jump-flash {
+  animation: rea-jump-flash 1.8s ease-out both;
+  border-radius: 0.5rem;
+}
+
 /* ---------------------------------------------------------------------------
    Premium 3D redesign utilities (Task 3-b — appended, nothing above replaced).
    Depth system: perspective containers, glass panels, aurora backdrop,

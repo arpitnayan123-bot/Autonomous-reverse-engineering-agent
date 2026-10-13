@@ -35,6 +35,8 @@ interface ReaState {
   sidebarOpen: boolean;
   /** ⌘K command palette. */
   paletteOpen: boolean;
+  /** Scroll-to + flash-highlight this message after the session loads (search jump). */
+  jumpToMessageId: string | null;
 
   capabilities: Capabilities | null;
 
@@ -72,6 +74,9 @@ interface ReaState {
   setSidebarOpen: (open: boolean) => void;
   toggleSidebar: () => void;
   setPaletteOpen: (open: boolean) => void;
+  /** Queue a scroll-to + highlight of a message once the session renders. */
+  requestJumpToMessage: (messageId: string) => void;
+  clearJumpToMessage: () => void;
 
   setCapabilities: (capabilities: Capabilities | null) => void;
 
@@ -99,6 +104,7 @@ export const useReaStore = create<ReaState>((set) => ({
 
   sidebarOpen: true,
   paletteOpen: false,
+  jumpToMessageId: null,
 
   capabilities: null,
 
@@ -132,6 +138,8 @@ export const useReaStore = create<ReaState>((set) => ({
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+  requestJumpToMessage: (jumpToMessageId) => set({ jumpToMessageId }),
+  clearJumpToMessage: () => set({ jumpToMessageId: null }),
 
   setCapabilities: (capabilities) => set({ capabilities }),
 

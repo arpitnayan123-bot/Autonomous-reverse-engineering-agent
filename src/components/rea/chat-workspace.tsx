@@ -215,6 +215,31 @@ export function ChatWorkspace({
     el.scrollTop = el.scrollHeight;
   }, [entries, streaming, atBottom]);
 
+  // ---- Jump-to-message (sidebar search hit) -------------------------------
+  const [jumpFlashId, setJumpFlashId] = React.useState<string | null>(null);
+  const jumpToMessageId = useReaStore((s) => s.jumpToMessageId);
+  const clearJumpToMessage = useReaStore((s) => s.clearJumpToMessage);
+  React.useEffect(() => {
+    if (!jumpToMessageId || historyLoading) return;
+    // Let the transcript settle a tick before measuring positions.
+    const t = window.setTimeout(() => {
+      const el = document.querySelector<HTMLElement>(
+        `[data-message-id="${CSS.escape(jumpToMessageId)}"]`
+      );
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        setAtBottom(false);
+        setJumpFlashId(jumpToMessageId);
+        window.setTimeout(
+          () => setJumpFlashId((cur) => (cur === jumpToMessageId ? null : cur)),
+          1900
+        );
+      }
+      clearJumpToMessage();
+    }, 90);
+    return () => window.clearTimeout(t);
+  }, [jumpToMessageId, historyLoading, clearJumpToMessage]);
+
   const onMessagesScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
@@ -561,6 +586,8 @@ export function ChatWorkspace({
               {entries.map((entry, idx) => (
                 <motion.div
                   key={entry.id}
+                  data-message-id={entry.id}
+                  className={cn("px-1 py-0.5", jumpFlashId === entry.id && "rea-jump-flash")}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.18, ease: "easeOut" }}
