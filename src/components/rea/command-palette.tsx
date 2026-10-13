@@ -5,6 +5,7 @@ import {
   Binary,
   Download,
   KeyRound,
+  Keyboard,
   LogOut,
   MessagesSquare,
   MonitorDot,
@@ -186,6 +187,11 @@ export function CommandPalette({
             icon={MonitorDot}
             label="Engine & security…"
             onSelect={() => run(() => setDialog("system"))}
+          />
+          <Item
+            icon={Keyboard}
+            label="Keyboard shortcuts"
+            onSelect={() => run(() => useReaStore.getState().setShortcutsOpen(true))}
           />
           <Item
             icon={LogOut}

@@ -35,6 +35,8 @@ interface ReaState {
   sidebarOpen: boolean;
   /** ⌘K command palette. */
   paletteOpen: boolean;
+  /** "?" keyboard shortcuts cheat-sheet. */
+  shortcutsOpen: boolean;
   /** Scroll-to + flash-highlight this message after the session loads (search jump). */
   jumpToMessageId: string | null;
 
@@ -74,6 +76,7 @@ interface ReaState {
   setSidebarOpen: (open: boolean) => void;
   toggleSidebar: () => void;
   setPaletteOpen: (open: boolean) => void;
+  setShortcutsOpen: (open: boolean) => void;
   /** Queue a scroll-to + highlight of a message once the session renders. */
   requestJumpToMessage: (messageId: string) => void;
   clearJumpToMessage: () => void;
@@ -104,6 +107,7 @@ export const useReaStore = create<ReaState>((set) => ({
 
   sidebarOpen: true,
   paletteOpen: false,
+  shortcutsOpen: false,
   jumpToMessageId: null,
 
   capabilities: null,
@@ -138,6 +142,7 @@ export const useReaStore = create<ReaState>((set) => ({
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+  setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
   requestJumpToMessage: (jumpToMessageId) => set({ jumpToMessageId }),
   clearJumpToMessage: () => set({ jumpToMessageId: null }),
 

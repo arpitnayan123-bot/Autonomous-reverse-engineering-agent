@@ -33,6 +33,7 @@ import {
 } from "@/lib/api-client";
 import { useReaStore } from "@/store/rea-store";
 import { CopyButton, Markdown, humanBytes, humanDuration, humanTokens, toastError } from "@/components/rea/shared";
+import { estimateCostUsd, formatCostUsd } from "@/lib/pricing";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import {
@@ -1022,6 +1023,15 @@ function MessageMeta({
   const copyLabel =
     entry.role === "assistant" ? "Copy assistant message" : "Copy your message";
   const hasUsage = entry.tokensIn != null || entry.tokensOut != null;
+  // Cost estimate: prefer the model that streamed this turn, else the active
+  // provider's model (history rows don't carry their own model id).
+  const providerActive = useReaStore((s) => s.providerActive);
+  const costModel = model?.model ?? providerActive?.model ?? null;
+  const costEstimate =
+    entry.role === "assistant"
+      ? estimateCostUsd(costModel, entry.tokensIn, entry.tokensOut)
+      : null;
+  const costLabel = formatCostUsd(costEstimate);
   return (
     <div className="touch-visible mt-1 flex h-5 items-center gap-2 opacity-0 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100">
       {entry.createdAt && (
@@ -1055,6 +1065,15 @@ function MessageMeta({
             <span className="flex items-center gap-0.5" title="Agent turn duration (tools included)">
               <Timer className="size-2.5" aria-hidden />
               {humanDuration(entry.durationMs)}
+            </span>
+          )}
+          {costLabel && (
+            <span
+              className="text-amber-500/70"
+              title={`Estimated cost at ${costModel ?? "model"} list price — real bills vary by endpoint, caching and discounts.`}
+            >
+              {costLabel}
+              <span className="text-zinc-700"> est</span>
             </span>
           )}
         </span>

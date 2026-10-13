@@ -46,12 +46,14 @@ import {
   type TargetSummary,
 } from "@/lib/api-client";
 import { exportChat, exportTargetReport } from "@/lib/export";
+import { estimateCostUsd, formatCostUsd } from "@/lib/pricing";
 import { useReaStore } from "@/store/rea-store";
 import { refreshProviderInStore } from "@/components/rea/rea-app";
 import { ChatWorkspace } from "@/components/rea/chat-workspace";
 import type { MessageSearchHit } from "@/lib/api-client";
 import { CommandPalette } from "@/components/rea/command-palette";
 import { SettingsDialog } from "@/components/rea/settings-dialog";
+import { ShortcutsDialog } from "@/components/rea/shortcuts-dialog";
 import { SystemDialog } from "@/components/rea/system-dialog";
 import { TargetPanel } from "@/components/rea/target-panel";
 import { FormatBadge, humanBytes, humanTokens, timeAgo, toastError } from "@/components/rea/shared";
@@ -108,6 +110,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     inspectorOpen,
     inspectorTargetId,
     dialog,
+    shortcutsOpen,
     setSessions,
     setSessionsLoaded,
     setTargets,
@@ -194,7 +197,20 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod) return;
+      if (!mod) {
+        // "?" — keyboard cheat sheet (only when not typing in a field).
+        if (e.key === "?") {
+          const el = e.target as HTMLElement | null;
+          const typing =
+            !!el &&
+            (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+          if (!typing) {
+            e.preventDefault();
+            useReaStore.getState().setShortcutsOpen(true);
+          }
+        }
+        return;
+      }
       const key = e.key.toLowerCase();
       const s = useReaStore.getState();
       if (key === "k") {
@@ -698,6 +714,10 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
       <SystemDialog
         open={dialog === "system"}
         onOpenChange={(open) => setDialog(open ? "system" : "none")}
+      />
+      <ShortcutsDialog
+        open={shortcutsOpen}
+        onOpenChange={(open) => useReaStore.getState().setShortcutsOpen(open)}
       />
 
       {/* Delete-chat confirmation */}
@@ -1286,6 +1306,10 @@ function targetStatusDot(status: string): string {
 function StatusBar() {
   const { capabilities, providerActive, sessions, targets, user, chatQuota, sessionTokens } =
     useReaStore();
+  const sessionCost = sessionTokens
+    ? estimateCostUsd(providerActive?.model ?? "glm-platform", sessionTokens.tokensIn, sessionTokens.tokensOut)
+    : null;
+  const sessionCostLabel = formatCostUsd(sessionCost);
 
   return (
     <footer className="flex h-6 shrink-0 items-center gap-4 border-t border-zinc-800/80 bg-zinc-950 px-3 font-mono text-[10px] text-zinc-500">
@@ -1322,6 +1346,12 @@ function StatusBar() {
         >
           <span className="text-zinc-600">tok:</span> ↑{humanTokens(sessionTokens.tokensIn)} ↓
           {humanTokens(sessionTokens.tokensOut)}
+          {sessionCostLabel && (
+            <span className="text-amber-500/70" title="Estimated cost at the active model's list price — real bills vary.">
+              {" "}
+              · ~{sessionCostLabel}
+            </span>
+          )}
         </span>
       )}
       <span className="hidden md:inline">{targets.length} files</span>
