@@ -98,3 +98,23 @@ Contract assumptions the integrator must verify:
 6. `Run.result` limitations read from `result.limitations: string[]` (or `result.summary.limitations`); other shapes render the neutral copy.
 7. `formatFamily`, `formatConfidence`, `formatLabel`, `formatDetails` are optional in TargetDetail (Overview tab degrades gracefully); `detectedFormat` is required for FormatBadge.
 8. Statuses handled: uploaded/queued/analyzing/running/analyzed/completed/failed (unknown statuses fall back to the neutral "Uploaded" badge style).
+
+---
+Task ID: 3-b + 4 (integration)
+Agent: main agent
+Task: Premium 3D redesign, BYOK provider UI, demo sign-in, thrine embed, E2E verification
+
+Work Log:
+- Fixed stale Prisma client (demo login Internal error) via db:generate + dev server restart
+- Fixed chat-view TS errors (unknown → String coercion on model SSE event)
+- Replaced auth hero 3D scene with thrine.app <model-embed> custom element (next/script module, React 19 custom element, JSX declaration, glow frame)
+- Verified 3-b partial work was complete: provider-view (ProviderOnboarding + ProviderSettings), TiltCard/ReaCube/glass/aurora utilities, nav "AI Model" item with platform-mode badge
+- Fixed Select controlled/uncontrolled warning (auto-select first target in chat)
+- Added onboarding skip persistence (sessionStorage)
+- agent-browser E2E verified: auth page + thrine embed render, demo login → onboarding → dashboard, upload demo.db → auto-analysis (101ms, honest limitation: "No REA SQLite tool exists in engine catalog; used platform-local read-only SQLite inspector"), strings/hex tabs, AI chat agent loop (sql_schema + 2 sql_query → evidence-graded DERIVED/INFERRED answer naming alice/bob), AI Model settings, Security posture (9 enforced/1 partial controls), mobile 390x844 responsive, skip persistence, no console errors
+
+Stage Summary:
+- Full golden path verified end-to-end in browser
+- Demo sign-in: POST /api/auth/demo works, isDemo badge, rate limited 10/15min/ip
+- BYOK: /api/provider GET/POST/PUT/DELETE live; keys AES-256-GCM sealed, only last4 returned
+- Commits: 9ff0840 (BYOK backend), 8b00d2b (premium redesign + embed)

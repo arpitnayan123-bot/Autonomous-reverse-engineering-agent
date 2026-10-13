@@ -95,7 +95,13 @@ export function ReaApp() {
         const s = useReaStore.getState();
         s.setProviderLoaded(true);
         s.setHasProviderKey(res.active !== null);
-        if (res.active === null) s.setOnboarding("provider-setup");
+        if (res.active === null) {
+          // Respect an explicit "skip" from earlier in this browser session.
+          const skipped =
+            typeof window !== "undefined" &&
+            window.sessionStorage.getItem("rea-onboarding-skipped") === "1";
+          if (!skipped) s.setOnboarding("provider-setup");
+        }
       })
       .catch(() => {
         // Provider endpoint unavailable — platform mode stays unknown.
@@ -170,7 +176,14 @@ export function ReaApp() {
         {onboarding === "provider-setup" && (
           <ProviderOnboarding
             onDone={() => setOnboarding("none")}
-            onSkip={() => setOnboarding("none")}
+            onSkip={() => {
+              try {
+                window.sessionStorage.setItem("rea-onboarding-skipped", "1");
+              } catch {
+                /* storage unavailable — onboarding just reappears */
+              }
+              setOnboarding("none");
+            }}
           />
         )}
       </AnimatePresence>

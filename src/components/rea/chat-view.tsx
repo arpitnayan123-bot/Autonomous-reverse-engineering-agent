@@ -123,10 +123,15 @@ export function ChatView() {
   const abortRef = React.useRef<AbortController | null>(null);
   const bottomRef = React.useRef<HTMLDivElement>(null);
 
-  // Default the chat target to the active workspace target when present.
+  // Default the chat target to the active workspace target when present,
+  // else to the first known target (keeps the Select always controlled).
   React.useEffect(() => {
-    if (activeTargetId) setChatTargetId(activeTargetId);
-  }, [activeTargetId]);
+    if (activeTargetId) {
+      setChatTargetId(activeTargetId);
+    } else if (!chatTargetId && targets.length > 0) {
+      setChatTargetId(targets[0].id);
+    }
+  }, [activeTargetId, targets, chatTargetId]);
 
   // Load conversation history whenever the picked target changes.
   React.useEffect(() => {
