@@ -535,7 +535,7 @@ body {
 /* Film-grain noise overlay (SVG turbulence tile) — kills flat-color banding - */
 .rea-noise {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
-  opacity: 0.05;
+  opacity: 0.035;
 }
 
 /* Radial vignette — keeps edges dark so floating content reads first ------- */
@@ -544,6 +544,16 @@ body {
     120% 85% at 50% 40%,
     transparent 52%,
     rgb(0 0 0 / 0.5) 100%
+  );
+}
+
+/* Single soft spotlight behind the hero/composer — the ONLY static glow on
+   the minimal-premium home; everything else is near-black charcoal -------- */
+.rea-spotlight {
+  background: radial-gradient(
+    52% 38% at 50% 36%,
+    rgb(16 185 129 / 0.06) 0%,
+    transparent 72%
   );
 }
 

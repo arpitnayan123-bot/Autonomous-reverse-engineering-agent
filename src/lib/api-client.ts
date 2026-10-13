@@ -328,6 +328,16 @@ interface Envelope {
   error?: string;
 }
 
+/** Fired whenever an authenticated endpoint answers 401 mid-session so the
+ * app can return to the sign-in screen instead of stranding the user in a
+ * broken shell with cryptic toasts (stale cookie, revoked session, rotated
+ * signing secret). */
+export function notifySessionExpired(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("rea:session-expired"));
+  }
+}
+
 async function unwrap<T>(res: Response): Promise<T> {
   let json: (Envelope & Record<string, unknown>) | null = null;
   try {
@@ -336,10 +346,12 @@ async function unwrap<T>(res: Response): Promise<T> {
     json = null;
   }
   if (!res.ok || !json || json.ok !== true) {
-    const msg =
-      (json && typeof json.error === "string" && json.error) ||
-      `Request failed (${res.status})`;
-    throw new Error(msg);
+    const serverMsg = json && typeof json.error === "string" ? json.error : null;
+    if (res.status === 401) {
+      notifySessionExpired();
+      throw new Error(serverMsg ?? "Your session expired — sign in again");
+    }
+    throw new Error(serverMsg ?? `Request failed (${res.status})`);
   }
   return json as T;
 }
@@ -489,6 +501,10 @@ export async function streamChat(
       if (json && typeof json.error === "string") msg = json.error;
     } catch {
       /* ignore */
+    }
+    if (res.status === 401) {
+      notifySessionExpired();
+      throw new Error(msg === `Chat failed (${res.status})` ? "Your session expired — sign in again" : msg);
     }
     throw new Error(msg);
   }

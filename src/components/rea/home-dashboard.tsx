@@ -208,13 +208,13 @@ export function HomeDashboard({
         {/* ===================== Greeting ===================== */}
         <motion.h1
           variants={RISE}
-          className="text-balance text-[26px] font-semibold tracking-tight text-zinc-50 sm:text-[32px]"
+          className="text-balance text-[28px] font-semibold leading-tight tracking-tighter text-zinc-50 sm:text-[36px]"
         >
           What are we <span className="rea-hero-shimmer">investigating</span>?
         </motion.h1>
         <motion.p
           variants={RISE}
-          className="mt-2 text-pretty text-sm leading-relaxed text-zinc-500"
+          className="mt-2.5 max-w-md text-pretty text-sm leading-relaxed text-zinc-500"
         >
           Ask anything, attach a file, or press{" "}
           <kbd className="rounded border border-zinc-800 bg-zinc-900 px-1 py-px font-mono text-[10px] text-zinc-400">
@@ -305,10 +305,10 @@ export function HomeDashboard({
                 key={text}
                 type="button"
                 onClick={() => onSuggest(text)}
-                className="rea-card-shine group flex items-center gap-2 rounded-full border border-zinc-800/80 bg-zinc-900/40 px-3.5 py-2 text-xs text-zinc-400 backdrop-blur-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-500/30 hover:bg-zinc-900/70 hover:text-zinc-100 hover:shadow-[0_10px_28px_-14px_rgba(16,185,129,0.45)] focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
+                className="rea-card-shine group flex items-center gap-2 rounded-full border border-zinc-800/60 bg-zinc-900/30 px-3.5 py-2 text-xs text-zinc-500 transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-500/30 hover:bg-zinc-900/60 hover:text-zinc-100 hover:shadow-[0_10px_28px_-14px_rgba(16,185,129,0.45)] focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
               >
                 <Icon
-                  className="size-3.5 shrink-0 text-emerald-500/70 transition-colors duration-200 group-hover:text-emerald-400"
+                  className="size-3.5 shrink-0 text-emerald-500/60 transition-colors duration-200 group-hover:text-emerald-400"
                   aria-hidden
                 />
                 <span>{text}</span>
@@ -319,6 +319,11 @@ export function HomeDashboard({
 
         {/* ================= Quiet footer ================= */}
         <motion.footer variants={RISE} className="mt-auto pt-12">
+          {/* Gradient hairline — the single ornamental line on the page. */}
+          <div
+            aria-hidden
+            className="mx-auto mb-6 h-px w-24 bg-gradient-to-r from-transparent via-emerald-500/30 to-transparent"
+          />
           {/* BYOK state — one whisper-quiet line, only when it matters. */}
           {hasKey === false && (
             <button

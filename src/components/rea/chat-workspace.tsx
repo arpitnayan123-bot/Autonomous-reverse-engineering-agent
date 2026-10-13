@@ -780,12 +780,12 @@ export function ChatWorkspace({
 
   return (
     <section className={cn("relative flex min-h-0 flex-col bg-zinc-950", className)} aria-label="Chat">
-      {/* Living backdrop — particle field + aurora + grain + vignette.
-          Purely ambient (pointer-events-none, aria-hidden); sits under the
-          content via z-0, content layers above via z-10. */}
+      {/* Living backdrop — minimal-premium: one soft spotlight, the reactive
+          particle field, whisper-level grain, dark vignette. No aurora blobs;
+          the particles carry all the motion (pointer-events-none, z-0). */}
       <div aria-hidden className="rea-fade-in pointer-events-none absolute inset-0 z-0 overflow-hidden">
+        <div className="rea-spotlight absolute inset-0" />
         <ParticleField className="absolute inset-0" />
-        <div className="rea-aurora absolute inset-0 opacity-80" />
         <div className="rea-noise absolute inset-0" />
         <div className="rea-vignette absolute inset-0" />
       </div>

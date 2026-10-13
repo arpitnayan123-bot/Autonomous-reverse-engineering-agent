@@ -64,7 +64,7 @@ interface Particle {
 
 const TAU = Math.PI * 2;
 const GOLDEN = Math.PI * (3 - Math.sqrt(5));
-const LINK_DIST = 92;
+const LINK_DIST = 78;
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -113,8 +113,8 @@ export function ParticleField({ className }: { className?: string }) {
       return {
         x: rand(0, Math.max(1, w)),
         y: rand(0, Math.max(1, h)),
-        vx: rand(-7, 7),
-        vy: rand(-7, 7),
+        vx: rand(-4, 4),
+        vy: rand(-4, 4),
         slot: Math.random(),
         arm: 0,
         ring: Math.random() < 0.45 ? 0 : 1,
@@ -129,7 +129,7 @@ export function ParticleField({ className }: { className?: string }) {
     };
 
     const spawn = () => {
-      const target = Math.round(clamp((w * h) / 11000, 52, 150));
+      const target = Math.round(clamp((w * h) / 16000, 40, 110));
       particles = Array.from({ length: target }, makeParticle);
       particles.forEach((p, i) => {
         p.slot = i / target + rand(-0.004, 0.004);
@@ -163,7 +163,7 @@ export function ParticleField({ className }: { className?: string }) {
           p.x = (p.x / prevW) * w;
           p.y = (p.y / prevH) * h;
         }
-        const target = Math.round(clamp((w * h) / 11000, 52, 150));
+        const target = Math.round(clamp((w * h) / 16000, 40, 110));
         while (particles.length < target) particles.push(makeParticle());
         if (particles.length > target) particles.length = target;
       }
@@ -249,11 +249,11 @@ export function ParticleField({ className }: { className?: string }) {
           p.vx += (target[0] - p.x) * spring * weight * dt;
           p.vy += (target[1] - p.y) * spring * weight * dt;
         }
-        // Idle wander: gentle per-particle drift rotation.
+        // Idle wander: very gentle per-particle drift rotation (quiet at rest).
         if (mood === "idle" || mood === "done" || !target) {
           p.wa += p.waSpeed * dt;
-          p.vx += Math.cos(p.wa) * 1.6 * dt;
-          p.vy += Math.sin(p.wa) * 1.6 * dt;
+          p.vx += Math.cos(p.wa) * 0.8 * dt;
+          p.vy += Math.sin(p.wa) * 0.8 * dt;
         }
         // Pointer repulsion (subtle, everywhere).
         const dxp = p.x - pointer.x;
@@ -297,7 +297,7 @@ export function ParticleField({ className }: { className?: string }) {
       // takes over — lines across a morph look chaotic).
       if (mood === "idle" && weight < 0.2 && !reduced) {
         ctx.lineWidth = 0.6;
-        const linkA = 0.09 * (1 - weight / 0.2);
+        const linkA = 0.05 * (1 - weight / 0.2);
         ctx.strokeStyle = `rgba(16, 185, 129, ${linkA.toFixed(3)})`;
         ctx.beginPath();
         for (let i = 0; i < particles.length; i++) {
@@ -319,13 +319,13 @@ export function ParticleField({ className }: { className?: string }) {
       // Particles.
       for (const p of particles) {
         const tw = 0.55 + 0.45 * Math.sin(t * p.twSpeed + p.tw);
-        const alpha = clamp(0.2 + 0.55 * tw + 0.18 * weight, 0, 0.95);
+        const alpha = clamp(0.13 + 0.42 * tw + 0.28 * weight, 0, 0.95);
         const [cr, cg, cb] = p.color;
-        // Halo disc for larger particles + everyone during a formation.
-        if (p.r > 1.5 || weight > 0.35) {
+        // Halo disc: mostly during formations (keeps idle whisper-quiet).
+        if (p.r > 1.9 || weight > 0.3) {
           ctx.beginPath();
           ctx.arc(p.x, p.y, p.r * 3.1, 0, TAU);
-          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${((0.045 + 0.05 * tw) * (0.4 + 0.6 * Math.max(weight, 0.4))).toFixed(3)})`;
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${((0.035 + 0.045 * tw) * (0.4 + 0.6 * Math.max(weight, 0.4))).toFixed(3)})`;
           ctx.fill();
         }
         ctx.beginPath();

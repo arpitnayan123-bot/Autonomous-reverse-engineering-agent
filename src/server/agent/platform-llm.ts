@@ -13,6 +13,38 @@ const globalForZai = globalThis as unknown as { __reaZai?: ZaiClient };
  * the SSE turn (and the billable stream) forever. */
 const PLATFORM_CALL_TIMEOUT_MS = 120_000;
 
+/**
+ * The SDK bakes the Bearer key from /etc/.z-ai-config into the client at
+ * ZAI.create(). The platform ROTATES that key file — a client cached forever
+ * keeps sending a stale token and the model rejects every call with
+ * "status 401/403" until a server restart. So: short TTL re-read + hard
+ * drop on auth-shaped errors (the retry loop then recreates the client).
+ */
+const ZAI_CLIENT_TTL_MS = 60_000;
+let zaiClientAt = 0;
+
+async function getZai(): Promise<ZaiClient> {
+  const cached = globalForZai.__reaZai;
+  if (cached && Date.now() - zaiClientAt < ZAI_CLIENT_TTL_MS) return cached;
+  globalForZai.__reaZai = await ZAI.create();
+  zaiClientAt = Date.now();
+  return globalForZai.__reaZai;
+}
+
+function dropZaiClient(): void {
+  globalForZai.__reaZai = undefined;
+  zaiClientAt = 0;
+}
+
+/** Detect credential/permission rejections from the model API (the SDK
+ * throws `API request failed with status <code>: <body>`). */
+function isAuthError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /\b(401|403)\b|unauthorized|forbidden|invalid[ _-]?(api[ _-]?key|token|credential)|authentication/i.test(
+    msg
+  );
+}
+
 /** Thrown when the client disconnects / aborts the turn. */
 export class TurnAbortedError extends Error {
   constructor() {
@@ -62,13 +94,6 @@ function withTimeoutAndAbort<T>(
   });
 }
 
-async function getZai(): Promise<ZaiClient> {
-  if (!globalForZai.__reaZai) {
-    globalForZai.__reaZai = await ZAI.create();
-  }
-  return globalForZai.__reaZai;
-}
-
 export async function zaiPlatformChat(
   messages: LlmMessage[],
   opts?: CallOpts
@@ -107,6 +132,9 @@ export async function zaiPlatformChat(
       lastErr = new Error("Model returned an empty completion");
     } catch (err) {
       lastErr = err;
+      // Stale platform credentials → drop the cached client so attempt 2
+      // re-reads /etc/.z-ai-config and comes back with a fresh key.
+      if (isAuthError(err)) dropZaiClient();
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
@@ -198,6 +226,8 @@ export async function zaiPlatformChatStream(
       // A cancelled turn is never retried.
       if (err instanceof TurnAbortedError) throw err;
       lastErr = err;
+      // Stale platform credentials → drop the cached client before any retry.
+      if (isAuthError(err)) dropZaiClient();
       // Streaming may be unsupported server-side — retry once without streaming.
       try {
         const text = await zaiPlatformChat(messages, opts);

@@ -31,6 +31,14 @@ export function ReaApp() {
     };
   }, [setUser]);
 
+  // Mid-session 401s (revoked session, rotated signing secret, stale cookie)
+  // return the user to the sign-in screen instead of stranding the shell.
+  React.useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener("rea:session-expired", onExpired);
+    return () => window.removeEventListener("rea:session-expired", onExpired);
+  }, [setUser]);
+
   if (!booted) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-zinc-950">
