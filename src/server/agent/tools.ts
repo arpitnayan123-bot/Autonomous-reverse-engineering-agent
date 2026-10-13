@@ -62,7 +62,8 @@ const NO_OPEN_TOOLS = new Set([
 ]);
 
 /** Key names that would smuggle a filesystem path into a tool call. */
-const PATH_KEY_RE = /path|file|directory|destination|target/i;
+const PATH_KEY_RE =
+  /\b(path|filepath|filename|file_name|file|directory|dirname|dir|destination|dest|target|uri|url|location)\b/i;
 
 export interface AgentToolContext {
   target: Target;

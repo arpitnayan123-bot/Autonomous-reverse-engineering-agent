@@ -75,6 +75,23 @@ export { resolveLlmForUser } from "./providers";
 
 const TOOL_BLOCK_RE = /```tool\s*\r?\n([\s\S]*?)```/g;
 
+/**
+ * Detect TRANSIENT provider/infrastructure failures worth an automatic
+ * retry: rate limits, upstream overload, timeouts, broken sockets.
+ * Auth rejections (401/403) and malformed requests (400) are deliberately
+ * NOT retried — they need a human (or the credential self-heal in
+ * platform-llm.ts), not a blind loop.
+ */
+export function isTransientLlmError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err ?? "")).toLowerCase();
+  return /\b(429|500|502|503|504)\b|rate[ _-]?limit|too many requests|overloaded|temporarily unavailable|timeout|timed out|econnreset|econnrefused|epipe|socket hang up|network|fetch failed/.test(
+    msg
+  );
+}
+
+/** Bounded exponential backoff between turn retries (ms). */
+const TURN_RETRY_BACKOFF_MS = [900, 2200];
+
 export function parseToolAction(
   text: string
 ): { tool: string; args: Record<string, unknown> } | null {
@@ -154,6 +171,10 @@ export async function runAgentLoop(opts: {
       ];
 
   const toolTrace: AgentToolTrace[] = [];
+  /** How many times each exact tool call (name + args) ran this turn. */
+  const repeatCounts = new Map<string, number>();
+  /** Non-null → the loop must stop and force a synthesis turn (with reason). */
+  let haltReason: string | null = null;
   let final: string | null = null;
   /** Cumulative usage across every LLM call of this turn. */
   const usage: { tokensIn: number | null; tokensOut: number | null } = {
@@ -215,20 +236,45 @@ export async function runAgentLoop(opts: {
     const result = await executeAgentTool(action.tool, action.args, ctx);
     events?.onToolResult?.(action.tool, result);
     toolTrace.push({ tool: action.tool, args: action.args, result });
+
+    // ---- Loop guard: identical call fired repeatedly ---------------------
+    // A classic agent failure mode: the model re-runs the exact same tool
+    // with the exact same args, expecting a different answer. Nudge it back
+    // on course after the 2nd repeat; hard-stop into synthesis after the 3rd
+    // (the evidence will not change — burning the whole iteration budget on
+    // it helps nobody).
+    const sig = `${action.tool}:${JSON.stringify(action.args)}`;
+    const repeats = (repeatCounts.get(sig) ?? 0) + 1;
+    repeatCounts.set(sig, repeats);
+    if (repeats >= 3) {
+      // Stop iterating — the evidence cannot change. A REAL synthesis turn
+      // still runs below, so the analyst gets a proper answer, not a canned
+      // error string.
+      haltReason = `The tool call ${action.tool} was repeated ${repeats} times with identical arguments.`;
+      break;
+    }
+
     messages.push({ role: "assistant", content: text });
     messages.push({
       role: "user",
-      content: `TOOL RESULT for ${action.tool}:\n${result.slice(0, 6000)}`,
+      content: `TOOL RESULT for ${action.tool}:\n${result.slice(0, 6000)}${
+        repeats === 2
+          ? `\n\nSYSTEM: You already ran this exact call (${action.tool} with identical arguments) ${repeats} times in this turn. The result will not change on another run. Either vary the arguments, choose a DIFFERENT tool, or write your final answer from the evidence you have.`
+          : ""
+      }`,
     });
   }
 
   if (final === null) {
-    // Iteration budget exhausted: force a synthesis turn with no tools.
+    // Iteration budget exhausted (or the loop guard halted repetition):
+    // force a synthesis turn with no tools.
     const synthesisTurn = MAX_CHAT_ITERATIONS;
     events?.onTurnStart?.(synthesisTurn);
     messages.push({
       role: "user",
-      content: `You have used the maximum number of tool iterations (${MAX_CHAT_ITERATIONS}). Do not emit any more tool blocks. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown.`,
+      content: haltReason
+        ? `Do not emit any more tool blocks. ${haltReason} Repetition cannot produce new evidence. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown and which different tool or argument you would try next.`
+        : `You have used the maximum number of tool iterations (${MAX_CHAT_ITERATIONS}). Do not emit any more tool blocks. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown.`,
     });
     final = await callTurn(llm, messages, synthesisTurn, events, callOpts);
   }
@@ -264,26 +310,76 @@ function llmModelId(llm: ResolvedLlm): string {
 /**
  * One LLM turn — streamed when the resolved provider supports it (falling
  * back to a single-shot call whose text is emitted as one delta).
+ *
+ * Error recovery: transient provider failures (rate limits, 5xx, network
+ * resets) are retried with a short exponential backoff BEFORE any delta has
+ * reached the client (a retry after partial output would duplicate text).
+ * Once deltas flowed, a failed stream falls back to the single-shot call as
+ * before; the final content always replaces the client draft, so recovery
+ * stays consistent. Cancellation is honored at every step and never retried.
  */
 async function callTurn(
   llm: ResolvedLlm,
   messages: LlmMessage[],
   turn: number,
   events?: AgentEventHandlers,
-  callOpts?: { onUsage?: (u: TokenUsage) => void }
+  callOpts?: { onUsage?: (u: TokenUsage) => void; signal?: AbortSignal }
 ): Promise<string> {
-  const sink = (delta: string) => events?.onAssistantDelta?.(delta, turn);
+  let emitted = false;
+  const sink = (delta: string) => {
+    emitted = true;
+    events?.onAssistantDelta?.(delta, turn);
+  };
+
   if (llm.callLLMStream) {
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt <= TURN_RETRY_BACKOFF_MS.length; attempt++) {
+      try {
+        return await llm.callLLMStream(messages, sink, callOpts);
+      } catch (err) {
+        lastErr = err;
+        const aborted =
+          callOpts?.signal?.aborted ||
+          (err instanceof Error && err.name === "TurnAbortedError");
+        if (aborted) throw err; // a cancelled turn is never retried
+        // Deltas already reached the client, the failure is not transient, or
+        // the retry budget is spent → hand over to the single-shot fallback.
+        if (
+          emitted ||
+          !isTransientLlmError(err) ||
+          attempt === TURN_RETRY_BACKOFF_MS.length
+        ) {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, TURN_RETRY_BACKOFF_MS[attempt]));
+      }
+    }
+    console.error(
+      "agent stream turn failed, retrying non-streamed:",
+      lastErr instanceof Error ? lastErr.message : lastErr
+    );
+  }
+
+  // Single-shot path (also the recovery path for a failed stream).
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt <= TURN_RETRY_BACKOFF_MS.length; attempt++) {
     try {
-      return await llm.callLLMStream(messages, sink, callOpts);
+      const text = await llm.callLLM(messages, callOpts);
+      sink(text);
+      return text;
     } catch (err) {
-      // A failed stream must not kill the loop — retry once non-streamed.
-      console.error("agent stream turn failed, retrying non-streamed:", err);
+      lastErr = err;
+      const aborted =
+        callOpts?.signal?.aborted ||
+        (err instanceof Error && err.name === "TurnAbortedError");
+      if (aborted) throw err;
+      if (!isTransientLlmError(err) || attempt === TURN_RETRY_BACKOFF_MS.length) {
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, TURN_RETRY_BACKOFF_MS[attempt]));
     }
   }
-  const text = await llm.callLLM(messages, callOpts);
-  sink(text);
-  return text;
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 // ---------------------------------------------------------------------------
