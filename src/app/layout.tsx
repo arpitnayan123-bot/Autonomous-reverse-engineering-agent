@@ -14,6 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"
+  ),
   title: "REA Platform — Reverse Engineer Anything",
   description:
     "Browser-based AI reverse-engineering platform. Upload a binary, artifact, database or app — the REA engine investigates it with evidence-backed rigor.",
