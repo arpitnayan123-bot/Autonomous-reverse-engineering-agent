@@ -6,6 +6,8 @@ import { CHAT_TOOL_TIMEOUT_MS } from "@/lib/security";
 // Shared strings helper owned by task 2-a (use as-is): cache-first extraction
 // against storage/uploads/<targetId>/strings-cache.json.
 import { getStringsForTarget } from "@/server/engine/strings";
+import { probeUrl, PROBE_TIMEOUT_MS } from "@/server/platform/explorer";
+import { BlockedUrlError } from "@/server/platform/net";
 import type { Target } from "@prisma/client";
 
 /**
@@ -303,6 +305,90 @@ const readHexTool: AgentTool = {
     } finally {
       await fh.close().catch(() => undefined);
     }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Explorer — SSRF-guarded single-page web probe (works with or without a target)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch ONE public page through the Explorer and format a bounded, evidence-
+ * first report. Shared by the `explore_url` registry tool (target-attached
+ * chat) and the free-chat loop (agent.ts) — no target context required.
+ */
+export async function runExploreUrlTool(args: Record<string, unknown>): Promise<string> {
+  const url = argStr(args, "url");
+  if (!url) {
+    return 'Error: \'url\' is required. Example: {"url":"https://example.com"}. Only public http(s) URLs are fetchable.';
+  }
+  if (url.length > 2048) return "Error: URL exceeds 2048 characters.";
+  const includeText = args["include_text"] !== false;
+  try {
+    const r = await probeUrl(url, { includeText, timeoutMs: PROBE_TIMEOUT_MS });
+    const lines: string[] = [
+      "# explore_url — OBSERVED fetch",
+      `- requested: ${r.requestUrl}`,
+      `- final URL: ${r.finalUrl}`,
+      `- status: ${r.status} | time: ${r.ms}ms | content-type: ${r.contentType || "(none)"}`,
+      `- sha256: ${r.contentHash.slice(0, 32)}…`,
+      "",
+      "## Title",
+      r.title ?? "(none)",
+      "",
+      "## Description",
+      r.description ?? "(none)",
+    ];
+    const hs = [
+      ...r.headings.h1.map((t) => `- h1: ${t}`),
+      ...r.headings.h2.map((t) => `- h2: ${t}`),
+      ...r.headings.h3.map((t) => `- h3: ${t}`),
+    ];
+    lines.push("", "## Headings", ...(hs.length ? hs : ["(none)"]));
+    lines.push(
+      "",
+      "## Technology fingerprints (headers + markup)",
+      ...(r.tech.length ? r.tech.map((t) => `- ${t}`) : ["(none detected)"])
+    );
+    lines.push("", `## Links (${r.links.length} captured)`);
+    if (r.links.length) {
+      lines.push("| href | text |", "|---|---|");
+      for (const l of r.links.slice(0, 40)) {
+        lines.push(`| ${l.href.slice(0, 120).replace(/\|/g, "%7C")} | ${l.text.slice(0, 60).replace(/\|/g, "%7C")} |`);
+      }
+      if (r.links.length > 40) lines.push(`… (+${r.links.length - 40} more)`);
+    } else {
+      lines.push("(none)");
+    }
+    if (r.textExcerpt) lines.push("", "## Text excerpt", r.textExcerpt);
+    return lines.join("\n");
+  } catch (err) {
+    if (err instanceof BlockedUrlError) {
+      return `Error: ${err.message}. The Explorer only fetches PUBLIC http(s) pages — private/internal/metadata addresses, non-http(s) schemes and embedded credentials are refused by the SSRF guard.`;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/abort|timeout|timed out/i.test(msg)) {
+      return `Error: fetch timed out for ${url} (Explorer cap ${PROBE_TIMEOUT_MS / 1000}s). The site may be slow or blocking automated clients.`;
+    }
+    return `Error: fetch failed for ${url}: ${msg.slice(0, 300)}. DNS failures mean the domain does not resolve; connection failures mean the host refused or dropped the connection.`;
+  }
+}
+
+const exploreUrlTool: AgentTool = {
+  name: "explore_url",
+  description:
+    "Fetch ONE public web page (http/https) through the SSRF-guarded Explorer and return REAL observations: final URL after redirects, HTTP status, response time, title, meta description, headings (h1-h3), links (href+text), technology fingerprints from headers/markup, sha256 and a short text excerpt. Use this for any analyze/open/check-this-URL request instead of answering from memory. Internal/private/metadata addresses are refused.",
+  args: {
+    type: "object",
+    properties: {
+      url: { type: "string", description: "Absolute public http(s) URL to fetch, e.g. https://example.com" },
+      include_text: { type: "boolean", description: "Include a short visible-text excerpt (default true)." },
+    },
+    required: ["url"],
+    additionalProperties: false,
+  },
+  async run(args) {
+    return runExploreUrlTool(args);
   },
 };
 
@@ -611,6 +697,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   reaTool,
   sqlSchemaTool,
   sqlQueryTool,
+  exploreUrlTool,
 ];
 
 /** Execute a registry tool; never throws — returns an error string instead. */
