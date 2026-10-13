@@ -12,6 +12,9 @@ import type {
 /** Global dialogs (Cursor-style — nothing is a separate "page"). */
 export type ReaDialog = "none" | "settings" | "system";
 
+/** Top-level workspace mode: the chat investigator or the universal platform. */
+export type WorkspaceMode = "chat" | "universal";
+
 interface ReaState {
   booted: boolean;
   user: ReaUser | null;
@@ -49,6 +52,9 @@ interface ReaState {
   jumpToMessageId: string | null;
 
   capabilities: Capabilities | null;
+
+  /** Top-level mode: chat workspace vs universal platform workspace. */
+  workspaceMode: WorkspaceMode;
 
   /** Global dialogs. */
   dialog: ReaDialog;
@@ -89,6 +95,7 @@ interface ReaState {
   clearJumpToMessage: () => void;
 
   setCapabilities: (capabilities: Capabilities | null) => void;
+  setWorkspaceMode: (mode: WorkspaceMode) => void;
 
   setDialog: (dialog: ReaDialog) => void;
   setProviderActive: (active: ProviderActive | null) => void;
@@ -119,6 +126,8 @@ export const useReaStore = create<ReaState>((set) => ({
   jumpToMessageId: null,
 
   capabilities: null,
+
+  workspaceMode: "chat",
 
   dialog: "none",
   providerActive: null,
@@ -161,6 +170,7 @@ export const useReaStore = create<ReaState>((set) => ({
   clearJumpToMessage: () => set({ jumpToMessageId: null }),
 
   setCapabilities: (capabilities) => set({ capabilities }),
+  setWorkspaceMode: (workspaceMode) => set({ workspaceMode }),
 
   setDialog: (dialog) => set({ dialog }),
   setProviderActive: (providerActive) => set({ providerActive }),

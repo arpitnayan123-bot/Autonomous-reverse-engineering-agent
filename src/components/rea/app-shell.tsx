@@ -17,6 +17,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  Radar,
   SearchIcon,
   Settings2,
   Sparkles,
@@ -45,6 +46,7 @@ import { formatCostUsd } from "@/lib/pricing";
 import { useReaStore } from "@/store/rea-store";
 import { refreshProviderInStore } from "@/components/rea/rea-app";
 import { ChatWorkspace } from "@/components/rea/chat-workspace";
+import { PlatformView } from "@/components/rea/platform-view";
 import type { MessageSearchHit } from "@/lib/api-client";
 import { CommandPalette } from "@/components/rea/command-palette";
 import { SettingsDialog } from "@/components/rea/settings-dialog";
@@ -116,6 +118,8 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     newFreeChat,
     closeInspector,
     setCapabilities,
+    workspaceMode,
+    setWorkspaceMode,
   } = useReaStore();
   const inspectorTabNonce = useReaStore((s) => s.inspectorTabNonce);
 
@@ -405,11 +409,13 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     }
   };
 
-  const topBarTitle = activeSession
-    ? activeSession.title
-    : draftTarget
-      ? draftTarget.originalName
-      : "New chat";
+  const topBarTitle = workspaceMode === "universal"
+    ? "Universal Platform"
+    : activeSession
+      ? activeSession.title
+      : draftTarget
+        ? draftTarget.originalName
+        : "New chat";
 
   return (
     <div
@@ -504,7 +510,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
         {/* Brand — clicking returns to the Home dashboard (fresh free chat). */}
         <button
           type="button"
-          onClick={() => newFreeChat()}
+          onClick={() => { newFreeChat(); setWorkspaceMode("chat"); }}
           title="Back to Home"
           aria-label="REA home — start a fresh chat"
           className="flex items-center gap-2 rounded font-mono text-xs font-bold tracking-widest text-zinc-200 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
@@ -512,6 +518,36 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           <Image src="/rea-logo-256.png" alt="" width={20} height={20} className="size-5 rounded-md ring-1 ring-zinc-700/60" aria-hidden />
           REA
         </button>
+
+        {/* Mode switch — chat investigator vs universal platform. */}
+        <div className="ml-1 flex items-center rounded-lg border border-zinc-800 bg-zinc-900/70 p-0.5" role="tablist" aria-label="Workspace mode">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workspaceMode === "chat"}
+            onClick={() => setWorkspaceMode("chat")}
+            title="Chat workspace"
+            className={`flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] tracking-wide transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none ${
+              workspaceMode === "chat" ? "bg-emerald-500/15 text-emerald-300" : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            <MessageSquare className="size-3" aria-hidden />
+            <span className="hidden sm:inline">CHAT</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={workspaceMode === "universal"}
+            onClick={() => setWorkspaceMode("universal")}
+            title="Universal platform — crawl, parse, research, build, verify"
+            className={`flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] tracking-wide transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none ${
+              workspaceMode === "universal" ? "bg-emerald-500/15 text-emerald-300" : "text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            <Radar className="size-3" aria-hidden />
+            <span className="hidden sm:inline">PLATFORM</span>
+          </button>
+        </div>
 
         {/* Context title */}
         <span className="min-w-0 flex-1 truncate text-sm text-zinc-300">{topBarTitle}</span>
@@ -525,7 +561,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           size="icon"
           className={cn(
             "size-8 text-zinc-400",
-            !activeSession && "hidden"
+            (!activeSession || workspaceMode !== "chat") && "hidden"
           )}
           aria-label="Export chat as Markdown"
           disabled={exportingChat}
@@ -534,7 +570,8 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           <Download className="size-4" aria-hidden />
         </Button>
 
-        {/* Inspector toggle (desktop) */}
+        {/* Inspector toggle (desktop, chat mode) */}
+        {workspaceMode === "chat" && (
         <Button
           variant="ghost"
           size="icon"
@@ -554,6 +591,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
             <PanelRightOpen className="size-4" aria-hidden />
           )}
         </Button>
+        )}
 
       </header>
 
@@ -596,55 +634,63 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           />
         </aside>
 
-        {/* Main: chat + optional inspector */}
+        {/* Main: universal platform OR chat + optional inspector */}
         <main className="flex min-w-0 flex-1">
-          <ChatWorkspace
-            className="min-w-0 flex-1"
-            onSessionsChanged={refreshSessions}
-            onTargetsChanged={refreshTargets}
-            onAttachFile={onPickFile}
-          />
+          {workspaceMode === "universal" ? (
+            <div className="relative min-w-0 flex-1">
+              <PlatformView />
+            </div>
+          ) : (
+            <>
+              <ChatWorkspace
+                className="min-w-0 flex-1"
+                onSessionsChanged={refreshSessions}
+                onTargetsChanged={refreshTargets}
+                onAttachFile={onPickFile}
+              />
 
-          {/* Desktop inspector (lg+) */}
-          {isDesktop && inspectorOpen && inspectorTargetId && (
-            <aside
-              className="flex w-[420px] shrink-0 flex-col overflow-hidden border-l border-zinc-800/80 bg-zinc-950"
-              aria-label="Target inspector"
-            >
-              <div className="flex h-9 shrink-0 items-center justify-between border-b border-zinc-800/80 px-3">
-                <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">
-                  Inspector
-                </span>
-                <div className="flex items-center gap-0.5">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-6 text-zinc-500 hover:text-emerald-400"
-                    aria-label="Export investigation report as Markdown"
-                    disabled={exportingReport}
-                    onClick={() => void onExportReport()}
-                  >
-                    <Download className="size-3.5" aria-hidden />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-6 text-zinc-500 hover:text-zinc-200"
-                    aria-label="Close inspector"
-                    onClick={closeInspector}
-                  >
-                    <PanelRightClose className="size-3.5" aria-hidden />
-                  </Button>
-                </div>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto rea-scroll">
-                <TargetPanel
-                  targetId={inspectorTargetId}
-                  externalTab={inspectorTab}
-                  externalTabNonce={inspectorTabNonce}
-                />
-              </div>
-            </aside>
+              {/* Desktop inspector (lg+) */}
+              {isDesktop && inspectorOpen && inspectorTargetId && (
+                <aside
+                  className="flex w-[420px] shrink-0 flex-col overflow-hidden border-l border-zinc-800/80 bg-zinc-950"
+                  aria-label="Target inspector"
+                >
+                  <div className="flex h-9 shrink-0 items-center justify-between border-b border-zinc-800/80 px-3">
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+                      Inspector
+                    </span>
+                    <div className="flex items-center gap-0.5">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-6 text-zinc-500 hover:text-emerald-400"
+                        aria-label="Export investigation report as Markdown"
+                        disabled={exportingReport}
+                        onClick={() => void onExportReport()}
+                      >
+                        <Download className="size-3.5" aria-hidden />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-6 text-zinc-500 hover:text-zinc-200"
+                        aria-label="Close inspector"
+                        onClick={closeInspector}
+                      >
+                        <PanelRightClose className="size-3.5" aria-hidden />
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-y-auto rea-scroll">
+                    <TargetPanel
+                      targetId={inspectorTargetId}
+                      externalTab={inspectorTab}
+                      externalTabNonce={inspectorTabNonce}
+                    />
+                  </div>
+                </aside>
+              )}
+            </>
           )}
         </main>
       </div>
