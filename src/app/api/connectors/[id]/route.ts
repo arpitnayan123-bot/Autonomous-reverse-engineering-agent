@@ -36,13 +36,15 @@ export async function POST(req: Request, ctx: Ctx) {
 
     if (action === "test") {
       const result = await testConnector(id, user.id);
-      return NextResponse.json({ ok: result.ok, result });
+      // Envelope ok = the test RAN. result.ok carries reachability — an
+      // unreachable connector is a valid, well-formed test outcome.
+      return NextResponse.json({ ok: true, result });
     }
     if (action === "invoke") {
       const connector = await db.connector.findFirst({ where: { id, userId: user.id } });
       if (!connector) return badRequest("connector not found");
       const result = await invokeConnector(id, user.id, body.input ?? {});
-      return NextResponse.json({ ok: result.ok, detail: result.detail, kind: result.kind });
+      return NextResponse.json({ ok: true, result: { ok: result.ok, detail: result.detail, kind: result.kind } });
     }
     return badRequest("action must be test or invoke");
   } catch (err) {

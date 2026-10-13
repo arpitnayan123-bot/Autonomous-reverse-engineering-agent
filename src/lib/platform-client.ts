@@ -254,5 +254,5 @@ export const platformApi = {
     apiPost<{ ok: boolean; result: { ok: boolean; detail: string; tools?: Array<{ name: string; description?: string }> } }>(`/api/connectors/${id}`, { action: "test" }),
 
   invokeConnector: (id: string, input: Record<string, unknown>) =>
-    apiPost<{ ok: boolean; detail: string; kind?: string }>(`/api/connectors/${id}`, { action: "invoke", input }),
+    apiPost<{ ok: true; result: { ok: boolean; detail: string; kind?: string } }>(`/api/connectors/${id}`, { action: "invoke", input }).then((r) => r.result),
 };
