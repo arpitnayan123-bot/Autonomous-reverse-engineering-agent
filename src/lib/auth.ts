@@ -121,7 +121,14 @@ export async function setSessionCookie(
   });
 }
 
-/** Verify the cookie and return both the user and the live session id. */
+/** Verify the cookie and return both the user and the live session id.
+ *
+ * Sliding renewal: when a live session is inside its final third of validity,
+ * the row's expiry is extended server-side and the cookie is re-issued with a
+ * fresh payload — an actively-used account no longer gets logged out mid-work
+ * after 7 fixed days, while abandoned sessions still expire on schedule.
+ * (Only ever called from route handlers, where cookie mutation is allowed.)
+ */
 async function resolveSession(): Promise<{
   payload: SessionPayload;
   user: AuthedUser;
@@ -146,7 +153,35 @@ async function resolveSession(): Promise<{
     where: { id: payload.sub },
     select: { id: true, email: true, name: true, role: true, isDemo: true },
   });
-  return user ? { payload, user } : null;
+  if (!user) return null;
+
+  try {
+    const remaining = session.expiresAt.getTime() - Date.now();
+    if (remaining < SESSION_TTL_MS / 3) {
+      const newExpiry = new Date(Date.now() + SESSION_TTL_MS);
+      await db.authSession.update({
+        where: { id: session.id },
+        data: { expiresAt: newExpiry },
+      });
+      // Re-issue the cookie so the client-side maxAge matches the extended
+      // server row (same sid — the revocation handle is stable).
+      store.set(
+        SESSION_COOKIE,
+        createSessionToken(user.id, user.email, session.id),
+        {
+          httpOnly: true,
+          sameSite: "lax",
+          secure: process.env.NODE_ENV === "production",
+          maxAge: SESSION_TTL_MS / 1000,
+          path: "/",
+        }
+      );
+    }
+  } catch {
+    /* renewal is best-effort — the session stays valid either way */
+  }
+
+  return { payload, user };
 }
 
 export async function getSessionUser(): Promise<AuthedUser | null> {
