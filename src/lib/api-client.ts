@@ -120,6 +120,26 @@ export interface ChatMessageRow {
   createdAt: string;
 }
 
+/** Sidebar row for a chat session (GET /api/chat). */
+export interface SessionSummary {
+  id: string;
+  title: string;
+  targetId: string | null;
+  targetName: string | null;
+  detectedFormat: string | null;
+  messageCount: number;
+  updatedAt: string;
+}
+
+/** Detail for one session (GET /api/chat?sessionId=). */
+export interface ChatSessionDetail {
+  id: string;
+  title: string;
+  targetId: string | null;
+  targetName: string | null;
+  detectedFormat: string | null;
+}
+
 export interface ChatSession {
   id: string;
   title: string | null;
@@ -179,13 +199,41 @@ export interface AuditEvent {
 }
 
 export type ChatStreamEvent =
+  | { type: "session_saved"; sessionId: string; title: string; targetId: string | null }
+  | { type: "user_saved"; messageId: string }
   | { type: "model"; source: string; provider: string; model: string }
   | { type: "tool_call"; tool: string; args?: unknown }
   | { type: "tool_result"; tool: string; preview?: string }
   | { type: "assistant"; content: string }
   | { type: "error"; error: string }
   | { type: "done" }
-  | { type: string; [key: string]: unknown };
+  // Tolerate any future/unknown event type without breaking consumers.
+  | { type: "<unknown>" };
+
+// ---------------------------------------------------------------------------
+// Chat sessions
+// ---------------------------------------------------------------------------
+
+/** GET /api/chat — list the signed-in user's sessions, newest first. */
+export async function listChatSessions(): Promise<SessionSummary[]> {
+  const res = await apiGet<{ sessions: SessionSummary[] }>("/api/chat");
+  return res.sessions;
+}
+
+/** GET /api/chat?sessionId= — session detail + full message history. */
+export async function getChatSession(
+  sessionId: string
+): Promise<{ session: ChatSessionDetail; messages: ChatMessageRow[] }> {
+  return apiGet<{ session: ChatSessionDetail; messages: ChatMessageRow[] }>(
+    "/api/chat",
+    { sessionId }
+  );
+}
+
+/** DELETE /api/chat?sessionId= — delete one session. */
+export async function deleteChatSession(sessionId: string): Promise<void> {
+  await apiDelete(`/api/chat?sessionId=${encodeURIComponent(sessionId)}`);
+}
 
 // ---------------------------------------------------------------------------
 // Envelope handling
@@ -300,19 +348,26 @@ export function apiUpload<T>(
 
 /**
  * POSTs a chat message and consumes the SSE response.
+ * - `sessionId`  → continue an existing session.
+ * - `targetId`   → start a NEW chat bound to that target (no sessionId).
+ * - neither      → start a NEW free chat.
  * Frames are `data: {json}\n\n`; the buffer is split on `\n\n` and every
  * `data: ` line is JSON-parsed and forwarded to `onEvent`.
  */
 export async function streamChat(
-  targetId: string,
-  message: string,
-  onEvent: (event: ChatStreamEvent) => void,
+  opts: {
+    sessionId?: string | null;
+    targetId?: string | null;
+    message: string;
+    onEvent: (event: ChatStreamEvent) => void;
+  },
   signal?: AbortSignal
 ): Promise<void> {
+  const { sessionId, targetId, message, onEvent } = opts;
   const res = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ targetId, message }),
+    body: JSON.stringify({ sessionId: sessionId ?? undefined, targetId: targetId ?? undefined, message }),
     signal,
   });
   if (!res.ok || !res.body) {

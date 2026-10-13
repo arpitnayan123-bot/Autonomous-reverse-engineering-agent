@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { MAX_CHAT_ITERATIONS } from "@/lib/security";
-import { documentationPrompt, systemPrompt } from "./prompts";
+import { documentationPrompt, freeChatSystemPrompt, systemPrompt } from "./prompts";
 import { buildTargetContext, executeAgentTool, type AgentToolContext } from "./tools";
 import { resolveLlmForUser, type LlmMessage, type ResolvedLlm } from "./providers";
 import type { Evidence, Finding, Target } from "@prisma/client";
@@ -93,14 +93,17 @@ export function parseToolAction(
 
 export async function runAgentLoop(opts: {
   sessionId: string;
-  target: Target;
+  /** null → FREE chat: no file attached, no tools, general RE copilot. */
+  target: Target | null;
   userId: string;
   userMessage: string;
   history: LoopMessage[];
   events?: AgentEventHandlers;
 }): Promise<AgentLoopResult> {
   const { sessionId, target, userMessage, history, events } = opts;
-  const ctx: AgentToolContext = { target, userId: opts.userId };
+  const ctx: AgentToolContext | null = target
+    ? { target, userId: opts.userId }
+    : null;
 
   let llm: ResolvedLlm;
   try {
@@ -116,13 +119,18 @@ export async function runAgentLoop(opts: {
     model: llm.model,
   });
 
-  const contextJson = await buildTargetContext(target);
-  const messages: LlmMessage[] = [
-    { role: "assistant", content: systemPrompt(target) },
-    { role: "user", content: contextJson },
-    ...history,
-    { role: "user", content: userMessage },
-  ];
+  const messages: LlmMessage[] = target
+    ? [
+        { role: "assistant", content: systemPrompt(target) },
+        { role: "user", content: await buildTargetContext(target) },
+        ...history,
+        { role: "user", content: userMessage },
+      ]
+    : [
+        { role: "assistant", content: freeChatSystemPrompt() },
+        ...history,
+        { role: "user", content: userMessage },
+      ];
 
   const toolTrace: AgentToolTrace[] = [];
   let final: string | null = null;
@@ -137,6 +145,16 @@ export async function runAgentLoop(opts: {
     if (!action) {
       final = text;
       break;
+    }
+    if (!ctx) {
+      // Free chat: the model emitted a tool block despite the system prompt.
+      // Redirect once per occurrence; the iteration budget still bounds it.
+      messages.push({ role: "assistant", content: text });
+      messages.push({
+        role: "user",
+        content: `SYSTEM: Tool "${action.tool}" is unavailable in this chat because no file is attached. Do not emit tool blocks here. Answer the user directly from your own knowledge, and mention that file analysis requires uploading a file first.`,
+      });
+      continue;
     }
     events?.onToolCall?.(action.tool, action.args);
     const result = await executeAgentTool(action.tool, action.args, ctx);

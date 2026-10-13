@@ -1,168 +1,61 @@
 "use client";
 
 import * as React from "react";
-import Script from "next/script";
-import { motion } from "framer-motion";
-import {
-  Cpu,
-  Eye,
-  EyeOff,
-  FileSearch,
-  Loader2,
-  ShieldCheck,
-  Sparkles,
-  Terminal,
-} from "lucide-react";
+import { Eye, EyeOff, Loader2, Terminal } from "lucide-react";
 
 import { apiPost, type ReaUser } from "@/lib/api-client";
-import { TiltCard, toastError } from "@/components/rea/shared";
+import { toastError } from "@/components/rea/shared";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-/** Custom element provided by thrine.app embed runtime. */
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace React.JSX {
-    interface IntrinsicElements {
-      "model-embed": React.DetailedHTMLProps<
-        React.HTMLAttributes<HTMLElement> & { project?: string },
-        HTMLElement
-      >;
-    }
-  }
-}
-
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const HERO_POINTS = [
-  { icon: FileSearch, text: "Upload a binary, artifact, database or app — REA detects what it is." },
-  { icon: Cpu, text: "The real REA engine investigates it with 170 evidence-first MCP tools." },
-  { icon: ShieldCheck, text: "Every conclusion is backed by an observed/derived/inferred evidence ledger." },
-];
-
-const THRINE_EMBED_SRC = "https://thrine.app/embed/v1.js";
-const THRINE_PROJECT = "e_e9e6387b451eb0a1c456";
-
 /**
- * 3D model showcase embed (thrine.app). Loads the module runtime once and
- * renders the declarative <model-embed> custom element.
+ * Minimal sign-in gate. Deliberately plain: a centered card, nothing else.
  */
-function ThrineModelEmbed() {
-  return (
-    <div
-      className="relative flex w-full max-w-xl items-center justify-center"
-      aria-label="Interactive 3D model showcase"
-    >
-      {/* soft glow behind the embed */}
-      <div
-        className="pointer-events-none absolute inset-0 -z-0 rounded-full bg-emerald-500/10 blur-[80px]"
-        aria-hidden
-      />
-      <div className="relative z-10 w-full [filter:drop-shadow(0_24px_48px_rgba(0,0,0,0.55))]">
-        <model-embed
-          project={THRINE_PROJECT}
-          style={{ display: "block", width: "100%", aspectRatio: "372 / 98" }}
-        />
-      </div>
-      <Script src={THRINE_EMBED_SRC} type="module" strategy="afterInteractive" />
-    </div>
-  );
-}
-
 export function AuthView({ onAuthenticated }: { onAuthenticated: (user: ReaUser) => void }) {
   return (
-    <div className="relative flex min-h-screen flex-col overflow-hidden bg-zinc-950">
-      {/* Aurora backdrop — auth view only, decorative */}
-      <div className="rea-aurora -z-0" aria-hidden />
-
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.35, ease: "easeOut" }}
-        className="relative z-10 mx-auto grid w-full max-w-6xl flex-1 items-center gap-8 px-4 py-10 lg:grid-cols-[1.1fr_1fr] lg:gap-12 lg:py-14"
-      >
-        {/* ------------------------------------------------ hero (left on desktop,
-            compact banner on mobile) ------------------------------------ */}
-        <section
-          aria-label="REA Platform introduction"
-          className="flex min-w-0 flex-col items-center gap-6 text-center lg:items-start lg:gap-8 lg:text-left"
-        >
-          <div className="space-y-3">
-            <div className="mx-auto grid size-12 place-items-center rounded-lg border border-emerald-500/40 bg-emerald-500/10 rea-glow-emerald lg:mx-0">
-              <Terminal className="size-6 text-emerald-400" aria-hidden />
-            </div>
-            <h1 className="font-mono text-2xl font-bold tracking-tight text-zinc-100 lg:text-3xl">
-              REA <span className="text-emerald-400">Platform</span>
-            </h1>
-            <p className="mx-auto max-w-lg text-sm leading-relaxed text-zinc-400 lg:mx-0">
-              Professional reverse engineering, as easy as chatting with an AI.
-              Upload a binary, artifact, database or app — the REA engine
-              investigates it with evidence-backed rigor.
-            </p>
+    <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-4">
+      <div className="w-full max-w-sm">
+        {/* Wordmark */}
+        <div className="mb-8 flex flex-col items-center gap-3 text-center">
+          <span className="grid size-10 place-items-center rounded-md border border-zinc-800 bg-zinc-900">
+            <Terminal className="size-5 text-emerald-400" aria-hidden />
+          </span>
+          <div>
+            <h1 className="font-mono text-lg font-bold tracking-widest text-zinc-100">REA</h1>
+            <p className="mt-1 text-xs text-zinc-500">Autonomous reverse engineering agent</p>
           </div>
+        </div>
 
-          {/* 3D model showcase — thrine embed (compact banner on mobile) */}
-          <div className="flex w-full items-center justify-center sm:min-h-[220px] lg:min-h-[300px]">
-            <ThrineModelEmbed />
-          </div>
+        <Tabs defaultValue="signin">
+          <TabsList className="grid w-full grid-cols-2 bg-zinc-900">
+            <TabsTrigger value="signin">Sign in</TabsTrigger>
+            <TabsTrigger value="register">Create account</TabsTrigger>
+          </TabsList>
+          <TabsContent value="signin" className="mt-4">
+            <SigninForm onAuthenticated={onAuthenticated} />
+          </TabsContent>
+          <TabsContent value="register" className="mt-4">
+            <RegisterForm onAuthenticated={onAuthenticated} />
+          </TabsContent>
+        </Tabs>
 
-          <ul className="hidden w-full max-w-md space-y-2 text-left lg:block">
-            {HERO_POINTS.map(({ icon: Icon, text }) => (
-              <li key={text} className="flex items-start gap-2 text-xs text-zinc-500">
-                <Icon className="mt-0.5 size-3.5 shrink-0 text-emerald-500" aria-hidden />
-                <span>{text}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <div className="my-5 flex items-center gap-3" aria-hidden>
+          <span className="h-px flex-1 bg-zinc-800" />
+          <span className="text-[10px] uppercase tracking-wider text-zinc-600">or</span>
+          <span className="h-px flex-1 bg-zinc-800" />
+        </div>
 
-        {/* ------------------------------------------------ auth card ------- */}
-        <section aria-label="Sign in" className="w-full max-w-md justify-self-center lg:justify-self-end">
-          <TiltCard maxTilt={4}>
-            <Card className="rea-glass border-white/5 shadow-lg shadow-black/40">
-              <CardHeader>
-                <CardTitle className="text-base text-zinc-100">Sign in to your workspace</CardTitle>
-                <CardDescription className="text-xs">
-                  Accounts are local to this deployment. Sessions are HttpOnly cookie-based.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Tabs defaultValue="signin">
-                  <TabsList className="grid w-full grid-cols-2 bg-zinc-950">
-                    <TabsTrigger value="signin">Sign in</TabsTrigger>
-                    <TabsTrigger value="register">Create account</TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="signin">
-                    <SigninForm onAuthenticated={onAuthenticated} />
-                  </TabsContent>
-                  <TabsContent value="register">
-                    <RegisterForm onAuthenticated={onAuthenticated} />
-                  </TabsContent>
-                </Tabs>
+        <DemoButton onAuthenticated={onAuthenticated} />
 
-                {/* One-click demo */}
-                <div className="mt-4 border-t border-zinc-800/80 pt-4">
-                  <DemoButton onAuthenticated={onAuthenticated} />
-                </div>
-              </CardContent>
-            </Card>
-          </TiltCard>
-
-          <p className="mt-6 text-center text-[11px] text-zinc-600">
-            Evidence-first analysis · Uploads are parsed read-only, never executed.
-          </p>
-        </section>
-      </motion.div>
+        <p className="mt-6 text-center text-[11px] leading-relaxed text-zinc-600">
+          Uploads are parsed read-only, never executed.
+        </p>
+      </div>
     </div>
   );
 }
@@ -184,26 +77,17 @@ function DemoButton({ onAuthenticated }: { onAuthenticated: (user: ReaUser) => v
   };
 
   return (
-    <div className="space-y-2">
-      <Button
-        type="button"
-        variant="secondary"
-        disabled={busy}
-        onClick={() => void tryDemo()}
-        aria-label="Enter the shared demo workspace"
-        className="w-full gap-2 border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 transition-all hover:bg-emerald-500/20 hover:text-emerald-200 hover:shadow-[0_0_24px_rgba(16,185,129,0.25)] focus-visible:ring-emerald-500/50"
-      >
-        {busy ? (
-          <Loader2 className="size-4 animate-spin" aria-hidden />
-        ) : (
-          <Sparkles className="size-4" aria-hidden />
-        )}
-        ✦ Try the demo workspace
-      </Button>
-      <p className="text-center text-[11px] text-zinc-600">
-        Shared temporary workspace — data may be reset.
-      </p>
-    </div>
+    <Button
+      type="button"
+      variant="outline"
+      disabled={busy}
+      onClick={() => void tryDemo()}
+      aria-label="Continue with the demo workspace"
+      className="w-full border-zinc-800 bg-zinc-900 text-zinc-200 hover:bg-zinc-800 hover:text-zinc-100"
+    >
+      {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}
+      Continue with demo
+    </Button>
   );
 }
 
@@ -226,13 +110,12 @@ function SigninForm({ onAuthenticated }: { onAuthenticated: (user: ReaUser) => v
     } catch (err) {
       toastError(err, "Sign in failed");
       setError(err instanceof Error ? err.message : "Sign in failed.");
-    } finally {
       setBusy(false);
     }
   };
 
   return (
-    <form onSubmit={onSubmit} className="mt-4 space-y-4" noValidate>
+    <form onSubmit={onSubmit} className="space-y-4" noValidate>
       {error && (
         <Alert variant="destructive" className="border-rose-500/40 bg-rose-500/10">
           <AlertDescription className="text-xs text-rose-300">{error}</AlertDescription>
@@ -247,7 +130,7 @@ function SigninForm({ onAuthenticated }: { onAuthenticated: (user: ReaUser) => v
           placeholder="analyst@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="border-zinc-800 bg-zinc-950 font-mono text-sm"
+          className="border-zinc-800 bg-zinc-900 font-mono text-sm"
           disabled={busy}
         />
       </div>
@@ -261,7 +144,7 @@ function SigninForm({ onAuthenticated }: { onAuthenticated: (user: ReaUser) => v
             placeholder="••••••••"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="border-zinc-800 bg-zinc-950 pr-10 font-mono text-sm"
+            className="border-zinc-800 bg-zinc-900 pr-10 font-mono text-sm"
             disabled={busy}
           />
           <button
@@ -306,13 +189,12 @@ function RegisterForm({ onAuthenticated }: { onAuthenticated: (user: ReaUser) =>
     } catch (err) {
       toastError(err, "Registration failed");
       setError(err instanceof Error ? err.message : "Registration failed.");
-    } finally {
       setBusy(false);
     }
   };
 
   return (
-    <form onSubmit={onSubmit} className="mt-4 space-y-4" noValidate>
+    <form onSubmit={onSubmit} className="space-y-4" noValidate>
       {error && (
         <Alert variant="destructive" className="border-rose-500/40 bg-rose-500/10">
           <AlertDescription className="text-xs text-rose-300">{error}</AlertDescription>
@@ -326,7 +208,7 @@ function RegisterForm({ onAuthenticated }: { onAuthenticated: (user: ReaUser) =>
           placeholder="Ada Lovelace"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className="border-zinc-800 bg-zinc-950 text-sm"
+          className="border-zinc-800 bg-zinc-900 text-sm"
           disabled={busy}
         />
       </div>
@@ -339,7 +221,7 @@ function RegisterForm({ onAuthenticated }: { onAuthenticated: (user: ReaUser) =>
           placeholder="analyst@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="border-zinc-800 bg-zinc-950 font-mono text-sm"
+          className="border-zinc-800 bg-zinc-900 font-mono text-sm"
           disabled={busy}
         />
       </div>
@@ -352,12 +234,9 @@ function RegisterForm({ onAuthenticated }: { onAuthenticated: (user: ReaUser) =>
           placeholder="At least 8 characters"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="border-zinc-800 bg-zinc-950 font-mono text-sm"
+          className="border-zinc-800 bg-zinc-900 font-mono text-sm"
           disabled={busy}
         />
-        <p className="text-[11px] text-zinc-600">
-          Hashed with scrypt; never stored in plain text.
-        </p>
       </div>
       <Button type="submit" disabled={busy} className="w-full bg-emerald-600 text-white hover:bg-emerald-500">
         {busy && <Loader2 className="size-4 animate-spin" aria-hidden />}

@@ -118,3 +118,24 @@ Stage Summary:
 - Demo sign-in: POST /api/auth/demo works, isDemo badge, rate limited 10/15min/ip
 - BYOK: /api/provider GET/POST/PUT/DELETE live; keys AES-256-GCM sealed, only last4 returned
 - Commits: 9ff0840 (BYOK backend), 8b00d2b (premium redesign + embed)
+
+---
+Task ID: 4-a
+Agent: frontend-styling-expert
+Task: Convert workspace-view into props-driven target-panel.tsx
+
+Work Log:
+- Read worklog audit + API contract, full `workspace-view.tsx`, `shared.tsx` helpers and `api-client.ts` types before writing anything.
+- Created `src/components/rea/target-panel.tsx` — a self-contained, props-driven `TargetPanel({ targetId, className })` right-side inspector. ZERO imports from `@/store/rea-store` (all state local; no view switching, no dashboard links); framer-motion removed entirely (no page transitions, no motion.span tab underline — active tab styled via `data-[state=active]`).
+- Ported ALL six tabs from workspace-view: Overview (format-detection card w/ confidence+family, latest-run card w/ progress bar + currentStep + humanDuration + error Alert, findings-by-type counts fetched from `/findings?limit=500`, limitations extracted defensively from `result.limitations` / `result.summary.limitations`), Hex (256 B/page sticky-header mono table offset | 16 hex bytes (0x00 dimmed, non-printable amber) | ascii, Prev/Next by page, jump input parsing `0x…`/hex, clamped to fileSize-256), Strings (300ms debounced search resetting page, offset/value/encoding table pageSize 100, truncate w/ title attr, Prev/Next pagination footer), Findings (type Select + name/address search, table w/ meta pretty-JSON Collapsible per row), Evidence (kind-colored border-l-4 ledger cards observed=emerald/derived=amber/inferred=orange/unknown=rose, ConfidenceBadge + authority + evidenceId + payload Collapsible in ScrollArea), Docs (silent GET /docs hydration, generate via POST /report {action:'generate-docs'} switching to Docs tab w/ skeleton, empty-state CTA, summary Alert + Markdown render + CopyButton).
+- Header: truncated mono filename + FormatBadge + StatusBadge, meta row (humanBytes, sha256 short `slice(0,12)…` + CopyButton for full hash, uploaded timeAgo), action row with two compact h-7 flex-1 buttons: "Re-run analysis" (Popover w/ optional goal Input → POST /api/targets/:id/analyze `{goal}` or `{}`) and "Generate docs" (POST /api/targets/:id/report).
+- Polling: GET /api/targets/:id every 4s while `runs[0].status` ∈ {queued,analyzing,running}; interval cleared on unmount/status change via effect cleanup.
+- Panel styling for ~400px: local `PanelCard` wrapper over SectionCard (py-3, gap-0, header px-3 via `[&_[data-slot=card-header]]:px-3`, content px-3) for compact paddings; text-xs/text-[11px] throughout; scroll containers use `rea-scroll` + max-h (`calc(100dvh-11rem)` for overview/evidence/docs wrappers, 55vh for hex/strings/findings tables, payload/meta pre blocks); TabsList inside `rea-scroll overflow-x-auto` row with `w-max min-w-full` so all six tabs fit via horizontal scroll; hex table `min-w-[560px]` and findings table `min-w-[440px]` inside overflow-auto for horizontal scrolling; evidence cards truncate long operation/subject/evidenceId with title tooltips.
+- Errors: every fetch/POST wrapped in try/catch (or .catch) → `toastError(err, "…")`; docs GET fails silently by design. Empty targetId / loading / not-found states render compact EmptyState/skeletons. A11y kept: aria-labels on search/jump/select inputs, aria-busy on skeleton, title tooltips.
+- Verification: `bunx tsc --noEmit | grep target-panel` → empty (grep exit 1, no matches); `bunx eslint src/components/rea/target-panel.tsx` → clean. No other file touched; no new deps.
+
+Stage Summary:
+- Created: src/components/rea/target-panel.tsx (only file written by this task).
+- Component contract: `export function TargetPanel({ targetId, className }: { targetId: string; className?: string })` — props-driven, no store dependency, safe to embed in the new app shell; reset to Overview tab + refetch whenever `targetId` changes.
+- Endpoints called: GET /api/targets/:id (poll 4s while run active), POST /api/targets/:id/analyze {goal?}, GET /api/targets/:id/findings?limit=500 (overview counts + findings tab), GET /api/targets/:id/hex?offset=&length=256, GET /api/targets/:id/strings?q=&page=&pageSize=100, GET /api/targets/:id/evidence, GET /api/targets/:id/docs (silent), POST /api/targets/:id/report {action:'generate-docs'}.
+- Reuses shared.tsx: FormatBadge, StatusBadge, EvidenceKindBadge, ConfidenceBadge, SectionCard, EmptyState, CopyButton, Markdown, humanBytes, humanDuration, timeAgo, prettyJson, parseJsonSafe, toastError.
