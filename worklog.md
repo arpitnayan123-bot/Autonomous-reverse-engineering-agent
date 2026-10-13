@@ -252,3 +252,40 @@ Stage Summary:
 - SSE/API: POST /api/chat body now supports `editMessageId` and `regenerate` (backward compatible; both ownership-checked, ids validated, truncation bounded by MAX_SESSION_MESSAGES=400).
 - Infra note: dev server must be (re)started via `.zscripts/dev.sh`; tailwindcss source detection is now scoped to src/ so markdown/log artifacts can never poison the build again.
 - Next candidates: per-message token accounting (provider usage), chat search API (server-side, for >100 sessions), file compare view, i18n, branch-from-message (fork a chat at any turn).
+
+---
+Task ID: 9 (cron review round 4 — QA + Cursor-parity branching)
+Agent: main agent (webDevReview)
+Task: Assess status, QA via agent-browser, then fix bugs / add features + styling details.
+
+Work Log:
+- Status assessment: dev server healthy (GET / 200, capabilities endpoint OK), tsc clean, lint clean, git at round-3 commit. Live QA pass: minimal auth page ✓, demo login ✓, free-chat streaming ✓, file-chat evidence-graded answer ✓, inspector all tabs ✓ (findings badges were mid-skeleton in one screenshot — re-captured loaded state: sqlite_table 2 / format 1, correct), quota chip ✓, 0 console errors → phase STABLE → proceeded to features.
+- Feature 1 — Fork chat from any message (Cursor-parity branch point):
+  - NEW route POST /api/chat/fork {sessionId, messageId}: ownership-checked, copies the target binding + every message up to AND INCLUDING messageId (toolCalls JSON preserved verbatim) into a NEW session titled "Fork · {original}"; original untouched; MAX_SESSIONS_PER_USER + MAX_FORK_MESSAGES(400) guards; audit event chat.session_fork.
+  - api-client: forkChatSession(sessionId, messageId) → SessionSummary (unwraps {session} envelope).
+  - chat-workspace: fork button (GitFork icon, sky hover) in the hover meta row of BOTH user and assistant messages; hidden while streaming and for unpersisted local- ids; forks via API, prepends summary to store sessions, opens the fork, toast "Chat forked — <title> continues from this point (N messages)".
+- Feature 2 — Pinned chats:
+  - Prisma: ChatSession.pinned Boolean @default(false) + @@index([userId, pinned, updatedAt]); db:push OK (data preserved).
+  - PATCH /api/chat now accepts {pinned?: boolean} (title optional; at least one required). GET list orders pinned desc then updatedAt desc and returns pinned.
+  - Sidebar: separate "PINNED" section (Pin icon header) above Chats; pin/unpin button per row — always visible amber on pinned rows, hover-only otherwise; rename/delete moved to per-button group-hover opacity; command palette gained "Pin/Unpin current chat" action; pinned sessions show amber Pin icon in palette results.
+- Feature 3 — Drag & drop upload + composer attach:
+  - AppShell root: dragenter/over/leave/drop handlers with Files-type guard and depth counter; full-screen overlay (dashed emerald card "Drop to investigate · parsed read-only · never executed", backdrop blur, pointer-events-none so drop reaches the shell).
+  - ChatWorkspace composer: paperclip button (left of the mode label) opens the same hidden file picker → upload → auto-analyze → draft target chat. Works for free chats too.
+- Styling details: sidebar FILES rows gained an analysis status dot (emerald analyzed/completed, pulsing amber queued/analyzing/running, rose failed, zinc uploaded); fork affordance hover color; pinned-row accent styling. Next.js devIndicators position moved to bottom-right (dev-only "N" button no longer covers the sidebar footer buttons).
+- BUGS FIXED this round:
+  - forkChatSession returned the {ok, session} envelope as if it were the session → toast showed "undefined" and openSession(undefined) reset the view to a draft chat; also briefly inserted a key-less object into the sidebar list (React "unique key" warning + "1 Issue" badge). Fixed by unwrapping .session in the client helper.
+  - next.config.ts devIndicators position (dev-only overlap).
+- QA verification (fresh browser session each time — NOTE: `agent-browser console` accumulates logs across reloads; always close+reopen or reload and re-check before trusting "errors"):
+  - Fork free chat from assistant message ✓ (toast w/ title+count, fork opened with copied transcript, pinned to sidebar, persists after reload).
+  - Fork file chat from assistant message ✓ — node:sqlite check: copied assistant row carries 3762 bytes of toolCalls JSON (REA tool trace preserved); file binding + composer chip intact.
+  - Pin → PINNED section appears, row leaves Chats; unpin → section disappears ✓. Palette pin action wired ✓.
+  - Drag overlay via synthetic DragEvent(Files) ✓ (dims app, dashed emerald card); real synthetic drop of a text file → upload → auto-analysis → draft chat with file chip ✓; status bar 2→3 files ✓.
+  - Mobile 390×844 ✓; fresh-session console 0 errors ✓; tsc clean (src/) ✓; eslint 0 problems ✓.
+- Process incident (recovered): a bisect experiment temporarily disabled SidebarBody sections; the automated restore mangled JSX (stray return null + commented block). Rewrote the SidebarBody return block cleanly; verified by tsc + full visual pass. No behavior lost vs. pre-incident working tree.
+- Hygiene: tool-results/ (persisted Read outputs) removed from repo and gitignored (they also sit outside the src/-scoped Tailwind scan since round 3, but should never be committed).
+
+Stage Summary:
+- Platform gained: git-style chat forking at any message (with preserved REA tool traces + file binding), pinned chats with a dedicated sidebar section, drag & drop file upload with full-screen drop-zone affordance, composer attach button, file analysis status dots.
+- API: PATCH /api/chat body now {title?, pinned?}; NEW POST /api/chat/fork; GET /api/chat rows include pinned and order pinned-first.
+- Infra rules reaffirmed: never trust agent-browser console buffer across reloads (close+reopen for a clean read); keep generated artifacts out of git and out of Tailwind's scan.
+- Next candidates: per-message token accounting (provider usage), server-side chat search (>100 sessions), file compare view, i18n, chat folder/tags, streaming tool-arg preview.
