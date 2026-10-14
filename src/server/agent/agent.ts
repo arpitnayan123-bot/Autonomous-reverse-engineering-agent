@@ -2,6 +2,10 @@ import { db } from "@/lib/db";
 import { MAX_CHAT_ITERATIONS } from "@/lib/security";
 import { documentationPrompt, freeChatSystemPrompt, systemPrompt } from "./prompts";
 import {
+  buildMemoryInjection,
+  recall as recallMemories,
+} from "./memory";
+import {
   buildTargetContext,
   executeAgentTool,
   runFreeChatTool,
@@ -922,6 +926,9 @@ export async function runAgentLoop(opts: {
     // Subagent run: the fresh transcript (system prompt + task only) gets
     // the subagent protocol addendum — focused role, the ALLOWED tool list
     // (routing refuses anything outside it) and the no-sub-subagent rule.
+    // NOTE: memory recall is intentionally SKIPPED for subagents — the
+    // parent loop already carries the relevant memories in ITS system
+    // prompt, and a subagent must see only its assigned task.
     const routableNames = (
       ctx ? AGENT_TOOLS.map((t) => t.name) : FREE_CHAT_TOOL_NAMES
     ).filter((n) => asSubagent.allowedTools.includes(n));
@@ -929,6 +936,33 @@ export async function runAgentLoop(opts: {
       role: "assistant",
       content: `${messages[0].content}${subagentSystemAddendum(asSubagent.id, routableNames)}`,
     };
+  } else {
+    // Cross-session memory injection (primary loops only, BEFORE the first
+    // LLM call): recall ranked matches for the user's message — scoped to
+    // (user + target) first, then (user + global); in a FREE chat (target
+    // null) only global memories are searched — and append the capped
+    // [RELEVANT MEMORIES FROM PAST SESSIONS] block to the system prompt.
+    // Memory is an enhancement, never a correctness requirement: a recall
+    // failure must not kill the turn.
+    try {
+      const memoryMatches = await recallMemories(
+        opts.userId,
+        target?.id ?? null,
+        userMessage
+      );
+      const memoryBlock = buildMemoryInjection(memoryMatches);
+      if (memoryBlock) {
+        messages[0] = {
+          role: "assistant",
+          content: `${messages[0].content}\n\n${memoryBlock}`,
+        };
+      }
+    } catch (err) {
+      console.warn(
+        "memory recall failed; continuing without injected memories:",
+        err instanceof Error ? err.message : err
+      );
+    }
   }
 
   /**
@@ -1163,7 +1197,7 @@ export async function runAgentLoop(opts: {
         freeTool?.dedup === false ? undefined : sessionId,
         action.tool,
         action.args ?? {},
-        () => runFreeChatTool(action.tool, action.args ?? {}, { sessionId }),
+        () => runFreeChatTool(action.tool, action.args ?? {}, { sessionId, userId: opts.userId }),
         asSubagent?.id
       );
       events?.onToolResult?.(action.tool, result);

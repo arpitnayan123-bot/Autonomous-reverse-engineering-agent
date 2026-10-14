@@ -1313,7 +1313,7 @@ async function main(): Promise<void> {
   const i4 = await runFreeChatTool(
     "workspace_write",
     { path: "calculator.js", content: iContent },
-    { sessionId: iSession }
+    { sessionId: iSession, userId: "regression" }
   );
   const i4Disk = await fs.readFile(path.join(iWorkspace, "calculator.js"), "utf8").catch(() => null);
   check(
@@ -1325,21 +1325,21 @@ async function main(): Promise<void> {
     `diskMatch:${i4Disk === iContent}`
   );
 
-  const i5 = await runFreeChatTool("workspace_read", { path: "calculator.js" }, { sessionId: iSession });
+  const i5 = await runFreeChatTool("workspace_read", { path: "calculator.js" }, { sessionId: iSession, userId: "regression" });
   check(
     "I5  workspace_read returns the real content",
     i5.includes("OBSERVED file content") && i5.includes("2+2 ="),
     ""
   );
 
-  const i6 = await runFreeChatTool("workspace_run", { command: "node calculator.js" }, { sessionId: iSession });
+  const i6 = await runFreeChatTool("workspace_run", { command: "node calculator.js" }, { sessionId: iSession, userId: "regression" });
   check(
     "I6  workspace_run executes FOR REAL (node runs the written file, real stdout)",
     i6.includes("OBSERVED execution") && i6.includes("exit code: 0") && i6.includes("2+2 = 4"),
     i6.slice(0, 140)
   );
 
-  const i7 = await runFreeChatTool("workspace_run", { command: "node missing-file.js" }, { sessionId: iSession });
+  const i7 = await runFreeChatTool("workspace_run", { command: "node missing-file.js" }, { sessionId: iSession, userId: "regression" });
   check(
     "I7  failing command is an honest FAILED state (real stderr, classified failed)",
     i7.startsWith("Error:") &&
@@ -1354,7 +1354,7 @@ async function main(): Promise<void> {
   const i8 = await runFreeChatTool(
     "workspace_write",
     { path: "../../escape.txt", content: "nope" },
-    { sessionId: iSession }
+    { sessionId: iSession, userId: "regression" }
   );
   const i8Outside = await fs
     .readFile(path.join(process.cwd(), "storage", "workspaces", "escape.txt"), "utf8")
@@ -1365,35 +1365,35 @@ async function main(): Promise<void> {
     i8.slice(0, 100)
   );
 
-  const i9 = await runFreeChatTool("workspace_run", { command: "bash -c 'echo hi'" }, { sessionId: iSession });
+  const i9 = await runFreeChatTool("workspace_run", { command: "bash -c 'echo hi'" }, { sessionId: iSession, userId: "regression" });
   check(
     "I9  non-allowlisted binary refused with the effective allowlist",
     i9.startsWith("Error:") && i9.includes("NOT executed") && i9.includes("Permitted in the chat workspace sandbox"),
     ""
   );
 
-  const i10 = await runFreeChatTool("workspace_run", { command: 'node -e "console.log(1)"' }, { sessionId: iSession });
+  const i10 = await runFreeChatTool("workspace_run", { command: 'node -e "console.log(1)"' }, { sessionId: iSession, userId: "regression" });
   check(
     "I10 inline eval is blocked and redirected to write-then-run",
     i10.startsWith("Error:") && i10.includes("inline code evaluation") && i10.includes("workspace_write"),
     ""
   );
 
-  const i11 = await runFreeChatTool("workspace_run", { command: "cat /etc/passwd" }, { sessionId: iSession });
+  const i11 = await runFreeChatTool("workspace_run", { command: "cat /etc/passwd" }, { sessionId: iSession, userId: "regression" });
   check(
     "I11 absolute-path arguments are blocked",
     i11.startsWith("Error:") && i11.includes("absolute path"),
     ""
   );
 
-  const i12 = await runFreeChatTool("workspace_run", { command: "cat ../../db/custom.db" }, { sessionId: iSession });
+  const i12 = await runFreeChatTool("workspace_run", { command: "cat ../../db/custom.db" }, { sessionId: iSession, userId: "regression" });
   check(
     "I12 '..' traversal arguments are blocked (the platform DB stays unreachable)",
     i12.startsWith("Error:") && i12.includes("escapes the workspace"),
     ""
   );
 
-  const i13 = await runFreeChatTool("workspace_run", { command: "awk 'BEGIN{print 1}'" }, { sessionId: iSession });
+  const i13 = await runFreeChatTool("workspace_run", { command: "awk 'BEGIN{print 1}'" }, { sessionId: iSession, userId: "regression" });
   check(
     "I13 script/transport binaries are blocked in chat mode",
     i13.startsWith("Error:") && i13.includes("not permitted in the chat workspace sandbox"),
@@ -1402,10 +1402,10 @@ async function main(): Promise<void> {
 
   // I14: stateful tools bypass the dedup cache — identical args, changed
   // state, FRESH execution (a cached prior result would be stale, not honest).
-  await runFreeChatTool("workspace_write", { path: "count.txt", content: "one\n" }, { sessionId: iSession });
-  const i14a = await runFreeChatTool("workspace_run", { command: "wc -l count.txt" }, { sessionId: iSession });
-  await runFreeChatTool("workspace_write", { path: "count.txt", content: "one\ntwo\n" }, { sessionId: iSession });
-  const i14b = await runFreeChatTool("workspace_run", { command: "wc -l count.txt" }, { sessionId: iSession });
+  await runFreeChatTool("workspace_write", { path: "count.txt", content: "one\n" }, { sessionId: iSession, userId: "regression" });
+  const i14a = await runFreeChatTool("workspace_run", { command: "wc -l count.txt" }, { sessionId: iSession, userId: "regression" });
+  await runFreeChatTool("workspace_write", { path: "count.txt", content: "one\ntwo\n" }, { sessionId: iSession, userId: "regression" });
+  const i14b = await runFreeChatTool("workspace_run", { command: "wc -l count.txt" }, { sessionId: iSession, userId: "regression" });
   check(
     "I14 workspace_run is NOT dedup-cached (identical args, fresh state-visible execution)",
     i14a.includes("1 count.txt") &&
@@ -1503,7 +1503,7 @@ async function main(): Promise<void> {
 
   // I20: honest usage reporting — workspace_list carries the REAL disk state
   // against the quota (the walk reports actual file bytes on disk).
-  const i20 = await runFreeChatTool("workspace_list", {}, { sessionId: iSession });
+  const i20 = await runFreeChatTool("workspace_list", {}, { sessionId: iSession, userId: "regression" });
   const i20Usage = await workspaceDiskUsage(`chat-${iSession}`);
   check(
     "I20 workspace_list reports real usage against the quota",
@@ -1570,7 +1570,7 @@ async function main(): Promise<void> {
   const i24write = await runFreeChatTool(
     "workspace_write",
     { path: "x.txt", content: "hello" },
-    { sessionId: i24Session }
+    { sessionId: i24Session, userId: "regression" }
   );
   const i24xOnDisk = await fs
     .stat(path.join(i24Workspace, "x.txt"))
@@ -1584,7 +1584,7 @@ async function main(): Promise<void> {
       i24xOnDisk === false,
     i24write.slice(0, 140)
   );
-  const i24run = await runFreeChatTool("workspace_run", { command: "echo hi" }, { sessionId: i24Session });
+  const i24run = await runFreeChatTool("workspace_run", { command: "echo hi" }, { sessionId: i24Session, userId: "regression" });
   check(
     "I24b chat command at quota is blocked BEFORE spawn (honest block)",
     i24run.startsWith("Error:") &&
@@ -1598,7 +1598,7 @@ async function main(): Promise<void> {
   const i25 = await runFreeChatTool(
     "workspace_write",
     { path: "usage-note.txt", content: "note" },
-    { sessionId: iSession }
+    { sessionId: iSession, userId: "regression" }
   );
   check(
     "I25 write receipt reports post-write workspace usage against the quota",
@@ -1706,11 +1706,11 @@ async function main(): Promise<void> {
   const passingTest = "console.log('all green');\n";
 
   // K1: a failing test is a FAILED (executed) verdict with the REAL exit code.
-  await runFreeChatTool("workspace_write", { path: "app.test.js", content: failingTest }, { sessionId: kSession });
+  await runFreeChatTool("workspace_write", { path: "app.test.js", content: failingTest }, { sessionId: kSession, userId: "regression" });
   const k1 = await runFreeChatTool(
     "workspace_verify",
     { command: "node app.test.js", name: "app tests" },
-    { sessionId: kSession }
+    { sessionId: kSession, userId: "regression" }
   );
   check(
     "K1  failing test → FAILED (executed) with real exit code + recorded",
@@ -1722,8 +1722,8 @@ async function main(): Promise<void> {
   );
 
   // K2: after a fix, the rerun PASSES and the transition is labeled FIX VERIFIED.
-  await runFreeChatTool("workspace_write", { path: "app.test.js", content: passingTest }, { sessionId: kSession });
-  const k2 = await runFreeChatTool("workspace_verify", { command: "node app.test.js" }, { sessionId: kSession });
+  await runFreeChatTool("workspace_write", { path: "app.test.js", content: passingTest }, { sessionId: kSession, userId: "regression" });
+  const k2 = await runFreeChatTool("workspace_verify", { command: "node app.test.js" }, { sessionId: kSession, userId: "regression" });
   check(
     "K2  fixed test → PASSED (executed) + FIX VERIFIED transition",
     k2.includes("# workspace_verify — PASSED (executed)") &&
@@ -1734,8 +1734,8 @@ async function main(): Promise<void> {
   );
 
   // K3: breaking it again is flagged as a REGRESSION against the passing run.
-  await runFreeChatTool("workspace_write", { path: "app.test.js", content: failingTest }, { sessionId: kSession });
-  const k3 = await runFreeChatTool("workspace_verify", { command: "node app.test.js" }, { sessionId: kSession });
+  await runFreeChatTool("workspace_write", { path: "app.test.js", content: failingTest }, { sessionId: kSession, userId: "regression" });
+  const k3 = await runFreeChatTool("workspace_verify", { command: "node app.test.js" }, { sessionId: kSession, userId: "regression" });
   check(
     "K3  previously-passing command failing again → REGRESSION flagged",
     k3.startsWith("Error: workspace_verify — FAILED (executed)") && k3.includes("REGRESSION: this command PASSED at"),
@@ -1743,7 +1743,7 @@ async function main(): Promise<void> {
   );
 
   // K4: a sandbox-refused command is COULD NOT RUN — no pass/fail claim exists.
-  const k4 = await runFreeChatTool("workspace_verify", { command: "bash -c 'echo hi'" }, { sessionId: kSession });
+  const k4 = await runFreeChatTool("workspace_verify", { command: "bash -c 'echo hi'" }, { sessionId: kSession, userId: "regression" });
   check(
     "K4  blocked verification is COULD NOT RUN (never a pass/fail claim)",
     k4.startsWith("Error:") && k4.includes("COULD NOT RUN") && k4.includes("never report this as a passing or failing test"),
@@ -1752,7 +1752,7 @@ async function main(): Promise<void> {
 
   // K5: the record file persists the honest history (stateful dedup opt-out
   // means every run is recorded, never cached away).
-  const k5raw = await runFreeChatTool("workspace_read", { path: ".rea/verifications.json" }, { sessionId: kSession });
+  const k5raw = await runFreeChatTool("workspace_read", { path: ".rea/verifications.json" }, { sessionId: kSession, userId: "regression" });
   let k5count = -1;
   let k5verdicts = "";
   try {

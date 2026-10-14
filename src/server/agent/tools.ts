@@ -22,6 +22,14 @@ import {
   writeFile as workspaceWriteFile,
   workspaceDiskUsage,
 } from "@/server/platform/builder";
+import {
+  MEMORY_MAX_KEY_CHARS,
+  MEMORY_MAX_VALUE_CHARS,
+  forget as forgetMemory,
+  recall as recallMemories,
+  remember as rememberMemory,
+  scopeOf as memoryScopeOf,
+} from "./memory";
 import { BlockedUrlError } from "@/server/platform/net";
 import { platformWebSearch } from "@/server/platform/research";
 import type { Target } from "@prisma/client";
@@ -1548,6 +1556,217 @@ const spawnSubagentTool: AgentTool = {
 };
 
 // ---------------------------------------------------------------------------
+// Cross-session persistent memory (remember / recall / forget)
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared execution core for the three memory tools. The registry wrappers
+ * (below) and the FREE-chat router (runFreeChatTool) both call THESE — one
+ * implementation, two routing surfaces, so free chats and target chats get
+ * identical semantics. `target: null` means the free-chat path: only global
+ * scope exists there (target-scoped requests are refused with the honest
+ * error, never silently downgraded).
+ */
+export interface MemoryToolScope {
+  userId: string;
+  target: Target | null;
+}
+
+/** Normalize the optional scope arg. undefined → target when attached, else global. */
+function resolveMemoryScope(
+  raw: unknown,
+  target: Target | null
+): { ok: true; scope: "target" | "global" } | { ok: false; error: string } {
+  if (raw === undefined || raw === null || raw === "") {
+    return { ok: true, scope: target ? "target" : "global" };
+  }
+  if (raw === "target" || raw === "global") {
+    if (raw === "target" && !target) {
+      return {
+        ok: false,
+        error:
+          'Error: scope "target" requires a target attached to this chat — none is. Use scope "global" (the memory will be recalled in all your chats, including free chats).',
+      };
+    }
+    return { ok: true, scope: raw };
+  }
+  return {
+    ok: false,
+    error: `Error: 'scope' must be "target" or "global" (got ${JSON.stringify(raw)}). Omit it to default to ${target ? "this target" : "global — no target is attached"}.`,
+  };
+}
+
+function memoryTargetId(scope: "target" | "global", target: Target | null): string | null {
+  return scope === "target" && target ? target.id : null;
+}
+
+export async function runRememberTool(
+  args: Record<string, unknown>,
+  mem: MemoryToolScope
+): Promise<string> {
+  const scope = resolveMemoryScope(args?.scope, mem.target);
+  if (!scope.ok) return scope.error;
+  const key = argStr(args, "key");
+  if (!key) {
+    return 'Error: \'key\' is required — a short stable label for the fact (e.g. "user-prefers-brief-answers").';
+  }
+  if (key.length > MEMORY_MAX_KEY_CHARS) {
+    return `Error: 'key' exceeds ${MEMORY_MAX_KEY_CHARS} characters (got ${key.length}) — keep the label short and put the detail in 'value'.`;
+  }
+  const value = argStr(args, "value");
+  if (!value) {
+    return 'Error: \'value\' is required — the self-contained fact a later session will see (it sees NOTHING else from this conversation).';
+  }
+  if (value.length > MEMORY_MAX_VALUE_CHARS) {
+    return `Error: 'value' exceeds ${MEMORY_MAX_VALUE_CHARS} characters (got ${value.length}) — store the distilled fact, not the transcript.`;
+  }
+  const saved = await rememberMemory(
+    mem.userId,
+    memoryTargetId(scope.scope, mem.target),
+    key,
+    value
+  );
+  const reach =
+    scope.scope === "global"
+      ? "all your future chats on this platform (including free chats)"
+      : "future chats on this target";
+  return [
+    `Remembered [${scope.scope}] "${key}" → ${value.replace(/\s+/g, " ").slice(0, 200)}${value.length > 200 ? "…" : ""}`,
+    `- stored: ${saved.createdAt.toISOString()}${saved.updatedAt.getTime() !== saved.createdAt.getTime() ? " (updated from an earlier entry with the same key)" : ""}`,
+    `- recall: it will be surfaced automatically in ${reach} when relevant; you can also fetch it with the recall tool. Re-remembering the same key overwrites this value.`,
+  ].join("\n");
+}
+
+export async function runRecallTool(
+  args: Record<string, unknown>,
+  mem: MemoryToolScope
+): Promise<string> {
+  const query = argStr(args, "query");
+  if (!query) {
+    return 'Error: \'query\' is required — the words or phrases to search stored memories for.';
+  }
+  const matches = await recallMemories(mem.userId, mem.target?.id ?? null, query);
+  if (matches.length === 0) {
+    return `No memories match "${query.slice(0, 120)}". Nothing was stored for this ${mem.target ? "target or globally" : "user globally"} that matches — use the remember tool to store a fact first.`;
+  }
+  const rows = matches.map(
+    (m) =>
+      `- [${memoryScopeOf(m)}] ${m.key} — ${m.value.replace(/\s+/g, " ").slice(0, 300)}${m.value.length > 300 ? "…" : ""} (updated ${m.updatedAt.toISOString()})`
+  );
+  return `Recalled ${matches.length} ${matches.length === 1 ? "memory" : "memories"} for "${query.slice(0, 120)}" (target-scope first, then global):\n${rows.join("\n")}`;
+}
+
+export async function runForgetTool(
+  args: Record<string, unknown>,
+  mem: MemoryToolScope
+): Promise<string> {
+  const scope = resolveMemoryScope(args?.scope, mem.target);
+  if (!scope.ok) return scope.error;
+  const key = argStr(args, "key");
+  if (!key) {
+    return 'Error: \'key\' is required — the exact label of the memory to delete (check the recall output for the exact key).';
+  }
+  const deleted = await forgetMemory(
+    mem.userId,
+    memoryTargetId(scope.scope, mem.target),
+    key
+  );
+  if (!deleted) {
+    return `No memory with key "${key.slice(0, 120)}" in ${scope.scope} scope — nothing was deleted. Use the recall tool first if you are unsure of the exact key.`;
+  }
+  return `Forgot [${scope.scope}] "${deleted.key}" (stored ${deleted.createdAt.toISOString()}, last updated ${deleted.updatedAt.toISOString()}). It will no longer be recalled or injected into future sessions.`;
+}
+
+const rememberTool: AgentTool = {
+  name: "remember",
+  scope: "any",
+  // Stateful (like workspace_write): a retried remember must re-execute —
+  // serving a cached "Remembered…" would hide whether the memory really
+  // exists, and re-remembering an existing key is an UPDATE by design.
+  dedup: false,
+  description:
+    "Store a durable fact in your cross-session memory so later conversations can use it: preferences the user states, verified conclusions about the current target, environment facts, decisions. The memory survives after this chat ends. Args: key (short stable label), value (self-contained fact — a later session sees ONLY this text), scope: \"target\" (default when a target is attached — recalled only in chats on this target) or \"global\" (recalled in every chat of this user, including free chats). Re-remembering an existing key UPDATES its value.",
+  args: {
+    type: "object",
+    properties: {
+      key: {
+        type: "string",
+        description: `Short stable label, max ${MEMORY_MAX_KEY_CHARS} chars (e.g. "elf-packer-hypothesis", "user-prefers-brief-answers").`,
+      },
+      value: {
+        type: "string",
+        description: `The fact itself, self-contained and distilled (max ${MEMORY_MAX_VALUE_CHARS} chars). Write it so a future session with NO context from this conversation understands it.`,
+      },
+      scope: {
+        type: "string",
+        enum: ["target", "global"],
+        description:
+          '"target" (default with a target attached) or "global" (available everywhere incl. free chats).',
+      },
+    },
+    required: ["key", "value"],
+    additionalProperties: false,
+  },
+  async run(args, ctx) {
+    return runRememberTool(args, { userId: ctx.userId, target: ctx.target });
+  },
+};
+
+const recallTool: AgentTool = {
+  name: "recall",
+  scope: "any",
+  // Memories change between and within turns (remember/forget) — a cached
+  // recall could serve stale results after an identical earlier query.
+  dedup: false,
+  description:
+    "Search your cross-session memory for previously stored facts. Full-text over memory keys and values; target-scope memories (this target) are searched first, then global ones. Returns the top 10 matches with scope, key, value and update time. Use it when the injected [RELEVANT MEMORIES FROM PAST SESSIONS] section is missing something you suspect was stored before.",
+  args: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: 'What to search for — words or phrases (e.g. "packer hypothesis", "output style").',
+      },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  },
+  async run(args, ctx) {
+    return runRecallTool(args, { userId: ctx.userId, target: ctx.target });
+  },
+};
+
+const forgetTool: AgentTool = {
+  name: "forget",
+  scope: "any",
+  // Stateful deletion — a retry must re-execute (the second call honestly
+  // reports "nothing was deleted" instead of replaying the first success).
+  dedup: false,
+  description:
+    'Delete one stored memory by its exact key. Args: key (the exact label — copy it from recall output), scope: "target" (default with a target attached) or "global". Use when a stored fact is wrong or superseded (re-remember with the corrected value is often better — it keeps the history).',
+  args: {
+    type: "object",
+    properties: {
+      key: {
+        type: "string",
+        description: "Exact key of the memory to delete (see the recall output).",
+      },
+      scope: {
+        type: "string",
+        enum: ["target", "global"],
+        description:
+          '"target" (default with a target attached) or "global" — must match the scope the memory was stored under.',
+      },
+    },
+    required: ["key"],
+    additionalProperties: false,
+  },
+  async run(args, ctx) {
+    return runForgetTool(args, { userId: ctx.userId, target: ctx.target });
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -1572,6 +1791,9 @@ export const AGENT_TOOLS: AgentTool[] = [
   workspaceResetTool,
   workspaceVerifyTool,
   spawnSubagentTool,
+  rememberTool,
+  recallTool,
+  forgetTool,
 ];
 
 /**
@@ -1621,16 +1843,26 @@ export function nativeToolSchemas(scope: "target" | "free"): ToolSchema[] {
 
 /**
  * Dispatch an "any"-scoped tool by name for the FREE-chat loop (no target
- * context exists there, so target-scoped tools never reach this).
+ * context exists there, so target-scoped tools never reach this). Memory
+ * tools run against the session user with target: null — global scope only.
  */
 export async function runFreeChatTool(
   name: string,
   args: Record<string, unknown>,
-  session: { sessionId: string }
+  session: { sessionId: string; userId: string }
 ): Promise<string> {
   if (name === "update_plan") return applyPlanUpdate(args ?? {});
   if (name === "explore_url") return runExploreUrlTool(args ?? {});
   if (name === "web_research") return runWebResearchTool(args ?? {});
+  if (name === "remember") {
+    return runRememberTool(args ?? {}, { userId: session.userId, target: null });
+  }
+  if (name === "recall") {
+    return runRecallTool(args ?? {}, { userId: session.userId, target: null });
+  }
+  if (name === "forget") {
+    return runForgetTool(args ?? {}, { userId: session.userId, target: null });
+  }
   if ((WORKSPACE_TOOL_NAMES as readonly string[]).includes(name) || name === "workspace_verify") {
     return runWorkspaceTool(name, args ?? {}, session);
   }
