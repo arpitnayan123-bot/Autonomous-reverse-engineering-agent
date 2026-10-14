@@ -420,6 +420,11 @@ export function ChatWorkspace({
 
     const controller = new AbortController();
     abortRef.current = controller;
+    // Identity anchors for detached-turn recovery: the persisted user row
+    // (via user_saved) uniquely locates this turn's assistant answer in
+    // history, even when the session was created by this very turn.
+    let turnUserRowId: string | null = null;
+    let turnSessionId: string | null = sessionId;
 
     const applyAssistant = (fn: (e: ChatEntry) => ChatEntry) =>
       setEntries((prev) => prev.map((e) => (e.id === assistantEntry.id ? fn(e) : e)));
@@ -429,6 +434,7 @@ export function ChatWorkspace({
         case "session_saved": {
           // Pin the sidebar + future turns to the freshly created session
           // WITHOUT aborting the stream that created it.
+          turnSessionId = ev.sessionId;
           if (!sessionId) {
             skipHistoryLoadRef.current = true;
             setActiveSessionId(ev.sessionId);
@@ -452,6 +458,7 @@ export function ChatWorkspace({
         case "user_saved":
           // Swap the optimistic local id for the persisted one so an
           // immediate edit-and-resend addresses a real server row.
+          turnUserRowId = ev.messageId;
           if (opts.localUserId) {
             const localId = opts.localUserId;
             setEntries((prev) =>
@@ -565,9 +572,43 @@ export function ChatWorkspace({
     } catch (err) {
       if (!controller.signal.aborted) {
         const msg = err instanceof Error ? err.message : "Chat failed";
-        setChatMood("idle");
-        applyAssistant((e) => ({ ...e, error: msg }));
-        toastError(err, "Chat failed");
+        if (msg.startsWith(PREMATURE_CLOSE_PREFIX) && turnSessionId && turnUserRowId) {
+          // The SSE connection was cut (proxy / network) but the server keeps
+          // running the turn detached and persists the result — recover it
+          // from history instead of stranding a half answer.
+          await recoverDetachedTurn(turnSessionId, turnUserRowId, applyAssistant);
+        } else {
+          setChatMood("idle");
+          applyAssistant((e) => ({ ...e, error: msg }));
+          toastError(err, "Chat failed");
+        }
+      } else {
+        // Local abort (Stop button / navigation). The server-side turn was
+        // asked to stop via /api/chat/stop; render what actually persisted
+        // (usually the interrupted-turn note + preserved tool trace).
+        const sid = turnSessionId;
+        const uid = turnUserRowId;
+        if (sid && uid) {
+          void (async () => {
+            await new Promise((r) => setTimeout(r, 1500));
+            try {
+              const { messages } = await getChatSession(sid);
+              const idx = messages.findIndex((m) => m.id === uid);
+              if (idx >= 0 && messages[idx + 1]?.role === "assistant") {
+                const row = rowToEntry(messages[idx + 1]);
+                applyAssistant((e) => ({
+                  ...e,
+                  id: row.id,
+                  content: row.content,
+                  trace: row.trace,
+                  error: undefined,
+                }));
+              }
+            } catch {
+              /* history hiccup — the locally-aborted transcript stands */
+            }
+          })();
+        }
       }
     } finally {
       setStreaming(false);
@@ -730,6 +771,17 @@ export function ChatWorkspace({
   const stop = () => {
     abortRef.current?.abort();
     setStreaming(false);
+    // Transport decoupling: the turn outlives its viewer, so cancellation is
+    // an EXPLICIT server-side action. Fire-and-forget; the endpoint is
+    // idempotent and honest (stopped:false when the turn already ended).
+    const sid = useReaStore.getState().activeSessionId;
+    if (sid) {
+      void fetch("/api/chat/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sid }),
+      }).catch(() => undefined);
+    }
   };
 
   const onComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1243,6 +1295,61 @@ function rowToEntry(m: ChatMessageRow): ChatEntry {
     modelId: m.modelId ?? null,
     createdAt: m.createdAt,
   };
+}
+
+/** streamChat's marker for an SSE connection cut before the terminal frame. */
+const PREMATURE_CLOSE_PREFIX = "The connection dropped before the model finished";
+
+/**
+ * Recover a turn whose SSE viewer was cut mid-stream (external proxies sever
+ * long responses). The server no longer cancels the turn on viewer loss — it
+ * finishes detached and persists normally — so the client polls history for
+ * the assistant row that follows this turn's user row and renders it when it
+ * lands (full content + tool trace + usage via rowToEntry).
+ */
+async function recoverDetachedTurn(
+  sessionId: string,
+  userRowId: string,
+  apply: (fn: (e: ChatEntry) => ChatEntry) => void
+): Promise<boolean> {
+  apply((e) => ({
+    ...e,
+    error:
+      "Connection interrupted — the model is still finishing this turn server-side. Recovering the answer…",
+  }));
+  // 90 × 5s = 7.5 min of patient recovery (the server's own turn safety
+  // deadline is 10 min; past this window the fallback message points at
+  // history, where the result lands regardless).
+  for (let i = 0; i < 90; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    try {
+      const { messages } = await getChatSession(sessionId);
+      const idx = messages.findIndex((m) => m.id === userRowId);
+      if (idx >= 0 && messages[idx + 1]?.role === "assistant") {
+        const recovered = rowToEntry(messages[idx + 1]);
+        apply((e) => ({
+          ...e,
+          id: recovered.id,
+          content: recovered.content,
+          trace: recovered.trace,
+          tokensIn: recovered.tokensIn,
+          tokensOut: recovered.tokensOut,
+          durationMs: recovered.durationMs,
+          modelId: recovered.modelId,
+          error: undefined,
+        }));
+        return true;
+      }
+    } catch {
+      // Transient network/auth hiccup — keep polling within the budget.
+    }
+  }
+  apply((e) => ({
+    ...e,
+    error:
+      "The connection dropped and the answer did not appear within the recovery window. The server still finishes the turn and saves it — reload this chat shortly to see the result.",
+  }));
+  return false;
 }
 
 function MessageRow({
