@@ -24,16 +24,19 @@ import {
   freeChatRedirectNotice,
   callTurn,
   isTransientLlmError,
+  formatInterruptedTurnContent,
 } from "@/server/agent/agent";
 import {
   AGENT_TOOLS,
   executeAgentTool,
   applyPlanUpdate,
   runExploreUrlTool,
+  toolDedupKey,
 } from "@/server/agent/tools";
 import { freeChatSystemPrompt, systemPrompt } from "@/server/agent/prompts";
 import { BlockedUrlError } from "@/server/platform/net";
 import { consumeModelStream, TurnAbortedError } from "@/server/agent/platform-llm";
+import { readProviderSse } from "@/server/agent/providers";
 import type { ResolvedLlm } from "@/server/agent/providers";
 import type { Target } from "@prisma/client";
 
@@ -516,6 +519,131 @@ async function main(): Promise<void> {
     "D8  stall error classified transient for automatic recovery",
     isTransientLlmError(new Error("Platform model stream stalled (no data for 45s) — connection timed out")),
     ""
+  );
+
+  // E. Retry dedup + interrupted-turn preservation + BYOK watchdog
+
+  const dedupCtx = (sid: string) => ({
+    target: {} as Target,
+    userId: "regression",
+    sessionId: sid,
+  });
+  const planArgs = {
+    tasks: [
+      { title: "Fetch", status: "in_progress" },
+      { title: "Report", status: "pending" },
+    ],
+  };
+
+  const first = await executeAgentTool("update_plan", planArgs, dedupCtx("sess-e1"));
+  const second = await executeAgentTool("update_plan", planArgs, dedupCtx("sess-e1"));
+  check(
+    "E1  identical retry returns the PRIOR result, not a re-execution",
+    !first.includes("NOT re-executed") &&
+      second.startsWith(first.split("\n")[0]) &&
+      second.includes("NOT re-executed"),
+    second.slice(-90)
+  );
+
+  const changed = await executeAgentTool("update_plan", { tasks: [{ title: "Other", status: "done" }, { title: "X", status: "pending" }] }, dedupCtx("sess-e1"));
+  check(
+    "E2  changed args execute fresh (no dedup marker)",
+    changed.includes("Plan updated") && !changed.includes("NOT re-executed"),
+    changed.slice(0, 60)
+  );
+
+  const otherSession = await executeAgentTool("update_plan", planArgs, dedupCtx("sess-e3"));
+  check(
+    "E3  dedup is session-scoped (same args, other session → fresh)",
+    otherSession.includes("Plan updated") && !otherSession.includes("NOT re-executed"),
+    ""
+  );
+
+  const errA = await executeAgentTool("rea_tool", { tool: "not_allowlisted_e4" }, dedupCtx("sess-e4"));
+  const errB = await executeAgentTool("rea_tool", { tool: "not_allowlisted_e4" }, dedupCtx("sess-e4"));
+  check(
+    "E4  failures are never cached (transient errors stay retryable)",
+    errA.startsWith("Error:") && errB.startsWith("Error:") && !errB.includes("NOT re-executed"),
+    ""
+  );
+
+  check(
+    "E5  dedup key is argument-order independent",
+    toolDedupKey("s", "explore_url", { url: "https://example.com", include_text: true }) ===
+      toolDedupKey("s", "explore_url", { include_text: true, url: "https://example.com" }),
+    ""
+  );
+
+  const noteOnly = formatInterruptedTurnContent(undefined, new Error("Platform model stream stalled (no data for 45s)"));
+  check(
+    "E6  interrupted turn with no visible text → note only, honest reason",
+    noteOnly.includes("Turn interrupted before completion") &&
+      noteOnly.includes("stream stalled") &&
+      noteOnly.includes("retry reuses their results"),
+    noteOnly.slice(0, 90)
+  );
+
+  const withProse = formatInterruptedTurnContent("Partial findings: header at 0x0.", new Error("fetch failed"));
+  check(
+    "E7  interrupted turn preserves completed visible text",
+    withProse.startsWith("Partial findings: header at 0x0.") && withProse.includes("Turn interrupted"),
+    ""
+  );
+
+  const withToolBlock = formatInterruptedTurnContent(
+    '```tool\n{"tool":"rea_tool","args":{}}\n```',
+    new Error("socket hang up")
+  );
+  check(
+    "E8  raw tool-block text is NOT surfaced as visible work",
+    !withToolBlock.includes("```tool") && withToolBlock.includes("Turn interrupted"),
+    ""
+  );
+
+  // readProviderSse — the shared BYOK SSE reader (OpenAI/Anthropic/Gemini).
+  function fakeSseResponse(chunks: string[], stall = false): Response {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const enc = new TextEncoder();
+        for (const c of chunks) controller.enqueue(enc.encode(c));
+        if (stall) return; // hold the stream open forever, never close
+        controller.close();
+      },
+    });
+    return new Response(stream);
+  }
+
+  const seen: string[] = [];
+  let stallErr: Error | null = null;
+  const t0 = Date.now();
+  try {
+    await readProviderSse(fakeSseResponse([`data: {"a":1}\n\n`], true), (d) => seen.push(d), {
+      idleTimeoutMs: 400,
+    });
+  } catch (err) {
+    stallErr = err instanceof Error ? err : null;
+  }
+  check(
+    "E9  BYOK provider stream stall → prompt retryable error (was: silent hang)",
+    stallErr !== null &&
+      /stalled.*timed out/i.test(stallErr.message) &&
+      isTransientLlmError(stallErr) &&
+      Date.now() - t0 < 3000,
+    `${stallErr?.message ?? "no error"} | frames=${seen.length}`
+  );
+
+  const cleanSeen: string[] = [];
+  await readProviderSse(
+    fakeSseResponse([
+      `data: {"choices":[{"delta":{"content":"A"}}]}\n\n`,
+      `data: [DONE]\n\n`,
+    ]),
+    (d) => cleanSeen.push(d)
+  );
+  check(
+    "E10 clean BYOK stream parses frames and terminates",
+    cleanSeen.length === 2 && cleanSeen[1] === "[DONE]",
+    cleanSeen.join("|").slice(0, 60)
   );
 
   // ---------------------------------------------------------------------
