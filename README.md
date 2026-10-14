@@ -174,6 +174,26 @@ Point your MCP client at `bun scripts/mcp-server.ts` with
 - **Analysis** — engine and host tools run in child processes with timeouts, SIGKILL and output caps.
 - **Isolation** — audit/threat views are scoped to the requesting user; heavy endpoints are rate-limited; an append-only audit log records security events.
 - **Secrets** — never hardcoded: environment → persisted secret file (0600) → generated at first boot. User databases and uploads are runtime data and are **never** part of the repository history.
+- **Command sandboxing** — every workspace command runs without a shell, from a strict allowlist, with a hard timeout, output caps and a scrubbed environment. Where that code *executes* is your choice (Security tab → **Command sandbox**):
+
+  | Mode | Behaviour |
+  |---|---|
+  | `auto` *(default)* | Docker container sandbox when a daemon is reachable, process-level jail otherwise. |
+  | `process` | Always the process-level jail (allowlist, no shell, workspace cwd, scrubbed env). |
+  | `docker` | Always the container sandbox; commands are **refused honestly** (`Docker sandbox requested but not available`) when no daemon answers — never silently downgraded. |
+
+  Container runs get: `--network none`, a **read-only rootfs**, a writable `tmpfs /tmp`, **512 MB memory**, **1 CPU**, and the workspace bind-mounted read-write at `/workspace` (`--rm` removes the container after every run). The command argv is passed exec-form (no shell on either side), and every tool result reports the context that actually ran — `executed in Docker sandbox` vs `executed in process sandbox`. The command **allowlist and chat guards apply identically in every mode**: the sandbox decides *where* code runs, never *what* may run.
+
+  **`REA_SANDBOX_IMAGE` — image allowlist contract.** The container image defaults to `node:20-alpine` and can be overridden with the `REA_SANDBOX_IMAGE` environment variable. **The image must contain the binaries builder's allowlist admits** (`node`, `python3`, `git`, `gcc`, …). `node:20-alpine` ships node/npm and the busybox userland (`ls`, `cat`, `grep`, `find`, `tar`, …) but **not** `python3`/`gcc`/`git` — allowlisted commands missing from the image fail inside the container with an honest exit-127 stderr. For the full allowlist, build an image that installs those binaries, e.g.:
+
+  ```dockerfile
+  FROM node:20-alpine
+  RUN apk add --no-cache python3 py3-pip gcc g++ make musl-dev git
+  ```
+
+  ```bash
+  REA_SANDBOX_IMAGE=my-rea-sandbox:latest bun run dev
+  ```
 
 ## ⌨️ Keyboard
 

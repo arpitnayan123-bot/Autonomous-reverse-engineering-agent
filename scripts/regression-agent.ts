@@ -43,6 +43,7 @@ import {
 } from "@/server/agent/tools";
 import {
   CHAT_WORKSPACE_QUOTA_BYTES,
+  ensureWorkspace,
   runCommand,
   workspaceDiskUsage,
   writeFile as builderWriteFile,
@@ -1514,13 +1515,24 @@ async function main(): Promise<void> {
     `files=${i20Usage.files} bytes=${i20Usage.bytes}`
   );
 
-  // I21-I23: quota enforcement logic at the builder level — a tiny quota makes
-  // the tests fast and deterministic. Overwrite accounting credits the bytes a
-  // file replaces; crossing the quota refuses with NOTHING written.
+  // I21-I23: quota enforcement logic at the builder level — a small headroom
+  // over the workspace's BASE usage makes the tests fast and deterministic.
+  // (A fresh workspace carries a built-in .git repository — ~27 KB, 29 files —
+  // which counts toward the quota walk, so the headroom must be measured
+  // relative to that base instead of hard-coded.) Overwrite accounting
+  // credits the bytes a file replaces; crossing the quota refuses with
+  // NOTHING written.
   const iQuotaDir = "reg-i-quota";
+  // Deterministic re-runs: an aborted earlier run can leave this workspace
+  // (its .git alone counts toward the quota walk) — start clean every time.
+  await fs.rm(path.join(process.cwd(), "storage", "workspaces", iQuotaDir), { recursive: true, force: true });
+  await ensureWorkspace(iQuotaDir); // fixed base: init + identity + .gitignore commit
+  const iQuotaBase = (await workspaceDiskUsage(iQuotaDir)).bytes; // .git included
+  const iQuotaHeadroom = 10_000;
+  const iQuota = iQuotaBase + iQuotaHeadroom;
   let i21Err = "";
   try {
-    await builderWriteFile(iQuotaDir, "big.txt", "x".repeat(20_000), { audit: false, quotaBytes: 10_000 });
+    await builderWriteFile(iQuotaDir, "big.txt", "x".repeat(20_000), { audit: false, quotaBytes: iQuota });
   } catch (err) {
     i21Err = err instanceof Error ? err.message : String(err);
   }
@@ -1534,27 +1546,27 @@ async function main(): Promise<void> {
     i21Err.slice(0, 120)
   );
 
-  await builderWriteFile(iQuotaDir, "acc.txt", "a".repeat(4_000), { audit: false, quotaBytes: 10_000 });
+  await builderWriteFile(iQuotaDir, "acc.txt", "a".repeat(4_000), { audit: false, quotaBytes: iQuota });
   let i22Err = "";
   try {
-    await builderWriteFile(iQuotaDir, "acc.txt", "b".repeat(9_000), { audit: false, quotaBytes: 10_000 });
+    await builderWriteFile(iQuotaDir, "acc.txt", "b".repeat(9_000), { audit: false, quotaBytes: iQuota });
   } catch (err) {
     i22Err = err instanceof Error ? err.message : String(err);
   }
   check(
-    "I22 overwrite credits the replaced bytes (4 KB -> 9 KB fits a 10 KB quota)",
+    "I22 overwrite credits the replaced bytes (4 KB -> 9 KB fits the 10 KB headroom)",
     i22Err === "",
     i22Err.slice(0, 120)
   );
 
   let i23Err = "";
   try {
-    await builderWriteFile(iQuotaDir, "other.txt", "c".repeat(4_000), { audit: false, quotaBytes: 10_000 });
+    await builderWriteFile(iQuotaDir, "other.txt", "c".repeat(4_000), { audit: false, quotaBytes: iQuota });
   } catch (err) {
     i23Err = err instanceof Error ? err.message : String(err);
   }
   check(
-    "I23 write that would cross the quota (9 KB + 4 KB > 10 KB) is refused",
+    "I23 write that would cross the quota (9 KB + 4 KB > 10 KB headroom) is refused",
     i23Err.includes("quota") && i23Err.includes("NOTHING was written"),
     i23Err.slice(0, 120)
   );
