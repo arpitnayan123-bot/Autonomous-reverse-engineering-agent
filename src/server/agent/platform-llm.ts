@@ -205,6 +205,26 @@ export type PlatformMessage =
   | LlmMessage
   | { role: "system"; content: string };
 
+/** The z-ai SDK chat API accepts these roles only. */
+type PlatformChatMessage = { role: "user" | "assistant" | "system"; content: string };
+
+/**
+ * Normalize loop messages for the platform SDK. The platform fallback NEVER
+ * runs the native tool path (resolveLlmForUser sets no supportsNativeTools),
+ * so role:"tool" and assistant toolCalls must not occur here; if a future
+ * caller sends one anyway it degrades into an explicitly labeled user
+ * message instead of an opaque SDK type rejection — nothing is dropped.
+ */
+function toPlatformMessages(messages: PlatformMessage[]): PlatformChatMessage[] {
+  return messages.map((m) => {
+    if (m.role === "user" || m.role === "assistant" || m.role === "system") {
+      return { role: m.role, content: m.content };
+    }
+    const callId = "toolCallId" in m && m.toolCallId ? ` (call ${m.toolCallId})` : "";
+    return { role: "user", content: `TOOL RESULT${callId}:\n${m.content}` };
+  });
+}
+
 export async function zaiPlatformChat(
   messages: PlatformMessage[],
   opts?: CallOpts
@@ -216,7 +236,7 @@ export async function zaiPlatformChat(
       const zai = await getZai();
       const completion = await withTimeoutAndAbort(
         zai.chat.completions.create({
-          messages,
+          messages: toPlatformMessages(messages),
           thinking: { type: "disabled" },
         }) as Promise<
           { choices?: Array<{ message?: { content?: string } }> } & {
@@ -271,7 +291,7 @@ export async function zaiPlatformChatStream(
       const zai = await getZai();
       const result = await withTimeoutAndAbort(
         zai.chat.completions.create({
-          messages,
+          messages: toPlatformMessages(messages),
           thinking: { type: "disabled" },
           stream: true,
         }) as Promise<unknown>,
