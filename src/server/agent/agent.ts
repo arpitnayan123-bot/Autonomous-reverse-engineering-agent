@@ -420,7 +420,8 @@ function llmModelId(llm: ResolvedLlm): string {
  * before; the final content always replaces the client draft, so recovery
  * stays consistent. Cancellation is honored at every step and never retried.
  */
-async function callTurn(
+/** Exported for the tool-execution/stream-reliability regression suite. */
+export async function callTurn(
   llm: ResolvedLlm,
   messages: LlmMessage[],
   turn: number,

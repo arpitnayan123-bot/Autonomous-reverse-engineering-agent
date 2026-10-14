@@ -13,6 +13,14 @@ const globalForZai = globalThis as unknown as { __reaZai?: ZaiClient };
  * the SSE turn (and the billable stream) forever. */
 const PLATFORM_CALL_TIMEOUT_MS = 120_000;
 
+/** Maximum silence between stream chunks. A provider stream that sends
+ * headers + a few tokens and then stalls keeps the socket open forever;
+ * without this watchdog the turn hangs silently and an intermediary proxy
+ * eventually cuts the client's SSE connection ("lost contact mid-answer").
+ * A TOTAL timeout would kill legitimately long answers — this is an IDLE
+ * timeout: any chunk resets it. */
+export const STREAM_IDLE_TIMEOUT_MS = 45_000;
+
 /**
  * The SDK bakes the Bearer key from /etc/.z-ai-config into the client at
  * ZAI.create(). The platform ROTATES that key file — a client cached forever
@@ -51,6 +59,100 @@ export class TurnAbortedError extends Error {
     super("Turn cancelled");
     this.name = "TurnAbortedError";
   }
+}
+
+/**
+ * Consume a raw model stream (async-iterable of SSE strings / bytes / parsed
+ * chunks) into deltas — with the protections the bare `for await` lacked:
+ * an IDLE-stall watchdog (no chunk for idleTimeoutMs → close the iterator and
+ * throw a retryable stall error) and prompt abort handling even while the
+ * stream is silent (a bare per-chunk aborted check never fires during a
+ * stall). Aborting is never retried; a stall is (callTurn treats it as
+ * transient and the platform fallback regenerates the full answer).
+ */
+export async function consumeModelStream(
+  result: unknown,
+  onDelta: DeltaSink,
+  opts?: { signal?: AbortSignal; idleTimeoutMs?: number; onUsage?: (u: TokenUsage) => void }
+): Promise<string> {
+  const idleTimeoutMs = opts?.idleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS;
+  const usageRef: { value: TokenUsage | null } = { value: null };
+  if (
+    !result ||
+    typeof (result as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] !== "function"
+  ) {
+    throw new Error("Model stream is not an async iterable");
+  }
+  const iterator = (result as AsyncIterable<unknown>)[Symbol.asyncIterator]();
+  const parser = new SseDeltaParser(onDelta, (u) => {
+    usageRef.value = u;
+  });
+  const decoder = new TextDecoder();
+
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
+  const clearWatchdog = () => {
+    if (watchdog) clearTimeout(watchdog);
+    watchdog = null;
+  };
+
+  /**
+   * Race `iterator.next()` against the idle deadline and the abort signal.
+   * This is the core fix: a stalled upstream stream leaves `next()` pending
+   * forever, and closing the iterator does NOT unblock it — only racing it
+   * out guarantees the turn ends promptly with a retryable error instead of
+   * hanging silently until some proxy cuts the client's connection.
+   */
+  const nextWithWatchdog = (): Promise<IteratorResult<unknown>> =>
+    new Promise<IteratorResult<unknown>>((resolve, reject) => {
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearWatchdog();
+        opts?.signal?.removeEventListener("abort", onAbort);
+        fn();
+      };
+      const onAbort = () => finish(() => reject(new TurnAbortedError()));
+      opts?.signal?.addEventListener("abort", onAbort, { once: true });
+      watchdog = setTimeout(
+        () =>
+          finish(() =>
+            reject(
+              new Error(
+                `Platform model stream stalled (no data for ${Math.round(idleTimeoutMs / 1000)}s) — connection timed out`
+              )
+            )
+          ),
+        idleTimeoutMs
+      );
+      iterator.next().then(
+        (v) => finish(() => resolve(v)),
+        (e) => finish(() => reject(e instanceof Error ? e : new Error(String(e))))
+      );
+    });
+
+  try {
+    for (;;) {
+      if (opts?.signal?.aborted) throw new TurnAbortedError();
+      const next = await nextWithWatchdog();
+      if (next.done) break;
+      const chunk = next.value;
+      if (typeof chunk === "string") parser.push(chunk);
+      else if (chunk instanceof Uint8Array) parser.push(decoder.decode(chunk, { stream: true }));
+      else parser.pushChunkObject(chunk);
+    }
+    parser.flush();
+  } finally {
+    clearWatchdog();
+    try {
+      // Tell the upstream SDK to release the underlying connection.
+      void iterator.return?.(undefined);
+    } catch {
+      /* already closed */
+    }
+  }
+  if (usageRef.value && opts?.onUsage) opts.onUsage(usageRef.value);
+  return parser.full;
 }
 
 /**
@@ -173,28 +275,19 @@ export async function zaiPlatformChatStream(
         PLATFORM_CALL_TIMEOUT_MS
       );
 
-      // Async-iterable stream path (raw SSE bytes, strings, or parsed chunks).
-      if (
-        result &&
+      // Async-iterable stream path (raw SSE bytes, strings, or parsed chunks)
+      // consumed through the stall/abort-watched helper.
+      const iterable =
+        !!result &&
         typeof (result as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] ===
-          "function"
-      ) {
-        const parser = new SseDeltaParser(onDelta, (u) => {
-          usageRef.value = u;
+          "function";
+      if (iterable) {
+        const full = await consumeModelStream(result, onDelta, {
+          signal: opts?.signal,
+          onUsage: (u) => {
+            usageRef.value = u;
+          },
         });
-        const decoder = new TextDecoder();
-        for await (const chunk of result as AsyncIterable<unknown>) {
-          if (opts?.signal?.aborted) throw new TurnAbortedError();
-          if (typeof chunk === "string") {
-            parser.push(chunk);
-          } else if (chunk instanceof Uint8Array) {
-            parser.push(decoder.decode(chunk, { stream: true }));
-          } else {
-            parser.pushChunkObject(chunk);
-          }
-        }
-        parser.flush();
-        const full = parser.full;
         if (full.trim()) {
           if (usageRef.value) opts?.onUsage?.(usageRef.value);
           return full;
