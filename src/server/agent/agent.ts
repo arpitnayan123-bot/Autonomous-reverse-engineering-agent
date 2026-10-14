@@ -14,6 +14,8 @@ import {
   type AgentToolContext,
 } from "./tools";
 import {
+  estimateTokens,
+  getContextWindowSize,
   resolveLlmForUser,
   type LlmMessage,
   type LlmToolCall,
@@ -93,6 +95,12 @@ export interface AgentLoopResult {
    * history keeps the true per-turn model even after the provider changes.
    */
   modelId: string;
+  /**
+   * How many times context compaction ran during this turn (0 = the
+   * transcript stayed under the compaction threshold). Persisted per row and
+   * surfaced in the transcript meta ("context compacted N times").
+   */
+  compactionCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +397,184 @@ export function finalizeTurnContent(
 }
 
 // ---------------------------------------------------------------------------
+// Context window management — compaction between iterations
+// ---------------------------------------------------------------------------
+
+/** Compaction fires when estimated tokens exceed this share of the window. */
+export const COMPACTION_THRESHOLD_RATIO = 0.8;
+/** Messages kept verbatim at the tail across a compaction. */
+export const COMPACTION_KEEP_LAST = 6;
+/** Verbatim instruction the summarizer call receives. */
+export const COMPACTION_PROMPT =
+  "Summarize this investigation transcript into a structured state document: target info, tools used, key findings (with evidence grades), dead ends, current hypothesis, and next steps. Be terse.";
+/** The injected state message is labeled with this exact marker. */
+export const COMPACTION_LABEL = "[COMPACTED INVESTIGATION STATE]";
+/** Per-message char cap when flattening the transcript for the summarizer. */
+const COMPACTION_MSG_CAP = 2_000;
+/** Overall char budget for the summarizer input — keeps the compaction call
+ * itself inside the window it is trying to save. */
+const COMPACTION_SUMMARY_CHAR_BUDGET = 60_000;
+/** Cross-turn receipt blocks (toolReceiptSuffix) are recognized by this prefix. */
+const RECEIPT_MARKER_PREFIX = "[SYSTEM receipt — real tool outcomes";
+/** Prior state documents are recognized by their label + tool-summary header,
+ * so repeated compactions carry the receipt section forward. */
+const TOOL_SUMMARY_HEADER = "### Tool execution summary";
+
+/** Collapse whitespace and cap a string for summary/transcript use. */
+function capLine(s: string, n: number): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > n ? `${flat.slice(0, n)}…` : flat;
+}
+
+/**
+ * Protocol-safe compaction boundary. The middle [from, to) is replaced by the
+ * state document; [to, end) stays verbatim. `from` is always 1 (everything
+ * between the system prompt and the tail compacts); `to` = length - keepLast
+ * UNLESS the kept tail would START on a role:"tool" message — an answer
+ * orphaned from its assistant tool_calls message would make the next native
+ * request protocol-invalid (OpenAI requires a tool_calls assistant before
+ * every tool answer; Anthropic tool_result blocks reference their tool_use).
+ * In that case the tail extends LEFT over the whole answer group (assistant
+ * tool_calls + every role:"tool" answer), keeping more than keepLast messages
+ * to preserve protocol validity — "keep the last 6" is a minimum, not a max.
+ * Returns null when there is nothing between the system prompt and the tail.
+ * Exported for the compaction regression suite.
+ */
+export function computeCompactionBoundary(
+  messages: LlmMessage[],
+  keepLast: number
+): { from: number; to: number } | null {
+  let to = messages.length - keepLast;
+  if (to <= 1) return null; // only the system prompt would sit before the tail
+  // Walk the tail start left over any tool-answer group it would orphan.
+  while (to > 1 && messages[to]?.role === "tool") to--;
+  if (to <= 1) return null;
+  return { from: 1, to };
+}
+
+/**
+ * One flat transcript line for the summarizer: roles are labeled, native
+ * tool_calls become readable "requests tool X" notes, and every message is
+ * tightly capped (the middle is large by definition — that is WHY it is being
+ * compacted).
+ */
+function summarizeMessageLine(m: LlmMessage): string {
+  if (m.role === "tool") {
+    return `[TOOL RESULT${m.toolCallId ? ` for call ${m.toolCallId}` : ""}] ${capLine(
+      m.content ?? "",
+      400
+    )}`;
+  }
+  let text = m.content ?? "";
+  if (m.toolCalls?.length) {
+    const calls = m.toolCalls
+      .map(
+        (tc) =>
+          `[requests tool ${tc.name} with ${capLine(JSON.stringify(tc.arguments ?? {}), 200)}]`
+      )
+      .join(" ");
+    text = `${text}\n${calls}`;
+  }
+  return `[${m.role === "assistant" ? "ASSISTANT" : "USER"}] ${capLine(text, COMPACTION_MSG_CAP)}`;
+}
+
+/** Flatten the middle messages into the summarizer's transcript input. */
+function flattenForSummarizer(middle: LlmMessage[]): string {
+  const lines = middle.map(summarizeMessageLine);
+  const joined = lines.join("\n\n");
+  if (joined.length <= COMPACTION_SUMMARY_CHAR_BUDGET) return joined;
+  // Over budget: keep the MOST RECENT middle content and mark the omission
+  // honestly — the summarizer cannot summarize what it never sees.
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const len = lines[i].length + 2;
+    if (used + len > COMPACTION_SUMMARY_CHAR_BUDGET) break;
+    kept.unshift(lines[i]);
+    used += len;
+  }
+  return `[...${lines.length - kept.length} older message(s) omitted from the summarizer input...]\n\n${kept.join(
+    "\n\n"
+  )}`;
+}
+
+/**
+ * Tool executions recorded in the compacted segment, rebuilt into one
+ * summary section that ships inside the state document — after compaction
+ * the model must still see PROOF that tools genuinely ran (three sources:
+ * native role:"tool" results, text-path "TOOL RESULT for" rows, and the
+ * cross-turn receipt blocks appended by toolReceiptSuffix). Exported for
+ * the compaction regression suite.
+ */
+export function extractToolExecutionSummary(middle: LlmMessage[]): string {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  const push = (line: string) => {
+    const key = line.slice(0, 160);
+    if (seen.has(key) || lines.length >= 10) return;
+    seen.add(key);
+    lines.push(line);
+  };
+  for (const m of middle) {
+    if (m.role === "tool") {
+      push(
+        `- tool result${m.toolCallId ? ` (call ${m.toolCallId})` : ""}: ${capLine(
+          m.content ?? "",
+          160
+        )}`
+      );
+      continue;
+    }
+    const content = m.content ?? "";
+    const markerAt = content.indexOf(RECEIPT_MARKER_PREFIX);
+    if (markerAt >= 0) {
+      // toolReceiptSuffix block — already bounded (≤5 tools, 160 chars each);
+      // carry its bullet lines through verbatim.
+      for (const rawLine of content.slice(markerAt).split("\n")) {
+        const line = rawLine.trim();
+        if (line.startsWith("- ")) push(line);
+      }
+      continue;
+    }
+    const stateLabelAt = content.indexOf(COMPACTION_LABEL);
+    if (stateLabelAt >= 0) {
+      // A PREVIOUS state document being compacted again: carry its
+      // tool-execution bullets forward so repeated compactions can never
+      // silently drop the proof that tools ran.
+      const headerAt = content.indexOf(TOOL_SUMMARY_HEADER, stateLabelAt);
+      if (headerAt >= 0) {
+        for (const rawLine of content.slice(headerAt).split("\n")) {
+          const line = rawLine.trim();
+          if (line.startsWith("- ")) push(line);
+        }
+        continue;
+      }
+    }
+    if (m.role === "user" && content.startsWith("TOOL RESULT for")) {
+      push(`- ${capLine(content, 200)}`);
+    }
+  }
+  const header =
+    `${TOOL_SUMMARY_HEADER} (system-preserved receipts)\n` +
+    "The transcript above is a summary; these tool executions GENUINELY ran on the platform earlier in this conversation:";
+  return lines.length
+    ? `${header}\n${lines.join("\n")}`
+    : `${header}\n- (no tool executions recorded in the compacted segment)`;
+}
+
+/** Build the labeled state-document message that replaces the middle. */
+export function buildCompactedStateMessage(
+  summary: string,
+  middle: LlmMessage[]
+): LlmMessage {
+  const body = summary.trim() || "(the summarizer returned no content)";
+  return {
+    role: "user",
+    content: `${COMPACTION_LABEL}\n\n${body}\n\n${extractToolExecutionSummary(middle)}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The loop
 // ---------------------------------------------------------------------------
 
@@ -524,6 +710,64 @@ export async function runAgentLoop(opts: {
   const startedAt = Date.now();
   /** Most recent LLM turn text — used to preserve visible work if we throw. */
   let lastText: string | undefined;
+
+  // --- Context window management (compaction between iterations) ----------
+  let compactionCount = 0;
+  /** Set when a compaction attempt fails — no retry storm; the loop proceeds
+   * un-compacted and a real over-window error surfaces honestly from the
+   * provider on a later call. */
+  let compactionDisabled = false;
+
+  /**
+   * Compaction checkpoint — called ONLY between iterations, after the
+   * iteration's tool traffic is fully appended to `messages`, never while a
+   * tool result is being processed. When the estimated token footprint
+   * crosses 80% of the model's context window, the transcript middle (the
+   * system prompt and the last COMPACTION_KEEP_LAST messages stay verbatim)
+   * is summarized into one labeled state document. Tool receipts survive:
+   * the state document always carries a tool execution summary rebuilt from
+   * the compacted segment. The summarizer call is internal — it NEVER
+   * streams deltas to the client — but its provider-reported usage counts
+   * toward the turn like any other LLM call.
+   */
+  const maybeCompact = async (): Promise<void> => {
+    if (compactionDisabled || callOpts.signal?.aborted) return;
+    const windowSize = getContextWindowSize(llm.provider, llm.model);
+    const budget = Math.floor(windowSize * COMPACTION_THRESHOLD_RATIO);
+    if (estimateTokens(messages) <= budget) return;
+    const boundary = computeCompactionBoundary(messages, COMPACTION_KEEP_LAST);
+    if (!boundary) return; // nothing between the system prompt and the kept tail
+    const middle = messages.slice(boundary.from, boundary.to);
+    if (middle.length === 0) return;
+    try {
+      const summary = await llm.callLLM(
+        [
+          {
+            role: "user",
+            content: `${COMPACTION_PROMPT}\n\n=== INVESTIGATION TRANSCRIPT ===\n${flattenForSummarizer(middle)}`,
+          },
+        ],
+        callOpts
+      );
+      messages.splice(
+        boundary.from,
+        boundary.to - boundary.from,
+        buildCompactedStateMessage(summary, middle)
+      );
+      compactionCount++;
+    } catch (err) {
+      // Honest degradation: compaction is an optimization, not a correctness
+      // requirement — failing it must not kill an investigation that would
+      // otherwise continue. Stop attempting this turn; if the context really
+      // is over the window, the provider's own error surfaces on the next
+      // call and the turn fails with THAT, un-masked.
+      compactionDisabled = true;
+      console.warn(
+        "context compaction failed; continuing without compaction:",
+        err instanceof Error ? err.message : err
+      );
+    }
+  };
 
   /**
    * Shared per-call execution core — the ONLY place a tool intent (a parsed
@@ -709,6 +953,9 @@ export async function runAgentLoop(opts: {
         }
       }
       if (halted) break; // evidence cannot change — synthesis turn follows
+      // Between-iterations compaction checkpoint (all tool traffic for this
+      // iteration is already in `messages`).
+      await maybeCompact();
       continue;
     }
 
@@ -779,6 +1026,10 @@ export async function runAgentLoop(opts: {
       }
       messages.push({ role: "user", content: `SYSTEM: ${parts.join(" ")}` });
     }
+
+    // Between-iterations compaction checkpoint (all tool traffic for this
+    // iteration is already in `messages`).
+    await maybeCompact();
   }
 
   if (final === null) {
@@ -834,6 +1085,7 @@ export async function runAgentLoop(opts: {
           tokensOut: usage.tokensOut,
           durationMs: Date.now() - startedAt,
           modelId: llmModelId(llm),
+          compactions: compactionCount,
         },
       });
     } catch {
@@ -861,13 +1113,21 @@ export async function runAgentLoop(opts: {
         tokensOut: usage.tokensOut,
         durationMs,
         modelId: llmModelId(llm),
+        compactions: compactionCount,
       },
     });
   } catch {
     /* persistence failure must not break the stream */
   }
 
-  return { content: final, toolCalls: toolTrace, usage, durationMs, modelId: llmModelId(llm) };
+  return {
+    content: final,
+    toolCalls: toolTrace,
+    usage,
+    durationMs,
+    modelId: llmModelId(llm),
+    compactionCount,
+  };
 }
 
 /** Canonical per-turn model id: "openai/gpt-4o-mini" (BYOK) or "glm-platform". */
