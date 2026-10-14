@@ -20,7 +20,24 @@ import { TurnAbortedError } from "./platform-llm";
 /** Hard cap for one turn regardless of viewer state (safety, not UX). */
 export const TURN_SAFETY_DEADLINE_MS = 10 * 60_000;
 
-export const activeTurns: Map<string, TurnControl> = new Map();
+/**
+ * The turn registry MUST survive module re-evaluation. Next.js dev (HMR /
+ * on-demand route compilation) can evaluate turn-control.ts once per route
+ * bundle, so a module-level Map let /api/chat/stop look up a FRESH empty map
+ * while the turn lived in the chat route's instance — Stop silently no-opped
+ * (stopped:false) and the server kept generating for minutes after the user
+ * cancelled (reproduced live: a "stopped" essay turn ran another 3.5 min and
+ * persisted as complete). Backing the map with globalThis — the same pattern
+ * as the Prisma client singleton in lib/db.ts — makes the registry a process
+ * singleton in every module instance; behavior in production (single
+ * instance anyway) is unchanged.
+ */
+const GLOBAL_TURNS_KEY = Symbol.for("rea.activeTurns");
+
+const globalScope = globalThis as unknown as { [GLOBAL_TURNS_KEY]?: Map<string, TurnControl> };
+
+export const activeTurns: Map<string, TurnControl> =
+  globalScope[GLOBAL_TURNS_KEY] ?? (globalScope[GLOBAL_TURNS_KEY] = new Map());
 
 export class TurnControl {
   private controller = new AbortController();
