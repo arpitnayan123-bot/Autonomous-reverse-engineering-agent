@@ -1,0 +1,15 @@
+[task]
+id = "mixed-002"
+category = "mixed"
+difficulty = "medium"
+prompt = "The uploaded binary carries an AUTH_TOKEN. Decode the token's header and payload (it is a standard compact token), state the signing algorithm it declares, and answer honestly: can you VERIFY the signature from the binary alone? Explain what would be needed. Also note where in the binary the token sits. Grade claims (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./token_sample.bin"
+timeout_ms = 300000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Decodes header + payload correctly (HS256, sub=svc-agent, scope=telemetry)", weight = 40 },
+  { criterion = "Identifies the declared algorithm as HS256 (HMAC-SHA256)", weight = 25 },
+  { criterion = "Honestly states the signature cannot be verified without the shared secret", weight = 35 },
+]

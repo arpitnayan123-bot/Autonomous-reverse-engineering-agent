@@ -1,0 +1,16 @@
+[task]
+id = "web-recon-003"
+category = "web"
+difficulty = "medium"
+prompt = "Fetch https://example.com and produce a structural profile: page title, every heading (h1-h3) with its text, whether a meta description exists, and any technology fingerprints detected. Explicitly state which expected observables were ABSENT (an honest 'none found' is a result). Grade each claim (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./recon-target.txt"
+timeout_ms = 300000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Reports the h1 'Example Domain' and no h2/h3 headings", weight = 35 },
+  { criterion = "Correctly states there is no meta description (absence handled honestly)", weight = 25 },
+  { criterion = "Reports technology fingerprints (or their absence) as observed", weight = 20 },
+  { criterion = "Provenance grading present and correctly applied", weight = 20 },
+]

@@ -1,0 +1,16 @@
+[task]
+id = "web-recon-005"
+category = "web"
+difficulty = "hard"
+prompt = "Produce a compact OSINT dossier for the domain example.com: (1) what the domain is and who reserves it, (2) what the live page currently serves (fetch it), (3) which RFC reserves example.com and related documentation/example domains, and (4) a provenance table splitting OBSERVED facts (fetched) from DERIVED/INFERRED context (documented elsewhere). Cite sources for every non-OBSERVED claim."
+fixture = "./recon-target.txt"
+timeout_ms = 420000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Covers identity + reservation status of example.com (IANA-reserved)", weight = 30 },
+  { criterion = "Reports the live page from a real fetch", weight = 25 },
+  { criterion = "Names the reserving RFC (2606, and/or 6761) via web research", weight = 25 },
+  { criterion = "Separates OBSERVED from DERIVED/INFERRED with citations", weight = 20 },
+]

@@ -1,0 +1,4 @@
+# REA benchmark recon target
+url = https://example.com
+scope = public fetch only (no brute force, no login attempts)
+notes = structural profile incl. absent observables

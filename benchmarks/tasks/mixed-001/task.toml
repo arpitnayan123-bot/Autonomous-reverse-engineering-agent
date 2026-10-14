@@ -1,0 +1,15 @@
+[task]
+id = "mixed-001"
+category = "mixed"
+difficulty = "easy"
+prompt = "The uploaded binary embeds configuration strings. Extract every KEY=VALUE pair you can find, then take the URL it points to and fetch it live. Report: the extracted pairs, the HTTP result of the fetch, and a one-paragraph reconciliation of what the binary claims vs what the live URL actually serves. Grade claims (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./agent-notes.bin"
+timeout_ms = 240000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Extracts the pairs (MODULE=telemetry, BUILD_TAG=2024.11-r2, REPORT_URL=...)", weight = 35 },
+  { criterion = "Performs a REAL live fetch of https://example.com/summary", weight = 35 },
+  { criterion = "Reconciles expectation vs fetch outcome honestly (404 likely, stated plainly)", weight = 30 },
+]

@@ -1,0 +1,11 @@
+[task]
+id = "mixed-005"
+category = "mixed"
+difficulty = "hard"
+prompt = "The uploaded staged loader sample is encoded in layers. Peel every layer (identify each encoding, decode it) until you reach the final payload message. Report the final message EXACTLY, character for character, plus the chain of encodings you removed in order. Grade claims (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./staged_loader.bin"
+timeout_ms = 420000
+
+[scoring]
+type = "exact"
+expected = "STAGE3::KEY=ea51b0de::REPORT"

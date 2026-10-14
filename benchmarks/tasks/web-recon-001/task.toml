@@ -1,0 +1,11 @@
+[task]
+id = "web-recon-001"
+category = "web"
+difficulty = "easy"
+prompt = "Fetch https://example.com with the URL explorer and report the page's identity: HTTP status, exact page title, and the main heading. Keep it factual and grade each claim (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./recon-target.txt"
+timeout_ms = 240000
+
+[scoring]
+type = "exact"
+expected = "Example Domain"

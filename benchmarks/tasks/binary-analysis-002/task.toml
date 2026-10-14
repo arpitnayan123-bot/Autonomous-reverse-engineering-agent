@@ -1,0 +1,15 @@
+[task]
+id = "binary-analysis-002"
+category = "binary"
+difficulty = "easy"
+prompt = "Triage the uploaded firmware image: state the container/executable format, the target architecture, and the byte order. Show the header fields that prove each answer (offsets welcome), then list any version or configuration strings you can recover. Grade every claim (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./firmware-header.bin"
+timeout_ms = 240000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Identifies the format as ELF (executable, 64-bit class)", weight = 35 },
+  { criterion = "Identifies x86-64 as the target architecture", weight = 35 },
+  { criterion = "Identifies little-endian byte order and cites header evidence", weight = 30 },
+]

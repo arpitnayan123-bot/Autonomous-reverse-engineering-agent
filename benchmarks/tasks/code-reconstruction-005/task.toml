@@ -1,0 +1,15 @@
+[task]
+id = "code-reconstruction-005"
+category = "code"
+difficulty = "hard"
+prompt = "The uploaded vm_prog.py contains a bytecode PROGRAM and a matching interpreter. Determine the EXACT string the program outputs. You may reason statically, or write your own emulator/decoder in the workspace (do not just run the provided run() unmodified — show the decoding math per byte). Report the full output string and your method. Grade claims (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./vm_prog.py"
+timeout_ms = 420000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Documents the ISA opcodes correctly (PUSH/XOR/ADD/EMIT/HALT)", weight = 30 },
+  { criterion = "Recovers the exact output string FLAG{vm_recon_ok}", weight = 50 },
+  { criterion = "Shows the method (per-byte decode math or own emulator script/output)", weight = 20 },
+]

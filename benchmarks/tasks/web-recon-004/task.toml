@@ -1,0 +1,15 @@
+[task]
+id = "web-recon-004"
+category = "web"
+difficulty = "medium"
+prompt = "Recon https://example.com using TWO independent sources: (1) a live fetch via the URL explorer, and (2) background knowledge from the web-research tool (search for what example.com is reserved for). Then reconcile: what does the LIVE page show today, what does the indexed knowledge claim, and where do they agree or differ? Grade each claim (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./recon-target.txt"
+timeout_ms = 300000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Uses BOTH explore_url (live fetch) and web_research (background)", weight = 40 },
+  { criterion = "Accurately reports the live page content", weight = 30 },
+  { criterion = "Explicitly reconciles live observation vs indexed knowledge", weight = 30 },
+]

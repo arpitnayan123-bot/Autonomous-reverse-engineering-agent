@@ -1,0 +1,15 @@
+[task]
+id = "binary-analysis-003"
+category = "binary"
+difficulty = "medium"
+prompt = "The uploaded binary computes an integrity digest over file chunks. Identify the hash algorithm used. No algorithm-name string appears in the file — you must recognize the constant tables. Cite the exact constants you matched and explain what they are. Grade every claim (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./integrity-check.bin"
+timeout_ms = 300000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Identifies SHA-256 as the hash algorithm", weight = 50 },
+  { criterion = "Cites the SHA-256 IV and/or round constants (hex) as the matching evidence", weight = 30 },
+  { criterion = "Explains where in the binary the constants sit (context/offset)", weight = 20 },
+]

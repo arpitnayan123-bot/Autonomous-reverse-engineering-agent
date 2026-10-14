@@ -1,0 +1,15 @@
+[task]
+id = "binary-analysis-005"
+category = "binary"
+difficulty = "hard"
+prompt = "The uploaded binary carries an obfuscated configuration value: the bytes right after the 'CONFIG_BLOB:' marker are a plain single-byte-XOR encoded ASCII string. Identify the XOR key, decode the full configuration string, and state the method you used (brute force, frequency analysis, or known-plaintext). Writing a tiny decoder script in the workspace is encouraged. Grade every claim (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./beacon-config.bin"
+timeout_ms = 420000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Identifies the XOR key 0x5A", weight = 35 },
+  { criterion = "Decodes the full endpoint https://updates.example.com/beacon", weight = 40 },
+  { criterion = "Explains the decoding method (or shows the decoder script/output)", weight = 25 },
+]

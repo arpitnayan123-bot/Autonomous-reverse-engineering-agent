@@ -1,0 +1,15 @@
+[task]
+id = "web-recon-002"
+category = "web"
+difficulty = "easy"
+prompt = "Perform light recon on https://example.com: fetch it and enumerate EVERY outbound link on the page (href + anchor text). State the total count of links captured. Grade each claim (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./recon-target.txt"
+timeout_ms = 240000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Identifies the single outbound link https://www.iana.org/domains/example", weight = 50 },
+  { criterion = "Reports the anchor text (More information...) and the link count (1)", weight = 30 },
+  { criterion = "Result comes from a real fetch (OBSERVED), not memory", weight = 20 },
+]

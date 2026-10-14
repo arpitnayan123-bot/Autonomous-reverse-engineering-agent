@@ -1,0 +1,15 @@
+[task]
+id = "code-reconstruction-004"
+category = "code"
+difficulty = "medium"
+prompt = "The uploaded loader.js hides its endpoint. Deobfuscate it statically: explain the string-building technique, decode the embedded endpoint URL EXACTLY, and describe what check() does at runtime (request shape, what it sends, what it returns). You may verify your decode with a workspace script. Grade claims (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./loader.js"
+timeout_ms = 300000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Decodes the embedded URL exactly: https://example.com/license", weight = 50 },
+  { criterion = "Explains the char-code array + XOR-0x20 obfuscation", weight = 30 },
+  { criterion = "Describes the runtime fetch (GET ?k=<license>, JSON response)", weight = 20 },
+]

@@ -1,0 +1,15 @@
+[task]
+id = "binary-analysis-001"
+category = "binary"
+difficulty = "easy"
+prompt = "Analyze the uploaded binary and identify the encryption algorithm used by the authenticate function. Name the algorithm and key size, point to the concrete evidence in the file (constants/tables and where they sit), and describe what the key-schedule helper does. Follow the house evidence-grading rules (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./auth-module.bin"
+timeout_ms = 240000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Identifies AES-128 (from the S-box/Rcon tables)", weight = 40 },
+  { criterion = "Locates/derives the key-schedule (key derivation) helper and explains it", weight = 30 },
+  { criterion = "Cites concrete file evidence with OBSERVED grade", weight = 30 },
+]

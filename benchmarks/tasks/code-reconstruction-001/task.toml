@@ -1,0 +1,15 @@
+[task]
+id = "code-reconstruction-001"
+category = "code"
+difficulty = "easy"
+prompt = "Reconstruct what the uploaded auth_handler.py actually does: walk through authenticate() line by line, name the obfuscation technique and the exact key used for the stored credential blob, and explain WHY the final comparison loop is written the way it is (what attack does it mitigate?). Grade claims (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./auth_handler.py"
+timeout_ms = 240000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Explains the base64-decode + XOR-0x42 credential decode path", weight = 40 },
+  { criterion = "Explains the constant-time comparison and the timing-attack it mitigates", weight = 30 },
+  { criterion = "Cites evidence with OBSERVED grade (read/derived from the file, not guessed)", weight = 30 },
+]

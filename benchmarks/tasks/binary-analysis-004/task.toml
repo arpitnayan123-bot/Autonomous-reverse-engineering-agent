@@ -1,0 +1,16 @@
+[task]
+id = "binary-analysis-004"
+category = "binary"
+difficulty = "medium"
+prompt = "You are doing a pre-release security audit of the uploaded service agent binary. Recover: (1) any hardcoded credentials (usernames, passwords, API keys) exactly as embedded, (2) every internal network endpoint (host:port) the agent contacts, and (3) a short list of the exposure risks these create. Quote the strings and grade each finding (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./service-agent.bin"
+timeout_ms = 300000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Recovers the hardcoded credential pair (svc_backup / Summer2024!)", weight = 30 },
+  { criterion = "Recovers the API key sk-live-9f8e7d6c5b4a3210", weight = 20 },
+  { criterion = "Lists both internal endpoints (mgmt.internal.corp:8443, telemetry.internal.corp:9090)", weight = 25 },
+  { criterion = "Flags the credential/API-key exposure as a security risk", weight = 25 },
+]

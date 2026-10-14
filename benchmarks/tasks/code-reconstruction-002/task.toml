@@ -1,0 +1,15 @@
+[task]
+id = "code-reconstruction-002"
+category = "code"
+difficulty = "easy"
+prompt = "The uploaded parser.min.js is minified. Reconstruct it as readable, idiomatic source: give the function a clear name, restore control flow, add a doc comment describing input/output format and edge-case behavior (what does it do with empty segments, missing '=', or keys that trim to empty?). The reconstructed code must stay functionally equivalent."
+fixture = "./parser.min.js"
+timeout_ms = 240000
+
+[scoring]
+type = "human"
+rubric = [
+  { criterion = "Reconstructed code is functionally equivalent (split/trim/decodeURIComponent logic)", weight = 40 },
+  { criterion = "Edge cases documented (empty segments, missing '=', empty keys)", weight = 30 },
+  { criterion = "Readable idiomatic naming + doc comment", weight = 30 },
+]

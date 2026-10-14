@@ -1,0 +1,15 @@
+[task]
+id = "code-reconstruction-003"
+category = "code"
+difficulty = "medium"
+prompt = "Reconstruct the wire format implemented by the uploaded framing.py PRECISELY: the magic bytes, the exact length-prefix size and byte order, and the checksum algorithm (describe the per-byte operation, not just its name). Then state the encoded frame for the payload b'PING' — compute the checksum by hand (or with a workspace script) and show your work. Grade claims (OBSERVED / DERIVED / INFERRED / UNKNOWN)."
+fixture = "./framing.py"
+timeout_ms = 300000
+
+[scoring]
+type = "rubric"
+rubric = [
+  { criterion = "Identifies magic REA1 and the 2-byte BIG-endian length prefix", weight = 30 },
+  { criterion = "Describes the checksum as rotate-left-then-add running byte sum", weight = 40 },
+  { criterion = "Produces the correct frame bytes for b'PING' (checksum verifiable arithmetic)", weight = 30 },
+]
