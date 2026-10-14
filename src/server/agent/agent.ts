@@ -11,8 +11,17 @@ import {
   AGENT_TOOLS,
   FREE_CHAT_TOOL_NAMES,
   nativeToolSchemas,
+  parseSubagentArgs,
   type AgentToolContext,
 } from "./tools";
+import {
+  SUBAGENT_DEPTH_LIMIT,
+  SUBAGENT_MAX_CONCURRENT,
+  subagentManagerFor,
+  type SubagentEndInfo,
+  type SubagentManager,
+  type SubagentStartInfo,
+} from "./subagents";
 import {
   estimateTokens,
   getContextWindowSize,
@@ -57,6 +66,26 @@ interface LoopMessage {
   content: string;
 }
 
+/**
+ * Internal marker set ONLY by runSpawnSubagentTool when this loop IS a
+ * subagent (depth 2). Changes vs a primary loop:
+ *  - persistence: subagent turns are NOT persisted as chat messages — the
+ *    result travels back as the parent's spawn_subagent tool result;
+ *  - tool surface: spawn_subagent is refused (recursion depth limit —
+ *    subagents cannot spawn sub-subagents) and routing is restricted to
+ *    allowedTools;
+ *  - dedup namespace: the retry-dedup cache key is prefixed with the
+ *    subagent id, so the parent's cached results are never reused (the
+ *    workspace itself stays shared — same sessionId, same sandbox dir).
+ */
+interface SubagentRunContext {
+  id: string;
+  depth: number;
+  allowedTools: string[];
+  maxIterations: number;
+  manager: SubagentManager;
+}
+
 export interface AgentEventHandlers {
   onToolCall?: (tool: string, args: Record<string, unknown>) => void;
   onToolResult?: (tool: string, result: string) => void;
@@ -66,6 +95,15 @@ export interface AgentEventHandlers {
   onTurnStart?: (turn: number) => void;
   /** Incremental assistant text for the live-typing effect. */
   onAssistantDelta?: (text: string, turn: number) => void;
+  /**
+   * A subagent run began (spawn_subagent executed in this loop). The UI
+   * opens an indented progress block keyed by the subagent id.
+   */
+  onSubagentStart?: (info: SubagentStartInfo) => void;
+  /** Incremental assistant text produced INSIDE a subagent run. */
+  onSubagentDelta?: (id: string, text: string) => void;
+  /** A subagent run finished (completed / failed / cancelled). */
+  onSubagentEnd?: (info: SubagentEndInfo) => void;
   /** Cooperative cancellation: checked between iterations. */
   shouldCancel?: () => boolean;
   /**
@@ -101,6 +139,12 @@ export interface AgentLoopResult {
    * surfaced in the transcript meta ("context compacted N times").
    */
   compactionCount: number;
+  /**
+   * LLM turns this loop used (main iterations + the forced synthesis turn
+   * when it fires). For subagent runs this is the subagent's own budget
+   * accounting — surfaced in the subagent end event.
+   */
+  iterations: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +619,207 @@ export function buildCompactedStateMessage(
 }
 
 // ---------------------------------------------------------------------------
+// Subagent runs — fresh-loop delegation (spawn_subagent)
+// ---------------------------------------------------------------------------
+
+/** Discriminator for the subagent system addendum (also a test seam). */
+export const SUBAGENT_ADDENDUM_MARKER = "## Subagent protocol (run ";
+
+/**
+ * Appended to the system prompt ONLY on subagent loops: the loop-scope
+ * rules a nested run needs — focused role, the ALLOWED tool list (routing
+ * refuses anything outside it), the depth rule (no sub-subagents) and the
+ * self-contained-report contract.
+ */
+function subagentSystemAddendum(id: string, tools: string[]): string {
+  return (
+    `\n\n${SUBAGENT_ADDENDUM_MARKER}${id})\n` +
+    `- You are SUBAGENT ${id}, spawned by the primary agent for ONE focused task. The conversation below contains ONLY that task — work it end-to-end now.\n` +
+    `- Your final text is delivered to the primary agent verbatim as the tool result. Make it a self-contained report: what you did, the OBSERVED evidence (with tool names), and your conclusion. Do not address the human user — the primary agent is your audience.\n` +
+    `- Routable tools for this run: ${tools.join(", ")}. EVERY other tool is unavailable — including spawn_subagent: subagents cannot spawn sub-subagents (recursion depth limit ${SUBAGENT_DEPTH_LIMIT}).\n` +
+    `- All integrity rules apply verbatim: only claim an operation succeeded if a genuine tool result for it arrived; never fabricate output.`
+  );
+}
+
+/**
+ * Execute one spawn_subagent call coming from the PRIMARY loop (depth 1).
+ *
+ * Depth guard first (subagents are intercepted earlier in executeAction, so
+ * this normally fires only at depth 1), then argument validation, then the
+ * per-session concurrency cap — every refusal is an honest tool-result
+ * string, never a throw. The subagent itself runs as a nested runAgentLoop
+ * with:
+ *  - the SAME sessionId (shared workspace, shared target context),
+ *  - a FRESH history: only the system prompt and the task text,
+ *  - the parent's resolved LLM (llmOverride — no re-resolution),
+ *  - a composed abort signal: parent signal OR the manager's controller,
+ *  - restricted tool surface + dedup namespace via the internal `subagent`
+ *    run context.
+ *
+ * Its progress streams to the parent's UI as [subagent]-prefixed tool
+ * events plus the dedicated onSubagentStart / onSubagentDelta / onSubagentEnd
+ * events. Subagent failure NEVER crashes the parent loop: it comes back as
+ * this tool's error result.
+ */
+export async function runSpawnSubagentTool(
+  args: Record<string, unknown>,
+  env: {
+    sessionId: string;
+    target: Target | null;
+    userId: string;
+    llm: ResolvedLlm;
+    parentEvents?: AgentEventHandlers;
+    parentSignal?: AbortSignal;
+    parentDepth: number;
+  }
+): Promise<string> {
+  const { sessionId, target, userId, llm, parentEvents, parentSignal, parentDepth } = env;
+  if (parentDepth + 1 > SUBAGENT_DEPTH_LIMIT) {
+    return (
+      `${TOOL_REFUSAL_MARKER} — subagents cannot spawn sub-subagents: the recursion depth limit is ` +
+      `${SUBAGENT_DEPTH_LIMIT} and this call already runs at depth ${parentDepth}. Do the work yourself with your own tools.`
+    );
+  }
+  const parsed = parseSubagentArgs(args ?? {});
+  if (!parsed.ok) return `Error: ${parsed.error}`;
+
+  const manager = subagentManagerFor(sessionId);
+  if (!manager.canSpawn()) {
+    return (
+      `Error: the concurrent subagent limit for this session is ${SUBAGENT_MAX_CONCURRENT} ` +
+      `(${manager.activeCount()} currently active). Finish or wait for one to complete, or do the work directly with your own tools.`
+    );
+  }
+  const record = manager.begin(parsed.value, parentDepth + 1);
+  if (!record) {
+    return `Error: the concurrent subagent limit for this session is ${SUBAGENT_MAX_CONCURRENT} — no new subagent could be started.`;
+  }
+  const controller = manager.controllerFor(record.id);
+
+  // Composed cancellation: the parent turn's signal OR a manager-level
+  // cancelAll aborts the nested loop at its next check.
+  const composite = new AbortController();
+  const abortFromParent = () =>
+    composite.abort(parentSignal?.reason ?? new Error("parent turn cancelled"));
+  const abortFromManager = () => composite.abort(new Error("subagent cancelled"));
+  if (parentSignal) {
+    if (parentSignal.aborted) composite.abort();
+    else parentSignal.addEventListener("abort", abortFromParent, { once: true });
+  }
+  controller.signal.addEventListener("abort", abortFromManager, { once: true });
+  const detachListeners = () => {
+    parentSignal?.removeEventListener("abort", abortFromParent);
+    controller.signal.removeEventListener("abort", abortFromManager);
+  };
+
+  parentEvents?.onSubagentStart?.({
+    id: record.id,
+    task: record.task,
+    tools: record.tools,
+    maxIterations: record.maxIterations,
+  });
+
+  const subEvents: AgentEventHandlers = {
+    // Model text streams through the dedicated subagent channel (indented
+    // in the UI); tool activity streams as [subagent]-prefixed TOOL events
+    // so the existing trace rows render the nested executions.
+    onAssistantDelta: (text) => parentEvents?.onSubagentDelta?.(record.id, text),
+    onToolCall: (tool, targs) => {
+      record.toolTrace.push({ tool, args: targs, result: "(running)" });
+      parentEvents?.onToolCall?.(`[subagent] ${tool}`, targs);
+    },
+    onToolResult: (tool, result) => {
+      for (let i = record.toolTrace.length - 1; i >= 0; i--) {
+        if (record.toolTrace[i].tool === tool && record.toolTrace[i].result === "(running)") {
+          record.toolTrace[i] = { ...record.toolTrace[i], result };
+          break;
+        }
+      }
+      parentEvents?.onToolResult?.(`[subagent] ${tool}`, result);
+    },
+    // Parent-scoped channels stay parent-scoped: a nested loop must not
+    // reset the main draft buffer, re-send the model banner, or double-
+    // fire subagent events for its own (nonexistent) spawns.
+    onModelResolved: undefined,
+    onTurnStart: undefined,
+    onSubagentStart: undefined,
+    onSubagentDelta: undefined,
+    onSubagentEnd: undefined,
+    // Cancellation bridge: parent stop OR manager cancelAll stops the
+    // nested loop at its next iteration boundary.
+    shouldCancel: () => Boolean(parentEvents?.shouldCancel?.() || composite.signal.aborted),
+    cancellationReason: () =>
+      parentEvents?.cancellationReason?.() ??
+      (composite.signal.aborted ? "subagent run cancelled" : null),
+  };
+
+  const startedAt = Date.now();
+  try {
+    const result = await runAgentLoop({
+      sessionId, // SAME session → the sandboxed workspace is shared
+      target,
+      userId,
+      // Fresh message history: only the system prompt (plus the loop's
+      // standard same-target preamble) and the task — no parent traffic.
+      userMessage: record.task,
+      history: [],
+      llmOverride: llm,
+      signal: composite.signal,
+      events: subEvents,
+      subagent: {
+        id: record.id,
+        depth: record.depth,
+        allowedTools: record.tools,
+        maxIterations: record.maxIterations,
+        manager,
+      },
+    });
+    const cancelled = composite.signal.aborted;
+    manager.finish(record.id, {
+      status: cancelled ? "cancelled" : "completed",
+      durationMs: result.durationMs,
+      usage: result.usage,
+      // Authoritative trace from the nested loop (the live bridge entries
+      // were a best-effort preview).
+      toolTrace: result.toolCalls.map((t) => ({ ...t })),
+      iterations: result.iterations,
+      result: result.content,
+    });
+    parentEvents?.onSubagentEnd?.({
+      id: record.id,
+      status: cancelled ? "cancelled" : "completed",
+      durationMs: result.durationMs,
+      iterations: result.iterations,
+      toolsUsed: result.toolCalls.length,
+      summary: result.content.slice(0, 400),
+    });
+    if (cancelled) {
+      return `SUBAGENT CANCELLED: subagent ${record.id} stopped by a cancellation propagated from the parent turn; no further subagent work ran. Partial report:\n${result.content.slice(0, TOOL_RESULT_MAX_CHARS)}`;
+    }
+    return `SUBAGENT RESULT:\n${result.content.slice(0, TOOL_RESULT_MAX_CHARS)}`;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    manager.finish(record.id, {
+      status: "failed",
+      durationMs: Date.now() - startedAt,
+      error: msg.slice(0, 500),
+    });
+    parentEvents?.onSubagentEnd?.({
+      id: record.id,
+      status: "failed",
+      durationMs: Date.now() - startedAt,
+      iterations: 0,
+      toolsUsed: record.toolTrace.length,
+      summary: msg.slice(0, 400),
+    });
+    // A subagent failure is THIS tool's result — never a parent-loop crash.
+    return `Error: subagent ${record.id} failed: ${msg.slice(0, 800)}`;
+  } finally {
+    detachListeners();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The loop
 // ---------------------------------------------------------------------------
 
@@ -622,10 +867,24 @@ export async function runAgentLoop(opts: {
    * callers never set it).
    */
   llmOverride?: ResolvedLlm;
+  /**
+   * Internal: set ONLY by runSpawnSubagentTool — marks this loop as a
+   * subagent run (depth 2). Never set by production callers.
+   */
+  subagent?: SubagentRunContext;
 }): Promise<AgentLoopResult> {
   const { sessionId, target, userMessage, history, events } = opts;
+  const asSubagent = opts.subagent ?? null;
   const ctx: AgentToolContext | null = target
-    ? { target, userId: opts.userId, sessionId }
+    ? {
+        target,
+        userId: opts.userId,
+        sessionId,
+        // Subagent runs namespace their retry-dedup keys with the subagent
+        // id (never reuse the parent's cached results) while keeping the
+        // raw sessionId — the sandboxed workspace stays SHARED.
+        ...(asSubagent ? { dedupNamespace: asSubagent.id } : {}),
+      }
     : null;
 
   let llm: ResolvedLlm;
@@ -659,6 +918,19 @@ export async function runAgentLoop(opts: {
         { role: "user", content: userMessage },
       ];
 
+  if (asSubagent) {
+    // Subagent run: the fresh transcript (system prompt + task only) gets
+    // the subagent protocol addendum — focused role, the ALLOWED tool list
+    // (routing refuses anything outside it) and the no-sub-subagent rule.
+    const routableNames = (
+      ctx ? AGENT_TOOLS.map((t) => t.name) : FREE_CHAT_TOOL_NAMES
+    ).filter((n) => asSubagent.allowedTools.includes(n));
+    messages[0] = {
+      role: "assistant",
+      content: `${messages[0].content}${subagentSystemAddendum(asSubagent.id, routableNames)}`,
+    };
+  }
+
   /**
    * Native tool calling is used ONLY when the resolved LLM declares the
    * capability AND implements it — the platform fallback and any provider
@@ -671,7 +943,13 @@ export async function runAgentLoop(opts: {
     llm.supportsNativeTools && typeof llm.callLLMTools === "function"
   );
   const nativeSchemas: ToolSchema[] = nativeEnabled
-    ? nativeToolSchemas(ctx ? "target" : "free")
+    ? nativeToolSchemas(ctx ? "target" : "free").filter((s) => {
+        if (!asSubagent) return true;
+        // Depth limit: a subagent never even SEES spawn_subagent in its
+        // schema list (the loop refuses a call emitted anyway).
+        if (s.function.name === "spawn_subagent") return false;
+        return asSubagent.allowedTools.includes(s.function.name);
+      })
     : [];
   if (nativeEnabled) {
     // Protocol override: the shared system prompt teaches the text fence
@@ -695,6 +973,13 @@ export async function runAgentLoop(opts: {
     tokensIn: null,
     tokensOut: null,
   };
+  /**
+   * Iteration budget: primary loops get MAX_CHAT_ITERATIONS; subagent runs
+   * get their spawn-time budget (max_iterations, 1..15).
+   */
+  const iterationCap = asSubagent ? asSubagent.maxIterations : MAX_CHAT_ITERATIONS;
+  /** LLM turns used: main iterations + the forced synthesis turn. */
+  let iterationsUsed = 0;
   const accumulateUsage = (u: TokenUsage) => {
     if (typeof u.promptTokens === "number") {
       usage.tokensIn = (usage.tokensIn ?? 0) + u.promptTokens;
@@ -780,6 +1065,59 @@ export async function runAgentLoop(opts: {
     tool: string;
     args: Record<string, unknown>;
   }): Promise<ActionOutcome> => {
+    if (action.tool === "spawn_subagent") {
+      // Subagent delegation — intercepted BEFORE both protocol branches:
+      // it exists in the registry (advertisement parity) but its execution
+      // needs THIS loop's LLM handle, event stream and depth state. Depth,
+      // validation, concurrency and cancellation are owned by
+      // runSpawnSubagentTool; the bookkeeping below matches every other
+      // tool (live events, trace, repeat guard).
+      events?.onToolCall?.(action.tool, action.args);
+      const result = await runSpawnSubagentTool(action.args ?? {}, {
+        sessionId,
+        target,
+        userId: opts.userId,
+        llm,
+        parentEvents: events,
+        parentSignal: opts.signal,
+        parentDepth: asSubagent ? asSubagent.depth : 1,
+      });
+      events?.onToolResult?.(action.tool, result);
+      toolTrace.push({ tool: action.tool, args: action.args, result });
+      const sig = `${action.tool}:${JSON.stringify(action.args)}`;
+      const repeats = (repeatCounts.get(sig) ?? 0) + 1;
+      repeatCounts.set(sig, repeats);
+      if (repeats >= 3) {
+        return {
+          kind: "halted",
+          tool: action.tool,
+          args: action.args,
+          reason: `The tool call ${action.tool} was repeated ${repeats} times with identical arguments.`,
+        };
+      }
+      return {
+        kind: "executed",
+        tool: action.tool,
+        args: action.args,
+        result,
+        nudge:
+          repeats === 2
+            ? `SYSTEM: You already spawned an identical subagent (same task) ${repeats} times this turn. The result will not change on another spawn. Either vary the task, do the work yourself with your own tools, or write your final answer from the evidence you have.`
+            : undefined,
+      };
+    }
+    if (asSubagent && !asSubagent.allowedTools.includes(action.tool)) {
+      // Subagent tool allowlist gate — the spawn-time `tools` argument is a
+      // real routing boundary, not prose: anything outside it is refused
+      // with the honest NOT EXECUTED marker (and never executed).
+      events?.onToolCall?.(action.tool, action.args);
+      const refusal =
+        `${TOOL_REFUSAL_MARKER} — "${action.tool}" is not in this subagent's tool allowlist ` +
+        `(${asSubagent.allowedTools.join(", ")}). The platform did not run it; use one of the listed tools or write your report from the evidence you have.`;
+      events?.onToolResult?.(action.tool, refusal);
+      toolTrace.push({ tool: action.tool, args: action.args, result: refusal });
+      return { kind: "refused", tool: action.tool, args: action.args, result: refusal };
+    }
     if (ctx) {
       // Target chat: registry tools execute; unknown names come back as the
       // honest "unknown tool" error string from executeAgentTool (allow-
@@ -817,13 +1155,16 @@ export async function runAgentLoop(opts: {
       // the sandboxed workspace) stays fully functional, with the same
       // dedup policy as the registry path — including per-tool opt-out for
       // stateful tools (workspace_write/workspace_run re-execute by design).
+      // Subagent runs pass their id as the dedup namespace: identical calls
+      // never reuse the parent loop's cached results.
       const freeTool = AGENT_TOOLS.find((t) => t.name === action.tool);
       events?.onToolCall?.(action.tool, action.args);
       const result = await runToolWithDedup(
         freeTool?.dedup === false ? undefined : sessionId,
         action.tool,
         action.args ?? {},
-        () => runFreeChatTool(action.tool, action.args ?? {}, { sessionId })
+        () => runFreeChatTool(action.tool, action.args ?? {}, { sessionId }),
+        asSubagent?.id
       );
       events?.onToolResult?.(action.tool, result);
       toolTrace.push({ tool: action.tool, args: action.args, result });
@@ -843,12 +1184,13 @@ export async function runAgentLoop(opts: {
   };
 
   try {
-    for (let i = 0; i < MAX_CHAT_ITERATIONS; i++) {
+    for (let i = 0; i < iterationCap; i++) {
     if (events?.shouldCancel?.()) {
       final = "**Investigation cancelled by user.** No further tools were run after cancellation; any findings above are partial.";
       break;
     }
     events?.onTurnStart?.(i);
+    iterationsUsed++;
 
     if (nativeEnabled) {
       // ---- NATIVE path: schemas went out with the request; the model's
@@ -1035,14 +1377,15 @@ export async function runAgentLoop(opts: {
   if (final === null) {
     // Iteration budget exhausted (or the loop guard halted repetition):
     // force a synthesis turn with no tools.
-    const synthesisTurn = MAX_CHAT_ITERATIONS;
+    const synthesisTurn = iterationCap;
     events?.onTurnStart?.(synthesisTurn);
+    iterationsUsed++;
     const toolNoun = nativeEnabled ? "tool calls" : "tool blocks";
     messages.push({
       role: "user",
       content: haltReason
         ? `Do not emit any more ${toolNoun}. ${haltReason} Repetition cannot produce new evidence. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown and which different tool or argument you would try next.`
-        : `You have used the maximum number of tool iterations (${MAX_CHAT_ITERATIONS}). Do not emit any more ${toolNoun}. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown.`,
+        : `You have used the maximum number of tool iterations (${iterationCap}). Do not emit any more ${toolNoun}. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown.`,
     });
     let synthesized: string;
     if (nativeEnabled) {
@@ -1074,22 +1417,30 @@ export async function runAgentLoop(opts: {
       cancellationReason !== null && err instanceof Error && err.message !== cancellationReason
         ? new Error(cancellationReason)
         : err;
-    try {
-      await db.chatMessage.create({
-        data: {
-          sessionId,
-          role: "assistant",
-          content: formatInterruptedTurnContent(lastText, noteErr),
-          toolCalls: toolTrace.length ? JSON.stringify(toolTrace) : null,
-          tokensIn: usage.tokensIn,
-          tokensOut: usage.tokensOut,
-          durationMs: Date.now() - startedAt,
-          modelId: llmModelId(llm),
-          compactions: compactionCount,
-        },
-      });
-    } catch {
-      /* persistence failure must not mask the interrupting error */
+    // Subagent turns are NEVER persisted as chat messages — their result
+    // travels back as the parent's spawn_subagent tool result.
+    if (!asSubagent) {
+      try {
+        await db.chatMessage.create({
+          data: {
+            sessionId,
+            role: "assistant",
+            content: formatInterruptedTurnContent(lastText, noteErr),
+            toolCalls: toolTrace.length ? JSON.stringify(toolTrace) : null,
+            tokensIn: usage.tokensIn,
+            tokensOut: usage.tokensOut,
+            durationMs: Date.now() - startedAt,
+            modelId: llmModelId(llm),
+            compactions: compactionCount,
+          },
+        });
+      } catch {
+        /* persistence failure must not mask the interrupting error */
+      }
+    }
+    if (!asSubagent) {
+      // Primary turn is over — never leave orphaned subagents running.
+      subagentManagerFor(sessionId).cancelAll("parent turn ended (error)");
     }
     throw err;
   }
@@ -1097,27 +1448,42 @@ export async function runAgentLoop(opts: {
   // Final-answer integrity gate: label any simulated tool blocks that
   // survived into the final text (malformed-only messages, synthesis turns)
   // instead of letting fabricated output pass as real. Clean answers pass
-  // through untouched.
-  final = finalizeTurnContent(final, toolTrace, availableToolNames(ctx));
+  // through untouched. Subagent runs advertise only their allowlisted,
+  // routable tools in the note.
+  final = finalizeTurnContent(
+    final,
+    toolTrace,
+    asSubagent
+      ? availableToolNames(ctx).filter((n) => asSubagent.allowedTools.includes(n))
+      : availableToolNames(ctx)
+  );
 
   const durationMs = Date.now() - startedAt;
 
-  try {
-    await db.chatMessage.create({
-      data: {
-        sessionId,
-        role: "assistant",
-        content: final,
-        toolCalls: toolTrace.length ? JSON.stringify(toolTrace) : null,
-        tokensIn: usage.tokensIn,
-        tokensOut: usage.tokensOut,
-        durationMs,
-        modelId: llmModelId(llm),
-        compactions: compactionCount,
-      },
-    });
-  } catch {
-    /* persistence failure must not break the stream */
+  // Subagent turns are NEVER persisted as chat messages — their result
+  // travels back as the parent's spawn_subagent tool result.
+  if (!asSubagent) {
+    try {
+      await db.chatMessage.create({
+        data: {
+          sessionId,
+          role: "assistant",
+          content: final,
+          toolCalls: toolTrace.length ? JSON.stringify(toolTrace) : null,
+          tokensIn: usage.tokensIn,
+          tokensOut: usage.tokensOut,
+          durationMs,
+          modelId: llmModelId(llm),
+          compactions: compactionCount,
+        },
+      });
+    } catch {
+      /* persistence failure must not break the stream */
+    }
+    // Defensive propagation: a primary turn must never leave orphaned
+    // subagents running after it ends (normally there are none — every
+    // spawn blocks until its subagent finishes or fails).
+    subagentManagerFor(sessionId).cancelAll("parent turn ended");
   }
 
   return {
@@ -1127,6 +1493,7 @@ export async function runAgentLoop(opts: {
     durationMs,
     modelId: llmModelId(llm),
     compactionCount,
+    iterations: iterationsUsed,
   };
 }
 
