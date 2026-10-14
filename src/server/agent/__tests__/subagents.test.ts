@@ -147,8 +147,10 @@ function fakeLlm(opts: {
     calls: () => ({ parent: parentCalls, sub: subCalls }),
     subTurnInputs,
   };
-  return impl as unknown as ResolvedLlm &
-    ReturnType<typeof impl> & { calls: () => { parent: number; sub: number }; subTurnInputs: LlmMessage[][] };
+  return impl as unknown as ResolvedLlm & {
+    calls: () => { parent: number; sub: number };
+    subTurnInputs: LlmMessage[][];
+  };
 }
 
 const baseOpts = (sessionId: string) => ({
