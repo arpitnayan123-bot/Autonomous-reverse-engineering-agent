@@ -25,6 +25,7 @@ import {
   callTurn,
   isTransientLlmError,
   formatInterruptedTurnContent,
+  runAgentLoop,
 } from "@/server/agent/agent";
 import {
   AGENT_TOOLS,
@@ -36,7 +37,9 @@ import {
 import { freeChatSystemPrompt, systemPrompt } from "@/server/agent/prompts";
 import { BlockedUrlError } from "@/server/platform/net";
 import { consumeModelStream, TurnAbortedError } from "@/server/agent/platform-llm";
+import { TurnControl, activeTurns } from "@/server/agent/turn-control";
 import { readProviderSse } from "@/server/agent/providers";
+import { db } from "@/lib/db";
 import type { ResolvedLlm } from "@/server/agent/providers";
 import type { Target } from "@prisma/client";
 
@@ -645,6 +648,110 @@ async function main(): Promise<void> {
     cleanSeen.length === 2 && cleanSeen[1] === "[DONE]",
     cleanSeen.join("|").slice(0, 60)
   );
+
+  // ---------------------------------------------------------------------
+  // F. Viewer-detached turn control (repository-analysis lost-contact fix)
+  //
+  // Real-world failure this locks in: the external preview proxy severs
+  // long responses (~30s measured on genuine Express.js analysis turns)
+  // while deltas were still flowing, and the server used to treat that
+  // viewer death as a cancellation order — cancelling HEALTHY turns
+  // mid-synthesis. The fix decouples turn lifetime from the viewer: only an
+  // explicit stop (POST /api/chat/stop) or the safety deadline cancels.
+  // ---------------------------------------------------------------------
+
+  const running = new TurnControl();
+  check(
+    "F1  fresh control is running (not stopped, no reason, signal live)",
+    !running.stopped && running.reason === null && !running.signal.aborted,
+    ""
+  );
+
+  running.stop("Turn cancelled by user");
+  check(
+    "F2  stop() aborts the signal and records the reason",
+    running.stopped && running.reason === "Turn cancelled by user" && running.signal.aborted,
+    running.reason ?? ""
+  );
+  running.stop("a second stop attempt");
+  check(
+    "F3  stop() is idempotent — the first reason is preserved",
+    running.stopped && running.reason === "Turn cancelled by user",
+    ""
+  );
+  running.dispose();
+
+  const deadlined = new TurnControl(30);
+  const deadlineFired = await new Promise<boolean>((resolve) => {
+    setTimeout(
+      () =>
+        resolve(
+          deadlined.stopped &&
+            (deadlined.reason ?? "").startsWith("Turn exceeded the safety deadline") &&
+            deadlined.signal.aborted
+        ),
+      80
+    );
+  });
+  check("F4  the safety deadline stops the turn automatically", deadlineFired, deadlined.reason ?? "");
+  deadlined.dispose();
+
+  const regKey = `reg-f5-${Date.now()}`;
+  activeTurns.set(regKey, running);
+  const registryRoundTrip = activeTurns.get(regKey) === running;
+  activeTurns.delete(regKey);
+  check(
+    "F5  turn registry round-trips and clears (stop endpoint lookup path)",
+    registryRoundTrip && activeTurns.get(regKey) === undefined,
+    ""
+  );
+
+  const abortErr = new TurnAbortedError();
+  const abortNote = formatInterruptedTurnContent(undefined, abortErr);
+  check(
+    "F6  cancellation aborts render an honest by-user note",
+    abortErr.message === "Turn cancelled by user" &&
+      abortNote.includes("Turn interrupted before completion") &&
+      abortNote.includes("Turn cancelled by user"),
+    abortNote.slice(0, 90)
+  );
+
+  const deadlineNote = formatInterruptedTurnContent(
+    undefined,
+    new TurnAbortedError("Turn exceeded the safety deadline and was stopped")
+  );
+  check(
+    "F7  deadline reason renders verbatim in the persisted note",
+    deadlineNote.includes("Turn exceeded the safety deadline"),
+    ""
+  );
+
+  // Clean-break path: shouldCancel() true from the very first iteration must
+  // yield the cancelled synthesis text with ZERO model calls (the loop breaks
+  // before callTurn) — and must not throw despite the unpersistable bogus
+  // session id (the persistence-failure catch is intentional).
+  const cancelledLoop = await runAgentLoop({
+    sessionId: `reg-f8-${Date.now()}`,
+    target: null,
+    userId: "regression",
+    userMessage: "analyze a repository",
+    history: [],
+    events: {
+      shouldCancel: () => true,
+      cancellationReason: () => "Turn cancelled by user",
+    },
+  });
+  check(
+    "F8  shouldCancel clean-break ends the turn honestly with no model call",
+    cancelledLoop.content.includes("Investigation cancelled by user") &&
+      cancelledLoop.toolCalls.length === 0,
+    cancelledLoop.content.slice(0, 60)
+  );
+  // The F8 loop's persistence step actually INSERTS (SQLite runs without FK
+  // enforcement) — remove the synthetic row so the suite leaves no garbage.
+  await db.chatMessage.deleteMany({ where: { sessionId: { startsWith: "reg-f8-" } } });
+  const f8Leftovers = await db.chatMessage.count({ where: { sessionId: { startsWith: "reg-f8-" } } });
+  check("F9  regression run leaves no synthetic chat rows behind", f8Leftovers === 0, "");
 
   // ---------------------------------------------------------------------
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
