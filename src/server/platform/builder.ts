@@ -551,7 +551,7 @@ export async function runCommand(
         // A grandchild that outlived the command (a spawned test runner, a
         // daemon) inherits the stdio pipes and would keep "close" pending
         // until IT exits — destroy the streams so the timeout lands now.
-        try { child.stdin?.destroy(); } catch { /* noop */ }
+        // (stdin is "ignore" — there is no stream to destroy on that side.)
         try { child.stdout?.destroy(); } catch { /* noop */ }
         try { child.stderr?.destroy(); } catch { /* noop */ }
       }, Math.min(timeoutMs, 120_000));

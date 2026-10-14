@@ -283,7 +283,7 @@ export async function runInContainer(
       // A grandchild that outlived the CLI (a daemon, a spawned test runner)
       // inherits the stdio pipes and would keep "close" pending until IT
       // exits — destroy the streams so the timeout is honored immediately.
-      try { child.stdin?.destroy(); } catch { /* noop */ }
+      // (stdin is "ignore" — there is no stream to destroy on that side.)
       try { child.stdout?.destroy(); } catch { /* noop */ }
       try { child.stderr?.destroy(); } catch { /* noop */ }
     }, Math.min(timeoutMs, CONTAINER_TIMEOUT_CAP_MS));
