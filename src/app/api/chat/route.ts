@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import { audit, clientIp, isSafeId, rateLimit } from "@/lib/security";
 import { estimateCostUsd } from "@/lib/pricing";
-import { runAgentLoop } from "@/server/agent/agent";
+import { runAgentLoop, toolReceiptSuffix } from "@/server/agent/agent";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -353,7 +353,7 @@ export async function POST(req: Request) {
 
     /** The turn the agent answers (new or existing user text). */
     let turnMessage = message;
-    let historyRows: { role: string; content: string }[];
+    let historyRows: { role: string; content: string; toolCalls?: string | null }[];
     /** Whether a fresh user row must be persisted for this turn. */
     let createUserRow = true;
     /** Rows to remove (edit/regenerate truncation), applied atomically below. */
@@ -472,7 +472,14 @@ export async function POST(req: Request) {
             userMessage: turnMessage,
             history: historyRows.map((m) => ({
               role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
-              content: m.content.slice(0, 4000),
+              // Assistant rows carry their toolCalls JSON from the DB. Without
+              // the receipt the replayed transcript shows NO tool ever ran in
+              // this conversation — models then deny having tool access on
+              // later turns ("I can't execute anything") even right after a
+              // successful explore_url call. The suffix is small and labeled.
+              content:
+                m.content.slice(0, 4000) +
+                toolReceiptSuffix(m.role === "assistant" ? m.toolCalls : null),
             })),
             // Client disconnects propagate into LLM calls (timeout+abort).
             signal: req.signal,
