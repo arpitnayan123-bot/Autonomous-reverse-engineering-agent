@@ -225,9 +225,13 @@ export async function readProviderSse(
       // read() pending forever; cancelling the reader does NOT unblock it —
       // only racing it out ends the turn promptly with a retryable error
       // ("timed out" is classified transient by the agent loop).
-      const { done, value } = await new Promise<
-        ReadableStreamReadResult<Uint8Array>
-      >((resolve, reject) => {
+      // The result shape is deliberately flattened (done + optional value)
+      // so it typechecks against BOTH the DOM lib's and bun-types' stream
+      // result unions (bun-types is loaded for the bun:test suites).
+      const { done, value } = await new Promise<{
+        done: boolean;
+        value?: Uint8Array | undefined;
+      }>((resolve, reject) => {
         let settled = false;
         const finish = (fn: () => void) => {
           if (settled) return;

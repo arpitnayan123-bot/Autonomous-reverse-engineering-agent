@@ -119,7 +119,7 @@ const freeChatOpts = {
   target: null,
   userId: "nt-regression",
   history: [],
-} as const;
+};
 
 afterAll(async () => {
   // The loop persists assistant rows for real — clean the synthetic ones so
@@ -138,7 +138,7 @@ describe("native tool schema surface", () => {
       description: "Maintain a plan.",
       args: { type: "object", properties: {}, required: [] },
     };
-    const schema = toNativeSchema(tool as Parameters<typeof toNativeSchema>[0]);
+    const schema = toNativeSchema(tool as unknown as Parameters<typeof toNativeSchema>[0]);
     expect(schema.type).toBe("function");
     expect(schema.function.name).toBe("update_plan");
     expect(schema.function.description).toBe("Maintain a plan.");
