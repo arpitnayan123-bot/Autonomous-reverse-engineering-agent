@@ -38,6 +38,14 @@ import {
   TOOL_REFUSAL_MARKER,
 } from "@/server/agent/tools";
 import { freeChatSystemPrompt, systemPrompt } from "@/server/agent/prompts";
+import {
+  classifyToolOutcome,
+  extractTurnNote,
+  turnNoteLines,
+  TOOL_REFUSAL_MARKER as CLIENT_REFUSAL_MARKER,
+  INTERRUPTED_TURN_MARKER as CLIENT_INTERRUPTED_MARKER,
+  INTEGRITY_NOTE_MARKER as CLIENT_INTEGRITY_MARKER,
+} from "@/lib/tool-status";
 import { BlockedUrlError } from "@/server/platform/net";
 import { consumeModelStream, TurnAbortedError } from "@/server/agent/platform-llm";
 import { TurnControl, activeTurns } from "@/server/agent/turn-control";
@@ -709,6 +717,22 @@ async function main(): Promise<void> {
     ""
   );
 
+  // F5b: the registry is a PROCESS singleton backed by globalThis (the
+  // lib/db.ts Prisma pattern). A module-level Map let Next.js dev (HMR /
+  // per-route bundle evaluation) hand /api/chat/stop a fresh empty map while
+  // the turn lived in the chat route's instance — Stop silently returned
+  // stopped:false and the server kept generating for minutes after the user
+  // cancelled (reproduced live). The map must be the SAME object across
+  // module evaluations, reached through the well-known symbol.
+  const globalMap = (globalThis as unknown as Record<symbol, unknown>)[
+    Symbol.for("rea.activeTurns")
+  ];
+  check(
+    "F5b turn registry is globalThis-backed (HMR-proof stop lookups)",
+    globalMap instanceof Map && globalMap === activeTurns,
+    `same-object:${globalMap === activeTurns}`
+  );
+
   const abortErr = new TurnAbortedError();
   const abortNote = formatInterruptedTurnContent(undefined, abortErr);
   check(
@@ -1085,6 +1109,135 @@ async function main(): Promise<void> {
     (await db.target.count({ where: { id: { startsWith: "reg-g6-" } } })) +
     (await db.user.count({ where: { id: { startsWith: "reg-g6u-" } } }));
   check("G14 section G leaves no synthetic rows behind", gLeftovers === 0, "");
+
+  // ---------------------------------------------------------------------
+  // SECTION H — UI honest-status contract: the client classifiers that drive
+  // the preview window (trace-row states + turn banners) stay locked to the
+  // LIVE server markers and note builders. If the server wording changes and
+  // the client mirror does not, these checks fail — the UI can never silently
+  // mislabel refused/failed/executed work or lose the interruption/integrity
+  // banners.
+  // ---------------------------------------------------------------------
+  section("H — UI honest-status classifiers (src/lib/tool-status.ts)");
+
+  // H1: the client refusal mirror is byte-identical to the live server constant.
+  check(
+    "H1 client TOOL_REFUSAL_MARKER mirrors the server constant",
+    CLIENT_REFUSAL_MARKER === TOOL_REFUSAL_MARKER,
+    `client="${CLIENT_REFUSAL_MARKER}" server="${TOOL_REFUSAL_MARKER}"`
+  );
+
+  // H2: a real refusal result (exactly what G3's loop produced) classifies
+  // as refused — the UI shows the NOT EXECUTED row, never a green check.
+  check(
+    "H2 refusal result classifies as refused",
+    classifyToolOutcome({ pending: false, preview: `${TOOL_REFUSAL_MARKER} — "execute" is unavailable in this chat (no file target attached).` }) ===
+      "refused",
+    ""
+  );
+
+  // H3: failure shapes classify as failed — the plain "Error:" prefix every
+  // tool error returns, and the rea_tool MCP isError envelope.
+  check(
+    "H3 tool failures classify as failed",
+    classifyToolOutcome({ pending: false, preview: "Error: 'query' is required." }) === "failed" &&
+      classifyToolOutcome({
+        pending: false,
+        preview: "REA tool binary_overview → isError: true\nboom",
+      }) === "failed",
+    ""
+  );
+
+  // H4: genuine executions classify as executed — including a cross-turn
+  // dedup reuse, whose text PREPENDS the original genuine result (the
+  // "(reused ... NOT re-executed ...)" suffix must never flip the verdict),
+  // and leading whitespace is tolerated (trimStart contract).
+  const dedupReused = "Example Domain\n\n(reused from the earlier identical execution in this session — NOT re-executed; identical calls within 10 minutes are deduplicated across retries)";
+  check(
+    "H4 genuine results (incl. dedup reuse) classify as executed",
+    classifyToolOutcome({ pending: false, preview: dedupReused }) === "executed" &&
+      classifyToolOutcome({ pending: false, preview: "  Error: x" }) === "failed" &&
+      classifyToolOutcome({ pending: false, preview: "" }) === "executed" &&
+      classifyToolOutcome({ pending: true, preview: null }) === "running",
+    ""
+  );
+
+  // H5: the interrupted-turn note BUILT BY THE LIVE formatInterruptedTurnContent
+  // is extracted by the client — banner kind, body = the preserved visible
+  // text, note carries the failure message.
+  const h5Visible = "Partial analysis so far: the header looks like an ELF64 binary.";
+  const h5Content = formatInterruptedTurnContent(h5Visible, new Error("Turn cancelled by user"));
+  const h5Note = extractTurnNote(h5Content);
+  check(
+    "H5 live interrupted note extracts as a banner",
+    h5Note !== null &&
+      h5Note.kind === "interrupted" &&
+      h5Note.body === h5Visible &&
+      h5Note.note.includes("Turn cancelled by user") &&
+      h5Note.note.includes("preserved in the trace above"),
+    `body===visible:${h5Note?.body === h5Visible}`
+  );
+
+  // H6: interrupted turn with NO visible text — body is empty, note intact.
+  const h6Content = formatInterruptedTurnContent(undefined, new Error("Safety deadline reached"));
+  const h6Note = extractTurnNote(h6Content);
+  check(
+    "H6 note-only interruption yields an empty body",
+    h6Note !== null && h6Note.kind === "interrupted" && h6Note.body === "" && h6Note.note.length > 0,
+    ""
+  );
+
+  // H7: the integrity note BUILT BY THE LIVE finalizeTurnContent extracts as
+  // a banner — kind integrity, body = the simulated-block answer WITHOUT any
+  // note lines, note names the genuinely executed tool and the availability
+  // boundary.
+  const h7Fabricated = [
+    "Here is the project:",
+    "```tool",
+    '{"execute":{"command":"npx jest"}}',
+    "```",
+    "Tests: 12 passed",
+  ].join("\n");
+  const h7Final = finalizeTurnContent(
+    h7Fabricated,
+    [
+      { tool: "update_plan", args: {}, result: "Plan updated." },
+      { tool: "execute", args: {}, result: `${TOOL_REFUSAL_MARKER} — refused` },
+    ],
+    ["update_plan", "explore_url"]
+  );
+  const h7Note = extractTurnNote(h7Final);
+  check(
+    "H7 live integrity note extracts as a banner",
+    h7Note !== null &&
+      h7Note.kind === "integrity" &&
+      h7Note.body === h7Fabricated &&
+      h7Note.note.includes("update_plan") &&
+      h7Note.note.includes("explore_url"),
+    `body===fabricated:${h7Note?.body === h7Fabricated}`
+  );
+
+  // H8: clean content (no note) → null — the prose renders untouched.
+  const h8 = "Clean final answer with no tool syntax at all.";
+  check(
+    "H8 clean content extracts no note",
+    extractTurnNote(h8) === null && extractTurnNote("") === null,
+    ""
+  );
+
+  // H9: the banner's plain-text lines carry no markdown emphasis or
+  // blockquote markers, and the marker phrases are exactly the ones the
+  // client banner filters by (they must not drift from the server wording).
+  const h9Lines = turnNoteLines(h7Note?.note ?? "");
+  check(
+    "H9 banner lines are plain text and markers stay aligned",
+    h9Lines.length >= 3 &&
+      h9Lines.every((l) => !l.includes("**") && !l.startsWith(">")) &&
+      h9Lines[0].startsWith("Integrity note (system):") &&
+      formatInterruptedTurnContent("", new Error("x")).includes(CLIENT_INTERRUPTED_MARKER) &&
+      h7Final.includes(CLIENT_INTEGRITY_MARKER),
+    ""
+  );
 
   // ---------------------------------------------------------------------
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
