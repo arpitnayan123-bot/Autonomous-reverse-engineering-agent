@@ -40,6 +40,12 @@ export interface AgentEventHandlers {
   onAssistantDelta?: (text: string, turn: number) => void;
   /** Cooperative cancellation: checked between iterations. */
   shouldCancel?: () => boolean;
+  /**
+   * Human-readable reason when shouldCancel() turned true (user stop,
+   * safety deadline). Surfaced in the persisted interrupted-turn note so the
+   * transcript records WHY instead of a generic cancellation.
+   */
+  cancellationReason?: () => string | null;
 }
 
 export interface AgentToolTrace {
@@ -396,12 +402,21 @@ export async function runAgentLoop(opts: {
     // Preserve completed work: persist the partial turn (visible text + the
     // tool trace executed so far) so a reload keeps it and the retry-dedup
     // cache has an audit trail. Never mask the original error.
+    // A cancellation (explicit stop / safety deadline) carries a precise
+    // reason via events.cancellationReason — prefer it over the generic
+    // abort message so the persisted note says WHY.
+    const isAbort = err instanceof Error && err.name === "TurnAbortedError";
+    const cancellationReason = isAbort ? (events?.cancellationReason?.() ?? null) : null;
+    const noteErr =
+      cancellationReason !== null && err instanceof Error && err.message !== cancellationReason
+        ? new Error(cancellationReason)
+        : err;
     try {
       await db.chatMessage.create({
         data: {
           sessionId,
           role: "assistant",
-          content: formatInterruptedTurnContent(lastText, err),
+          content: formatInterruptedTurnContent(lastText, noteErr),
           toolCalls: toolTrace.length ? JSON.stringify(toolTrace) : null,
           tokensIn: usage.tokensIn,
           tokensOut: usage.tokensOut,

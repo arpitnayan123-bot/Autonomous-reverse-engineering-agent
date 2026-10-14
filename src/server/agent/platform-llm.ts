@@ -53,10 +53,14 @@ function isAuthError(err: unknown): boolean {
   );
 }
 
-/** Thrown when the client disconnects / aborts the turn. */
+/**
+ * Thrown when the turn is cancelled — after the viewer-decoupling fix the
+ * only sources are an explicit user stop or the turn safety deadline, so the
+ * message states that honestly instead of blaming the connection.
+ */
 export class TurnAbortedError extends Error {
-  constructor() {
-    super("Turn cancelled");
+  constructor(message = "Turn cancelled by user") {
+    super(message);
     this.name = "TurnAbortedError";
   }
 }
