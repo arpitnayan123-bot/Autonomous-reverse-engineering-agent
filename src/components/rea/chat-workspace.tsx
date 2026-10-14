@@ -19,6 +19,7 @@ import {
   Quote,
   RotateCcw,
   ScanSearch,
+  Scissors,
   SearchCheck,
   SendHorizontal,
   ShieldAlert,
@@ -101,6 +102,8 @@ interface ChatEntry {
   durationMs?: number | null;
   /** Canonical model id for this turn ("openai/gpt-4o-mini" | "glm-platform"). */
   modelId?: string | null;
+  /** Context compactions during this agent turn (assistant; 0 = none). */
+  compactionCount?: number | null;
 }
 
 /** Display label for a provider+model pair — collapses redundant prefixes.
@@ -543,6 +546,7 @@ export function ChatWorkspace({
             tokensOut: ev.tokensOut,
             durationMs: ev.durationMs,
             modelId: ev.modelId ?? e.modelId ?? null,
+            ...(ev.compactionCount != null ? { compactionCount: ev.compactionCount } : {}),
           }));
           break;
         case "assistant":
@@ -1293,6 +1297,7 @@ function rowToEntry(m: ChatMessageRow): ChatEntry {
     tokensOut: m.tokensOut ?? null,
     durationMs: m.durationMs ?? null,
     modelId: m.modelId ?? null,
+    compactionCount: m.compactions ?? 0,
     createdAt: m.createdAt,
   };
 }
@@ -1342,6 +1347,7 @@ async function recoverDetachedTurn(
           tokensOut: recovered.tokensOut,
           durationMs: recovered.durationMs,
           modelId: recovered.modelId,
+          compactionCount: recovered.compactionCount,
           error: undefined,
         }));
         return true;
@@ -1783,7 +1789,8 @@ function MessageMeta({
           {modelChip}
         </span>
       )}
-      {entry.role === "assistant" && (hasUsage || entry.durationMs != null) && (
+      {entry.role === "assistant" &&
+        (hasUsage || entry.durationMs != null || (entry.compactionCount ?? 0) > 0) && (
         <span className="flex items-center gap-1.5 font-mono text-[10px] text-zinc-600">
           {hasUsage && (
             <span
@@ -1801,6 +1808,15 @@ function MessageMeta({
             <span className="flex items-center gap-0.5" title="Agent turn duration (tools included)">
               <Timer className="size-2.5" aria-hidden />
               {humanDuration(entry.durationMs)}
+            </span>
+          )}
+          {(entry.compactionCount ?? 0) > 0 && (
+            <span
+              className="flex items-center gap-0.5 whitespace-nowrap text-amber-600/80"
+              title={`Context compaction ran ${entry.compactionCount} time(s) during this turn: the transcript grew past 80% of the model's context window, so older messages were summarized into a labeled state document (tool receipts preserved).`}
+            >
+              <Scissors className="size-2.5" aria-hidden />
+              compacted ×{entry.compactionCount}
             </span>
           )}
           {costLabel && (

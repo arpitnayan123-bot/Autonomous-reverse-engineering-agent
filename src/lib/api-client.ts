@@ -126,6 +126,8 @@ export interface ChatMessageRow {
   durationMs?: number | null;
   /** Canonical model id for this turn ("openai/gpt-4o-mini" | "glm-platform"). */
   modelId?: string | null;
+  /** Context compactions during this agent turn (assistant rows; 0 = none). */
+  compactions?: number | null;
   createdAt: string;
 }
 
@@ -236,6 +238,8 @@ export type ChatStreamEvent =
       durationMs: number;
       /** Canonical model id that produced this turn (persisted server-side). */
       modelId?: string;
+      /** Context compactions during this turn (0 = none). */
+      compactionCount?: number;
     }
   | { type: "assistant"; content: string }
   | { type: "error"; error: string }

@@ -141,6 +141,7 @@ export async function GET(req: Request) {
         tokensOut: m.tokensOut,
         durationMs: m.durationMs,
         modelId: m.modelId,
+        compactions: m.compactions,
         createdAt: m.createdAt,
       })),
       total,
@@ -501,7 +502,7 @@ export async function POST(req: Request) {
             targetId: session!.targetId,
           });
           if (userMessage) send({ type: "user_saved", messageId: userMessage.id });
-          const { content, usage, durationMs, modelId } = await runAgentLoop({
+          const { content, usage, durationMs, modelId, compactionCount } = await runAgentLoop({
             sessionId: session!.id,
             target: target ?? null,
             userId: user.id,
@@ -537,6 +538,9 @@ export async function POST(req: Request) {
             tokensOut: usage.tokensOut,
             durationMs,
             modelId,
+            // How many times the agent summarized its own transcript this turn
+            // (0 = none) — the transcript shows "context compacted N times".
+            compactionCount,
           });
           send({ type: "assistant", content });
         } catch (err) {

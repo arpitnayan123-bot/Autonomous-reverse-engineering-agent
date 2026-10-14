@@ -154,6 +154,11 @@ model ChatMessage {
    * estimates and model chips stay correct when the provider changes mid-session.
    */
   modelId    String?
+  /**
+   * How many times context compaction ran during this agent turn
+   * (assistant rows; 0 = none) — surfaced in the transcript meta.
+   */
+  compactions Int?
   createdAt  DateTime    @default(now())
 
   @@index([sessionId, createdAt])
