@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { MAX_CHAT_ITERATIONS } from "@/lib/security";
 import { documentationPrompt, freeChatSystemPrompt, systemPrompt } from "./prompts";
-import { buildTargetContext, executeAgentTool, applyPlanUpdate, runExploreUrlTool, TOOL_RESULT_MAX_CHARS, type AgentToolContext } from "./tools";
+import { buildTargetContext, executeAgentTool, applyPlanUpdate, runExploreUrlTool, runToolWithDedup, TOOL_RESULT_MAX_CHARS, type AgentToolContext } from "./tools";
 import {
   resolveLlmForUser,
   type LlmMessage,
@@ -229,7 +229,7 @@ export async function runAgentLoop(opts: {
 }): Promise<AgentLoopResult> {
   const { sessionId, target, userMessage, history, events } = opts;
   const ctx: AgentToolContext | null = target
-    ? { target, userId: opts.userId }
+    ? { target, userId: opts.userId, sessionId }
     : null;
 
   let llm: ResolvedLlm;
@@ -283,14 +283,18 @@ export async function runAgentLoop(opts: {
     signal: opts.signal,
   };
   const startedAt = Date.now();
+  /** Most recent LLM turn text — used to preserve visible work if we throw. */
+  let lastText: string | undefined;
 
-  for (let i = 0; i < MAX_CHAT_ITERATIONS; i++) {
+  try {
+    for (let i = 0; i < MAX_CHAT_ITERATIONS; i++) {
     if (events?.shouldCancel?.()) {
       final = "**Investigation cancelled by user.** No further tools were run after cancellation; any findings above are partial.";
       break;
     }
     events?.onTurnStart?.(i);
     const text = await callTurn(llm, messages, i, events, callOpts);
+    lastText = text;
     const action = parseToolAction(text);
     if (!action) {
       final = text;
@@ -304,7 +308,11 @@ export async function runAgentLoop(opts: {
       // answered conceptually.
       if (action.tool === "update_plan") {
         events?.onToolCall?.(action.tool, action.args);
-        const result = await applyPlanUpdate(action.args);
+        // Same retry-dedup as the registry path: re-emitting an identical
+        // plan (interrupted turn retried) must not re-run.
+        const result = await runToolWithDedup(sessionId, "update_plan", action.args ?? {}, () =>
+          applyPlanUpdate(action.args)
+        );
         events?.onToolResult?.(action.tool, result);
         toolTrace.push({ tool: action.tool, args: action.args, result });
         messages.push({ role: "assistant", content: text });
@@ -316,7 +324,11 @@ export async function runAgentLoop(opts: {
       }
       if (action.tool === "explore_url") {
         events?.onToolCall?.(action.tool, action.args);
-        const result = await runExploreUrlTool(action.args ?? {});
+        // Same retry-dedup as the registry path: an interrupted turn retried
+        // with the same URL must reuse the prior fetch, not re-fetch.
+        const result = await runToolWithDedup(sessionId, "explore_url", action.args ?? {}, () =>
+          runExploreUrlTool(action.args ?? {})
+        );
         events?.onToolResult?.(action.tool, result);
         toolTrace.push({ tool: action.tool, args: action.args, result });
         messages.push({ role: "assistant", content: text });
@@ -379,6 +391,28 @@ export async function runAgentLoop(opts: {
         : `You have used the maximum number of tool iterations (${MAX_CHAT_ITERATIONS}). Do not emit any more tool blocks. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown.`,
     });
     final = await callTurn(llm, messages, synthesisTurn, events, callOpts);
+    }
+  } catch (err) {
+    // Preserve completed work: persist the partial turn (visible text + the
+    // tool trace executed so far) so a reload keeps it and the retry-dedup
+    // cache has an audit trail. Never mask the original error.
+    try {
+      await db.chatMessage.create({
+        data: {
+          sessionId,
+          role: "assistant",
+          content: formatInterruptedTurnContent(lastText, err),
+          toolCalls: toolTrace.length ? JSON.stringify(toolTrace) : null,
+          tokensIn: usage.tokensIn,
+          tokensOut: usage.tokensOut,
+          durationMs: Date.now() - startedAt,
+          modelId: llmModelId(llm),
+        },
+      });
+    } catch {
+      /* persistence failure must not mask the interrupting error */
+    }
+    throw err;
   }
 
   const durationMs = Date.now() - startedAt;
@@ -407,6 +441,23 @@ export async function runAgentLoop(opts: {
 function llmModelId(llm: ResolvedLlm): string {
   if (llm.source === "platform" || llm.provider === llm.model) return llm.model;
   return `${llm.provider}/${llm.model}`;
+}
+
+/**
+ * Content for the assistant row persisted when a turn throws mid-flight:
+ * keeps whatever visible text the model already produced (skipping raw tool
+ * blocks), appends an honest interruption note, and points at the preserved
+ * trace. Exported for the stream-reliability regression suite.
+ */
+export function formatInterruptedTurnContent(
+  lastText: string | undefined,
+  err: unknown
+): string {
+  const msg = (err instanceof Error ? err.message : String(err ?? "unknown error")).slice(0, 300);
+  const visible =
+    lastText && parseToolAction(lastText) === null ? lastText.trim() : "";
+  const note = `> ⚠️ **Turn interrupted before completion:** ${msg}\n> Tools already executed this turn are preserved in the trace above; a retry reuses their results instead of running them again.`;
+  return visible ? `${visible}\n\n${note}` : note;
 }
 
 /**
