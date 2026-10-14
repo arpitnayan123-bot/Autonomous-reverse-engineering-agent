@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { MAX_CHAT_ITERATIONS } from "@/lib/security";
 import { documentationPrompt, freeChatSystemPrompt, systemPrompt } from "./prompts";
-import { buildTargetContext, executeAgentTool, applyPlanUpdate, runExploreUrlTool, runToolWithDedup, TOOL_RESULT_MAX_CHARS, type AgentToolContext } from "./tools";
+import { buildTargetContext, executeAgentTool, applyPlanUpdate, runExploreUrlTool, runToolWithDedup, TOOL_RESULT_MAX_CHARS, TOOL_REFUSAL_MARKER, AGENT_TOOLS, type AgentToolContext } from "./tools";
 import {
   resolveLlmForUser,
   type LlmMessage,
@@ -108,27 +108,42 @@ export function isTransientLlmError(err: unknown): boolean {
 /** Bounded exponential backoff between turn retries (ms). */
 const TURN_RETRY_BACKOFF_MS = [900, 2200];
 
-export function parseToolAction(
-  text: string
-): { tool: string; args: Record<string, unknown> } | null {
-  // 1) LAST properly closed block wins.
-  const re = new RegExp(TOOL_BLOCK_RE.source, "gi"); // fresh lastIndex
-  let last: RegExpExecArray | null = null;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) last = m;
-  let body = last?.[2];
-  // 2) Fallback: an opener with NO closed block anywhere — the model forgot
-  //    the closing fence. Take the tail and require it to parse as valid JSON
-  //    below, so explanatory prose never executes; only a well-formed
-  //    {tool,args} object does (same safety bar as a closed block).
-  if (body === undefined) {
-    const open = new RegExp(TOOL_OPEN_RE.source, "gi");
-    let lastOpen: RegExpExecArray | null = null;
-    let om: RegExpExecArray | null;
-    while ((om = open.exec(text)) !== null) lastOpen = om;
-    if (lastOpen) body = text.slice(lastOpen.index + lastOpen[0].length);
-  }
-  if (body === undefined) return null;
+/**
+ * Max tool blocks executed per model message. The response protocol says ONE
+ * block per message; models occasionally emit several. Every block up to the
+ * cap gets an honest outcome (executed / refused / traced), the remainder is
+ * reported back as skipped — a message full of tool intents is never silently
+ * reduced to one (or zero) actions, and per-iteration tool runtime stays
+ * bounded (each tool caps at CHAT_TOOL_TIMEOUT_MS).
+ */
+const MAX_TOOL_BLOCKS_PER_MESSAGE = 4;
+
+/** Tools the model may route in a FREE chat (no file target attached). */
+const FREE_CHAT_TOOL_NAMES = ["update_plan", "explore_url"];
+
+function availableToolNames(ctx: AgentToolContext | null): string[] {
+  return ctx ? AGENT_TOOLS.map((t) => t.name) : FREE_CHAT_TOOL_NAMES;
+}
+
+export interface ParsedToolBlock {
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+export interface ToolBlockParse {
+  /** Valid actions in message order (closed blocks; the unterminated tail
+   * only when no closed block yields a valid action — same priority as the
+   * single-action parser always had). */
+  actions: ParsedToolBlock[];
+  /** Tool fences that exist but are NOT routable actions (invalid JSON, or a
+   * JSON object without a non-empty "tool" key). */
+  malformedCount: number;
+  /** True when the text contains at least one tool-fence opener (valid,
+   * malformed, or unterminated). */
+  hasToolFences: boolean;
+}
+
+function tryParseAction(body: string): ParsedToolBlock | null {
   try {
     const parsed = JSON.parse(body.trim()) as {
       tool?: unknown;
@@ -146,10 +161,59 @@ export function parseToolAction(
           : {};
       return { tool: parsed.tool.trim(), args };
     }
-    return null; // malformed block → treat whole message as final answer
+    return null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Parse EVERY tool block in a model message.
+ *
+ * Failure this replaces: the single-action parser took the LAST closed block
+ * and returned null when THAT block was not a valid {tool,args} action — so a
+ * message containing many valid tool intents plus one malformed tail block
+ * (or a fabricated "execute" call) was silently reclassified as a FINAL
+ * ANSWER. Nothing executed, nothing was refused, no trace was written, and
+ * the fabricated success narrative around the blocks streamed to the user as
+ * the turn's answer (the real calculator/Jest fabrication incident). The
+ * plural parser surfaces every intent so the loop can give each one an
+ * honest outcome.
+ */
+export function parseToolActions(text: string): ToolBlockParse {
+  const actions: ParsedToolBlock[] = [];
+  let malformedCount = 0;
+  const closed = new RegExp(TOOL_BLOCK_RE.source, "gi"); // fresh lastIndex
+  let m: RegExpExecArray | null;
+  while ((m = closed.exec(text)) !== null) {
+    const parsed = tryParseAction(m[2]);
+    if (parsed) actions.push(parsed);
+    else malformedCount++;
+  }
+  if (actions.length === 0) {
+    // Unterminated-block fallback — same priority as before: only when no
+    // closed block produced a valid action. The tail must parse as a valid
+    // action object, so explanatory prose never executes.
+    const open = new RegExp(TOOL_OPEN_RE.source, "gi");
+    let lastOpen: RegExpExecArray | null = null;
+    let om: RegExpExecArray | null;
+    while ((om = open.exec(text)) !== null) lastOpen = om;
+    if (lastOpen) {
+      const parsed = tryParseAction(text.slice(lastOpen.index + lastOpen[0].length));
+      if (parsed) actions.push(parsed);
+      else malformedCount++;
+    }
+  }
+  return {
+    actions,
+    malformedCount,
+    hasToolFences: actions.length > 0 || malformedCount > 0,
+  };
+}
+
+export function parseToolAction(text: string): ParsedToolBlock | null {
+  const parsed = parseToolActions(text);
+  return parsed.actions.length ? parsed.actions[parsed.actions.length - 1] : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,17 +250,23 @@ export function toolReceiptSuffix(raw: string | null | undefined): string {
       0,
       RECEIPT_ARG_CHARS
     );
-    const result = String((t as { result?: unknown }).result ?? "")
+    const rawResult = String((t as { result?: unknown }).result ?? "");
+    // Refused calls are IN the trace (honest availability record) but must
+    // never read as executions in a later turn's context — label them.
+    const refused = rawResult.startsWith(TOOL_REFUSAL_MARKER);
+    const result = rawResult
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, RECEIPT_RESULT_CHARS);
     lines.push(
-      `- ${tool}(${args}) → ${result}${result.length >= RECEIPT_RESULT_CHARS ? "…" : ""}`
+      `- ${tool}(${args}) → ${refused ? "[REFUSED — did not run] " : ""}${result}${
+        result.length >= RECEIPT_RESULT_CHARS ? "…" : ""
+      }`
     );
   }
   if (lines.length === 0) return "";
   return (
-    "\n\n[SYSTEM receipt — the platform genuinely executed these tools during the turn above; tool execution works in this conversation:]\n" +
+    "\n\n[SYSTEM receipt — real tool outcomes from the turn above; entries marked [REFUSED — did not run] never executed; every other entry is a genuine platform execution, tool execution works in this conversation:]\n" +
     lines.join("\n")
   );
 }
@@ -218,6 +288,36 @@ export function freeChatRedirectNotice(tool: string): string {
   );
 }
 
+/**
+ * Final-answer integrity gate — the last line of defense against fabricated
+ * execution claims. The strict protocol says a final answer contains NO tool
+ * block; if tool fences still reach the final text (malformed-only blocks,
+ * or a synthesis turn after the iteration budget), everything around them
+ * was simulated: no tool ran, so any terminal output shown beside the blocks
+ * (command results, file listings, test summaries) is fabricated. Accept the
+ * prose, but append an explicit system note that separates SIMULATED output
+ * from the turn's genuinely executed tools instead of letting it pass as
+ * real. Clean answers (no fences) pass through untouched.
+ */
+export function finalizeTurnContent(
+  final: string,
+  toolTrace: AgentToolTrace[],
+  available: string[]
+): string {
+  const open = new RegExp(TOOL_OPEN_RE.source, "gi");
+  if (!open.test(final)) return final;
+  const executed = toolTrace
+    .filter((t) => !t.result.startsWith(TOOL_REFUSAL_MARKER))
+    .map((t) => t.tool);
+  const lines = [
+    "> ⚠️ **Integrity note (system):** The tool-call block(s) above were **simulated by the model — they did NOT execute on the platform**, and any command output, file listing, or test result shown next to them is **fabricated**, not real.",
+    `- Tools that genuinely executed during this turn: ${executed.length ? executed.join(", ") : "none"}.`,
+    `- Tools actually available here: ${available.join(", ")}.`,
+    "> A success claim with no corresponding TOOL RESULT is unverified; treat the fabricated sections accordingly.",
+  ];
+  return `${final}\n\n${lines.join("\n")}`;
+}
+
 // ---------------------------------------------------------------------------
 // The loop
 // ---------------------------------------------------------------------------
@@ -232,6 +332,12 @@ export async function runAgentLoop(opts: {
   events?: AgentEventHandlers;
   /** Aborted when the client disconnects — ends hung LLM calls promptly. */
   signal?: AbortSignal;
+  /**
+   * Regression seam: use THIS resolved LLM instead of resolving per user
+   * (deterministic loop-level tests script the model's turns; production
+   * callers never set it).
+   */
+  llmOverride?: ResolvedLlm;
 }): Promise<AgentLoopResult> {
   const { sessionId, target, userMessage, history, events } = opts;
   const ctx: AgentToolContext | null = target
@@ -239,12 +345,16 @@ export async function runAgentLoop(opts: {
     : null;
 
   let llm: ResolvedLlm;
-  try {
-    llm = await resolveLlmForUser(opts.userId);
-  } catch (err) {
-    throw err instanceof Error
-      ? err
-      : new Error("Failed to resolve an AI model for this account");
+  if (opts.llmOverride) {
+    llm = opts.llmOverride;
+  } else {
+    try {
+      llm = await resolveLlmForUser(opts.userId);
+    } catch (err) {
+      throw err instanceof Error
+        ? err
+        : new Error("Failed to resolve an AI model for this account");
+    }
   }
   events?.onModelResolved?.({
     source: llm.source,
@@ -301,88 +411,111 @@ export async function runAgentLoop(opts: {
     events?.onTurnStart?.(i);
     const text = await callTurn(llm, messages, i, events, callOpts);
     lastText = text;
-    const action = parseToolAction(text);
-    if (!action) {
+    const parsed = parseToolActions(text);
+    if (parsed.actions.length === 0) {
+      // No routable tool intent: plain prose, or tool fences that are all
+      // malformed/unroutable. Either way the message cannot execute anything
+      // — it becomes the final answer, and the post-loop integrity gate
+      // (finalizeTurnContent) labels any simulated blocks it contains.
       final = text;
       break;
     }
-    if (!ctx) {
-      // Free chat: file-bound tools are unavailable — EXCEPT update_plan (pure
-      // planning, no I/O) and explore_url (SSRF-guarded public web fetch, no
-      // target context needed). Both stay fully functional so URL analysis and
-      // long multi-step guidance still execute for real instead of being
-      // answered conceptually.
-      if (action.tool === "update_plan") {
+
+    // Give EVERY valid tool intent an honest outcome — executed, refused, or
+    // (beyond the per-message cap) explicitly skipped. Never a silent drop:
+    // the calculator/Jest fabrication happened because nine intents degraded
+    // into zero outcomes and the surrounding fantasy prose became the answer.
+    const executedResults: Array<{ tool: string; result: string; nudge?: string }> = [];
+    const refusedTools: string[] = [];
+    let halted = false;
+
+    for (const action of parsed.actions.slice(0, MAX_TOOL_BLOCKS_PER_MESSAGE)) {
+      if (ctx) {
+        // Target chat: registry tools execute; unknown names come back as the
+        // honest "unknown tool" error string from executeAgentTool (allow-
+        // listed engine names are auto-routed through rea_tool there).
         events?.onToolCall?.(action.tool, action.args);
-        // Same retry-dedup as the registry path: re-emitting an identical
-        // plan (interrupted turn retried) must not re-run.
-        const result = await runToolWithDedup(sessionId, "update_plan", action.args ?? {}, () =>
-          applyPlanUpdate(action.args)
+        const result = await executeAgentTool(action.tool, action.args, ctx);
+        events?.onToolResult?.(action.tool, result);
+        toolTrace.push({ tool: action.tool, args: action.args, result });
+
+        // ---- Loop guard: identical call fired repeatedly -----------------
+        const sig = `${action.tool}:${JSON.stringify(action.args)}`;
+        const repeats = (repeatCounts.get(sig) ?? 0) + 1;
+        repeatCounts.set(sig, repeats);
+        if (repeats >= 3) {
+          haltReason = `The tool call ${action.tool} was repeated ${repeats} times with identical arguments.`;
+          halted = true;
+          break;
+        }
+        executedResults.push({
+          tool: action.tool,
+          result,
+          nudge:
+            repeats === 2
+              ? `SYSTEM: You already ran this exact call (${action.tool} with identical arguments) ${repeats} times in this turn. The result will not change on another run. Either vary the arguments, choose a DIFFERENT tool, or write your final answer from the evidence you have.`
+              : undefined,
+        });
+      } else if (action.tool === "update_plan" || action.tool === "explore_url") {
+        // Free chat: the two target-independent tools stay fully functional
+        // (planning + SSRF-guarded public web fetch), with the same
+        // retry-dedup as the registry path.
+        events?.onToolCall?.(action.tool, action.args);
+        const result = await runToolWithDedup(sessionId, action.tool, action.args ?? {}, () =>
+          action.tool === "update_plan"
+            ? applyPlanUpdate(action.args)
+            : runExploreUrlTool(action.args ?? {})
         );
         events?.onToolResult?.(action.tool, result);
         toolTrace.push({ tool: action.tool, args: action.args, result });
-        messages.push({ role: "assistant", content: text });
-        messages.push({
-          role: "user",
-          content: `TOOL RESULT for ${action.tool}:\n${result}`,
-        });
-        continue;
-      }
-      if (action.tool === "explore_url") {
+        executedResults.push({ tool: action.tool, result });
+      } else {
+        // Free chat: the tool cannot be routed here (file-bound, unknown, or
+        // a fabricated name like "execute"). Record the refusal IN THE TRACE
+        // and surface it live, so the transcript distinguishes unavailable
+        // tools from failed calls, simulated output, and verified execution.
         events?.onToolCall?.(action.tool, action.args);
-        // Same retry-dedup as the registry path: an interrupted turn retried
-        // with the same URL must reuse the prior fetch, not re-fetch.
-        const result = await runToolWithDedup(sessionId, "explore_url", action.args ?? {}, () =>
-          runExploreUrlTool(action.args ?? {})
-        );
-        events?.onToolResult?.(action.tool, result);
-        toolTrace.push({ tool: action.tool, args: action.args, result });
-        messages.push({ role: "assistant", content: text });
-        messages.push({
-          role: "user",
-          content: `TOOL RESULT for ${action.tool}:\n${result.slice(0, TOOL_RESULT_MAX_CHARS)}`,
-        });
-        continue;
+        const refusal =
+          `${TOOL_REFUSAL_MARKER} — "${action.tool}" is unavailable in this chat (no file target attached). ` +
+          `The platform did not run it; no output exists for it. Available here: ${FREE_CHAT_TOOL_NAMES.join(", ")}.`;
+        events?.onToolResult?.(action.tool, refusal);
+        toolTrace.push({ tool: action.tool, args: action.args, result: refusal });
+        if (!refusedTools.includes(action.tool)) refusedTools.push(action.tool);
       }
-      // The model emitted a file-bound tool block despite the system prompt.
-      // Redirect once per occurrence with SCOPED wording (never a blanket
-      // "no tools" message — that taught models to deny tool access); the
-      // iteration budget still bounds it.
-      messages.push({ role: "assistant", content: text });
-      messages.push({ role: "user", content: freeChatRedirectNotice(action.tool) });
-      continue;
-    }
-    events?.onToolCall?.(action.tool, action.args);
-    const result = await executeAgentTool(action.tool, action.args, ctx);
-    events?.onToolResult?.(action.tool, result);
-    toolTrace.push({ tool: action.tool, args: action.args, result });
-
-    // ---- Loop guard: identical call fired repeatedly ---------------------
-    // A classic agent failure mode: the model re-runs the exact same tool
-    // with the exact same args, expecting a different answer. Nudge it back
-    // on course after the 2nd repeat; hard-stop into synthesis after the 3rd
-    // (the evidence will not change — burning the whole iteration budget on
-    // it helps nobody).
-    const sig = `${action.tool}:${JSON.stringify(action.args)}`;
-    const repeats = (repeatCounts.get(sig) ?? 0) + 1;
-    repeatCounts.set(sig, repeats);
-    if (repeats >= 3) {
-      // Stop iterating — the evidence cannot change. A REAL synthesis turn
-      // still runs below, so the analyst gets a proper answer, not a canned
-      // error string.
-      haltReason = `The tool call ${action.tool} was repeated ${repeats} times with identical arguments.`;
-      break;
     }
 
+    if (halted) break; // evidence cannot change — synthesis turn follows
+
+    // Feed every outcome back: the assistant message once, one TOOL RESULT
+    // per executed block, one scoped redirect per refused tool, and explicit
+    // feedback for skipped/malformed blocks. Nothing is dropped silently.
     messages.push({ role: "assistant", content: text });
-    messages.push({
-      role: "user",
-      content: `TOOL RESULT for ${action.tool}:\n${result.slice(0, 6000)}${
-        repeats === 2
-          ? `\n\nSYSTEM: You already ran this exact call (${action.tool} with identical arguments) ${repeats} times in this turn. The result will not change on another run. Either vary the arguments, choose a DIFFERENT tool, or write your final answer from the evidence you have.`
-          : ""
-      }`,
-    });
+    for (const { tool, result, nudge } of executedResults) {
+      messages.push({
+        role: "user",
+        content: `TOOL RESULT for ${tool}:\n${result.slice(0, TOOL_RESULT_MAX_CHARS)}${
+          nudge ? `\n\n${nudge}` : ""
+        }`,
+      });
+    }
+    for (const name of refusedTools) {
+      messages.push({ role: "user", content: freeChatRedirectNotice(name) });
+    }
+    const skippedValid = parsed.actions.length - MAX_TOOL_BLOCKS_PER_MESSAGE;
+    if (skippedValid > 0 || parsed.malformedCount > 0) {
+      const parts: string[] = [];
+      if (skippedValid > 0) {
+        parts.push(
+          `${skippedValid} additional tool block(s) in your message were not processed this turn (per-message limit of ${MAX_TOOL_BLOCKS_PER_MESSAGE}); re-emit them one per message if still needed.`
+        );
+      }
+      if (parsed.malformedCount > 0) {
+        parts.push(
+          `${parsed.malformedCount} tool block(s) were malformed (invalid JSON or a missing "tool" key) and were NOT executed — never present output for blocks that did not run.`
+        );
+      }
+      messages.push({ role: "user", content: `SYSTEM: ${parts.join(" ")}` });
+    }
   }
 
   if (final === null) {
@@ -430,6 +563,12 @@ export async function runAgentLoop(opts: {
     throw err;
   }
 
+  // Final-answer integrity gate: label any simulated tool blocks that
+  // survived into the final text (malformed-only messages, synthesis turns)
+  // instead of letting fabricated output pass as real. Clean answers pass
+  // through untouched.
+  final = finalizeTurnContent(final, toolTrace, availableToolNames(ctx));
+
   const durationMs = Date.now() - startedAt;
 
   try {
@@ -469,8 +608,12 @@ export function formatInterruptedTurnContent(
   err: unknown
 ): string {
   const msg = (err instanceof Error ? err.message : String(err ?? "unknown error")).slice(0, 300);
+  // Only fence-free text counts as visible work: a mid-flight message that
+  // contains tool fences was still negotiating tool execution — its blocks
+  // never ran, so neither the blocks nor any output narrated beside them
+  // (potentially fabricated) may be surfaced as completed work.
   const visible =
-    lastText && parseToolAction(lastText) === null ? lastText.trim() : "";
+    lastText && !parseToolActions(lastText).hasToolFences ? lastText.trim() : "";
   const note = `> ⚠️ **Turn interrupted before completion:** ${msg}\n> Tools already executed this turn are preserved in the trace above; a retry reuses their results instead of running them again.`;
   return visible ? `${visible}\n\n${note}` : note;
 }

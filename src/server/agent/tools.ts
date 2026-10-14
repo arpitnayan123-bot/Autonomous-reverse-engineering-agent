@@ -24,6 +24,16 @@ import type { Target } from "@prisma/client";
 
 export const TOOL_RESULT_MAX_CHARS = 6000;
 
+/**
+ * Prefix for a tool-trace result recording a REFUSED call — the model asked
+ * for a tool that this session cannot route (e.g. a file-bound tool in a
+ * free chat, or an unknown name). The marker is part of the persisted trace
+ * JSON and the receipt format: it is how the platform distinguishes
+ * "attempted but unavailable" from "executed with a result" and from
+ * "never called at all". Never cache or present these as successes.
+ */
+export const TOOL_REFUSAL_MARKER = "NOT EXECUTED";
+
 const REA_ALLOWLIST = new Set([
   "inspect_artifact",
   "analyze_javascript_application",
@@ -808,9 +818,16 @@ function getCachedToolResult(key: string): string | null {
 }
 
 /** Store a result for dedup. Failures are NEVER cached — a transient error
- * must stay retryable. */
+ * must stay retryable — and neither are refusals (a tool that was refused is
+ * not a successful execution, so a later retry must not read "NOT
+ * re-executed" from a refusal). */
 function storeToolResult(key: string, result: string): void {
-  if (/^error\b/i.test(result) || result.slice(0, 100).includes("isError: true")) return;
+  if (
+    /^error\b/i.test(result) ||
+    result.slice(0, 100).includes("isError: true") ||
+    result.startsWith(TOOL_REFUSAL_MARKER)
+  )
+    return;
   if (toolDedupCache.size >= TOOL_DEDUP_MAX_ENTRIES) {
     const oldest = toolDedupCache.keys().next().value;
     if (oldest !== undefined) toolDedupCache.delete(oldest);
