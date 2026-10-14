@@ -1,24 +1,50 @@
 import { db } from "@/lib/db";
 import { MAX_CHAT_ITERATIONS } from "@/lib/security";
 import { documentationPrompt, freeChatSystemPrompt, systemPrompt } from "./prompts";
-import { buildTargetContext, executeAgentTool, runFreeChatTool, runToolWithDedup, TOOL_RESULT_MAX_CHARS, TOOL_REFUSAL_MARKER, AGENT_TOOLS, FREE_CHAT_TOOL_NAMES, type AgentToolContext } from "./tools";
+import {
+  buildTargetContext,
+  executeAgentTool,
+  runFreeChatTool,
+  runToolWithDedup,
+  TOOL_RESULT_MAX_CHARS,
+  TOOL_REFUSAL_MARKER,
+  AGENT_TOOLS,
+  FREE_CHAT_TOOL_NAMES,
+  nativeToolSchemas,
+  type AgentToolContext,
+} from "./tools";
 import {
   resolveLlmForUser,
   type LlmMessage,
+  type LlmToolCall,
+  type LlmToolsResult,
   type ResolvedLlm,
+  type ToolSchema,
   type TokenUsage,
 } from "./providers";
 import type { Evidence, Finding, Target } from "@prisma/client";
 
 /**
- * REA investigation agent — ReAct loop.
+ * REA investigation agent — ReAct loop with dual tool protocol.
  *
- * The LLM interface is plain text (works across OpenAI, Anthropic, Gemini,
- * DeepSeek, Kimi, GLM and the platform fallback): each model turn must either
- * produce the final markdown answer or emit exactly one ```tool {json} ```
- * action block. The block is parsed (LAST one wins), executed server-side,
- * and the truncated result is fed back as a user message until
- * MAX_CHAT_ITERATIONS is exhausted.
+ * Two model→tool handoff paths share ONE execution core (per-call outcomes,
+ * trace receipts, retry dedup, repeat guard, refusal handling — identical
+ * guarantees by construction, not by copy):
+ *
+ * 1. NATIVE (providers with supportsNativeTools + callLLMTools): tool
+ *    schemas travel through the provider's function-calling interface; the
+ *    model's tool_calls are executed sequentially (tools are not thread-safe)
+ *    and ALL results are reported back in a single protocol-valid turn as
+ *    role:"tool" messages (merged tool_result blocks for Anthropic).
+ *
+ * 2. TEXT (platform fallback, Gemini, any provider without the flag — the
+ *    original protocol, unchanged): each model turn must either produce the
+ *    final markdown answer or emit ```tool {json} ``` action blocks, parsed,
+ *    executed server-side and fed back as user messages.
+ *
+ * Both paths run until MAX_CHAT_ITERATIONS is exhausted; the fabrication
+ * gate (finalizeTurnContent) labels simulated blocks in the final answer on
+ * either path.
  */
 
 export type { LlmMessage };
@@ -366,6 +392,34 @@ export function finalizeTurnContent(
 // The loop
 // ---------------------------------------------------------------------------
 
+/**
+ * Appended to the system prompt ONLY on the native path: the shared prompt
+ * teaches the text fence grammar, which would make a native-capable model
+ * write ```tool blocks into visible text (where they never execute). The
+ * addendum switches the protocol and keeps the honesty rule explicit.
+ */
+const NATIVE_TOOL_PROTOCOL_ADDENDUM =
+  "\n\n## Tool protocol override (native function calling)\n" +
+  "- This session has NATIVE tool calling enabled: invoke tools through the provider's function-calling interface. Do NOT emit ```tool blocks — text in your visible answer is NEVER executed, and any block found there is labeled as simulated.\n" +
+  "- You may emit MULTIPLE tool calls in one turn when they are independent; they run one after another and every result comes back to you together.\n" +
+  "- Every honesty rule still applies verbatim: only claim an operation succeeded if a tool result for it actually arrived.";
+
+/**
+ * Outcome of one tool intent (text-block action OR native tool_call) through
+ * the shared execution core. `halted` means the repeat guard fired: the call
+ * was traced/streamed but nothing more runs this turn.
+ */
+type ActionOutcome =
+  | {
+      kind: "executed";
+      tool: string;
+      args: Record<string, unknown>;
+      result: string;
+      nudge?: string;
+    }
+  | { kind: "refused"; tool: string; args: Record<string, unknown>; result: string }
+  | { kind: "halted"; tool: string; args: Record<string, unknown>; reason: string };
+
 export async function runAgentLoop(opts: {
   sessionId: string;
   /** null → FREE chat: no file attached, no tools, general RE copilot. */
@@ -419,6 +473,31 @@ export async function runAgentLoop(opts: {
         { role: "user", content: userMessage },
       ];
 
+  /**
+   * Native tool calling is used ONLY when the resolved LLM declares the
+   * capability AND implements it — the platform fallback and any provider
+   * without the flag transparently run the original text protocol. The
+   * schemas advertise exactly the tools this chat can route (all registry
+   * tools for a target chat, any-scoped only for a FREE chat) — the model
+   * never sees a tool it cannot reach.
+   */
+  const nativeEnabled = Boolean(
+    llm.supportsNativeTools && typeof llm.callLLMTools === "function"
+  );
+  const nativeSchemas: ToolSchema[] = nativeEnabled
+    ? nativeToolSchemas(ctx ? "target" : "free")
+    : [];
+  if (nativeEnabled) {
+    // Protocol override: the shared system prompt teaches the text fence
+    // grammar; a native-capable model must use the function-calling interface
+    // instead. Fences that leak into visible text anyway are NOT executed —
+    // the finalizeTurnContent gate labels them as simulated.
+    messages[0] = {
+      role: "assistant",
+      content: `${messages[0].content}${NATIVE_TOOL_PROTOCOL_ADDENDUM}`,
+    };
+  }
+
   const toolTrace: AgentToolTrace[] = [];
   /** How many times each exact tool call (name + args) ran this turn. */
   const repeatCounts = new Map<string, number>();
@@ -446,6 +525,79 @@ export async function runAgentLoop(opts: {
   /** Most recent LLM turn text — used to preserve visible work if we throw. */
   let lastText: string | undefined;
 
+  /**
+   * Shared per-call execution core — the ONLY place a tool intent (a parsed
+   * text-block action OR a native tool_call) becomes an outcome. Both
+   * protocol paths call THIS function, so the integrity guarantees (live
+   * events, trace receipts, retry dedup, refusal wording, repeat guard)
+   * cannot drift between them.
+   */
+  const executeAction = async (action: {
+    tool: string;
+    args: Record<string, unknown>;
+  }): Promise<ActionOutcome> => {
+    if (ctx) {
+      // Target chat: registry tools execute; unknown names come back as the
+      // honest "unknown tool" error string from executeAgentTool (allow-
+      // listed engine names are auto-routed through rea_tool there).
+      events?.onToolCall?.(action.tool, action.args);
+      const result = await executeAgentTool(action.tool, action.args, ctx);
+      events?.onToolResult?.(action.tool, result);
+      toolTrace.push({ tool: action.tool, args: action.args, result });
+
+      // ---- Loop guard: identical call fired repeatedly -------------------
+      const sig = `${action.tool}:${JSON.stringify(action.args)}`;
+      const repeats = (repeatCounts.get(sig) ?? 0) + 1;
+      repeatCounts.set(sig, repeats);
+      if (repeats >= 3) {
+        return {
+          kind: "halted",
+          tool: action.tool,
+          args: action.args,
+          reason: `The tool call ${action.tool} was repeated ${repeats} times with identical arguments.`,
+        };
+      }
+      return {
+        kind: "executed",
+        tool: action.tool,
+        args: action.args,
+        result,
+        nudge:
+          repeats === 2
+            ? `SYSTEM: You already ran this exact call (${action.tool} with identical arguments) ${repeats} times in this turn. The result will not change on another run. Either vary the arguments, choose a DIFFERENT tool, or write your final answer from the evidence you have.`
+            : undefined,
+      };
+    }
+    if (FREE_CHAT_TOOL_SET.has(action.tool)) {
+      // Free chat: every any-scoped tool (planning, SSRF-guarded web fetch,
+      // the sandboxed workspace) stays fully functional, with the same
+      // dedup policy as the registry path — including per-tool opt-out for
+      // stateful tools (workspace_write/workspace_run re-execute by design).
+      const freeTool = AGENT_TOOLS.find((t) => t.name === action.tool);
+      events?.onToolCall?.(action.tool, action.args);
+      const result = await runToolWithDedup(
+        freeTool?.dedup === false ? undefined : sessionId,
+        action.tool,
+        action.args ?? {},
+        () => runFreeChatTool(action.tool, action.args ?? {}, { sessionId })
+      );
+      events?.onToolResult?.(action.tool, result);
+      toolTrace.push({ tool: action.tool, args: action.args, result });
+      return { kind: "executed", tool: action.tool, args: action.args, result };
+    }
+    // Free chat: the tool cannot be routed here (file-bound, unknown, or
+    // a fabricated name like "execute"). Record the refusal IN THE TRACE
+    // and surface it live, so the transcript distinguishes unavailable
+    // tools from failed calls, simulated output, and verified execution.
+    events?.onToolCall?.(action.tool, action.args);
+    const refusal =
+      `${TOOL_REFUSAL_MARKER} — "${action.tool}" is unavailable in this chat (no file target attached). ` +
+      `The platform did not run it; no output exists for it. Available here: ${FREE_CHAT_TOOL_NAMES.join(", ")}.`;
+    events?.onToolResult?.(action.tool, refusal);
+    toolTrace.push({ tool: action.tool, args: action.args, result: refusal });
+    return { kind: "refused", tool: action.tool, args: action.args, result: refusal };
+  };
+
   try {
     for (let i = 0; i < MAX_CHAT_ITERATIONS; i++) {
     if (events?.shouldCancel?.()) {
@@ -453,6 +605,114 @@ export async function runAgentLoop(opts: {
       break;
     }
     events?.onTurnStart?.(i);
+
+    if (nativeEnabled) {
+      // ---- NATIVE path: schemas went out with the request; the model's
+      // tool_calls come back normalized. Calls execute SEQUENTIALLY (tools
+      // are not thread-safe) and ALL results are reported back together in
+      // one protocol-valid turn (assistant tool_calls + role:"tool" answers).
+      const res = await callTurnTools(llm, messages, nativeSchemas, i, events, callOpts);
+      lastText = res.content;
+      if (res.toolCalls.length === 0) {
+        // Plain prose (or stray text fences — the finalizeTurnContent gate
+        // labels those): the turn's final answer on the native path.
+        final = res.content;
+        break;
+      }
+
+      // Give EVERY provider tool_call an honest outcome — executed, refused,
+      // malformed-args error, or (beyond the per-message cap / after a loop
+      // halt) an explicit NOT EXECUTED answer. Protocol validity requires a
+      // tool response for every tool_call_id; honesty requires that response
+      // to say exactly what really happened.
+      const responses: LlmMessage[] = [];
+      const executedResults: Array<{ tool: string; result: string; nudge?: string }> = [];
+      const refusedTools: string[] = [];
+      let halted = false;
+      const answerCall = (id: string, content: string) =>
+        responses.push({ role: "tool", content, toolCallId: id });
+
+      for (let c = 0; c < res.toolCalls.length; c++) {
+        const tc = res.toolCalls[c];
+        if (c >= MAX_TOOL_BLOCKS_PER_MESSAGE) {
+          // Beyond the per-message cap: answered honestly, never executed
+          // (per-iteration tool runtime stays bounded, same as the text path).
+          answerCall(
+            tc.id,
+            `NOT EXECUTED — per-message tool-call limit (${MAX_TOOL_BLOCKS_PER_MESSAGE}) reached; this call was not run. Re-emit it in your next turn if still needed.`
+          );
+          continue;
+        }
+        if (halted) {
+          // Repeat guard already fired: nothing further executes this turn.
+          const notRun = `${TOOL_REFUSAL_MARKER} — loop halted (an identical call was repeated); this call was not run.`;
+          events?.onToolCall?.(tc.name || "(unnamed)", tc.arguments);
+          events?.onToolResult?.(tc.name || "(unnamed)", notRun);
+          toolTrace.push({ tool: tc.name || "(unnamed)", args: tc.arguments, result: notRun });
+          answerCall(tc.id, notRun);
+          continue;
+        }
+        if (!tc.name || !tc.name.trim()) {
+          const err =
+            "Error: the provider returned a tool call without a usable function name — nothing was executed.";
+          events?.onToolCall?.("(unnamed)", tc.arguments);
+          events?.onToolResult?.("(unnamed)", err);
+          toolTrace.push({ tool: "(unnamed)", args: tc.arguments, result: err });
+          answerCall(tc.id, err);
+          continue;
+        }
+        if (tc.malformedArguments) {
+          // The provider's arguments never parsed: executing with {} would be
+          // a guess, so the call is answered with a precise, honest failure.
+          const err = `Error: the provider returned malformed JSON arguments for "${tc.name}" (${tc.malformedArguments}) — nothing was executed. Re-emit the call with a valid JSON arguments object matching the tool's schema.`;
+          events?.onToolCall?.(tc.name, {});
+          events?.onToolResult?.(tc.name, err);
+          toolTrace.push({ tool: tc.name, args: {}, result: err });
+          answerCall(tc.id, err);
+          continue;
+        }
+        const outcome = await executeAction({ tool: tc.name, args: tc.arguments });
+        if (outcome.kind === "halted") {
+          haltReason = outcome.reason;
+          halted = true;
+          answerCall(
+            tc.id,
+            `${TOOL_REFUSAL_MARKER} — ${outcome.reason} No further calls run this turn; synthesize from the evidence already gathered.`
+          );
+          continue;
+        }
+        if (outcome.kind === "refused") {
+          if (!refusedTools.includes(outcome.tool)) refusedTools.push(outcome.tool);
+          answerCall(tc.id, outcome.result.slice(0, TOOL_RESULT_MAX_CHARS));
+          continue;
+        }
+        executedResults.push({ tool: outcome.tool, result: outcome.result, nudge: outcome.nudge });
+        answerCall(
+          tc.id,
+          `${outcome.result.slice(0, TOOL_RESULT_MAX_CHARS)}${outcome.nudge ? `\n\n${outcome.nudge}` : ""}`
+        );
+      }
+
+      // Protocol validity FIRST: the assistant tool_calls message and every
+      // tool answer go in together, so the next request is always well-formed
+      // (OpenAI requires a role:"tool" per tool_call_id; Anthropic merges the
+      // tool_result blocks into one user turn).
+      messages.push({
+        role: "assistant",
+        content: res.content,
+        ...(res.toolCalls.length ? { toolCalls: res.toolCalls } : {}),
+      });
+      for (const r of responses) messages.push(r);
+      if (!halted) {
+        for (const name of refusedTools) {
+          messages.push({ role: "user", content: freeChatRedirectNotice(name) });
+        }
+      }
+      if (halted) break; // evidence cannot change — synthesis turn follows
+      continue;
+    }
+
+    // ---- TEXT path (original protocol, unchanged) -------------------------
     const text = await callTurn(llm, messages, i, events, callOpts);
     lastText = text;
     const parsed = parseToolActions(text);
@@ -474,61 +734,17 @@ export async function runAgentLoop(opts: {
     let halted = false;
 
     for (const action of parsed.actions.slice(0, MAX_TOOL_BLOCKS_PER_MESSAGE)) {
-      if (ctx) {
-        // Target chat: registry tools execute; unknown names come back as the
-        // honest "unknown tool" error string from executeAgentTool (allow-
-        // listed engine names are auto-routed through rea_tool there).
-        events?.onToolCall?.(action.tool, action.args);
-        const result = await executeAgentTool(action.tool, action.args, ctx);
-        events?.onToolResult?.(action.tool, result);
-        toolTrace.push({ tool: action.tool, args: action.args, result });
-
-        // ---- Loop guard: identical call fired repeatedly -----------------
-        const sig = `${action.tool}:${JSON.stringify(action.args)}`;
-        const repeats = (repeatCounts.get(sig) ?? 0) + 1;
-        repeatCounts.set(sig, repeats);
-        if (repeats >= 3) {
-          haltReason = `The tool call ${action.tool} was repeated ${repeats} times with identical arguments.`;
-          halted = true;
-          break;
-        }
-        executedResults.push({
-          tool: action.tool,
-          result,
-          nudge:
-            repeats === 2
-              ? `SYSTEM: You already ran this exact call (${action.tool} with identical arguments) ${repeats} times in this turn. The result will not change on another run. Either vary the arguments, choose a DIFFERENT tool, or write your final answer from the evidence you have.`
-              : undefined,
-        });
-      } else if (FREE_CHAT_TOOL_SET.has(action.tool)) {
-        // Free chat: every any-scoped tool (planning, SSRF-guarded web fetch,
-        // the sandboxed workspace) stays fully functional, with the same
-        // dedup policy as the registry path — including per-tool opt-out for
-        // stateful tools (workspace_write/workspace_run re-execute by design).
-        const freeTool = AGENT_TOOLS.find((t) => t.name === action.tool);
-        events?.onToolCall?.(action.tool, action.args);
-        const result = await runToolWithDedup(
-          freeTool?.dedup === false ? undefined : sessionId,
-          action.tool,
-          action.args ?? {},
-          () => runFreeChatTool(action.tool, action.args ?? {}, { sessionId })
-        );
-        events?.onToolResult?.(action.tool, result);
-        toolTrace.push({ tool: action.tool, args: action.args, result });
-        executedResults.push({ tool: action.tool, result });
-      } else {
-        // Free chat: the tool cannot be routed here (file-bound, unknown, or
-        // a fabricated name like "execute"). Record the refusal IN THE TRACE
-        // and surface it live, so the transcript distinguishes unavailable
-        // tools from failed calls, simulated output, and verified execution.
-        events?.onToolCall?.(action.tool, action.args);
-        const refusal =
-          `${TOOL_REFUSAL_MARKER} — "${action.tool}" is unavailable in this chat (no file target attached). ` +
-          `The platform did not run it; no output exists for it. Available here: ${FREE_CHAT_TOOL_NAMES.join(", ")}.`;
-        events?.onToolResult?.(action.tool, refusal);
-        toolTrace.push({ tool: action.tool, args: action.args, result: refusal });
-        if (!refusedTools.includes(action.tool)) refusedTools.push(action.tool);
+      const outcome = await executeAction(action);
+      if (outcome.kind === "halted") {
+        haltReason = outcome.reason;
+        halted = true;
+        break;
       }
+      if (outcome.kind === "refused") {
+        if (!refusedTools.includes(outcome.tool)) refusedTools.push(outcome.tool);
+        continue;
+      }
+      executedResults.push({ tool: outcome.tool, result: outcome.result, nudge: outcome.nudge });
     }
 
     if (halted) break; // evidence cannot change — synthesis turn follows
@@ -570,13 +786,29 @@ export async function runAgentLoop(opts: {
     // force a synthesis turn with no tools.
     const synthesisTurn = MAX_CHAT_ITERATIONS;
     events?.onTurnStart?.(synthesisTurn);
+    const toolNoun = nativeEnabled ? "tool calls" : "tool blocks";
     messages.push({
       role: "user",
       content: haltReason
-        ? `Do not emit any more tool blocks. ${haltReason} Repetition cannot produce new evidence. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown and which different tool or argument you would try next.`
-        : `You have used the maximum number of tool iterations (${MAX_CHAT_ITERATIONS}). Do not emit any more tool blocks. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown.`,
+        ? `Do not emit any more ${toolNoun}. ${haltReason} Repetition cannot produce new evidence. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown and which different tool or argument you would try next.`
+        : `You have used the maximum number of tool iterations (${MAX_CHAT_ITERATIONS}). Do not emit any more ${toolNoun}. Synthesize all OBSERVED / DERIVED / INFERRED evidence gathered so far into your final markdown answer now, and state clearly what remains unknown.`,
     });
-    final = await callTurn(llm, messages, synthesisTurn, events, callOpts);
+    let synthesized: string;
+    if (nativeEnabled) {
+      // No schemas offered: the model cannot call tools it cannot see, so the
+      // answer is prose by construction. A tool_calls response anyway means a
+      // protocol-violating provider — surfaced honestly, never silently run.
+      const res = await callTurnTools(llm, messages, [], synthesisTurn, events, callOpts);
+      if (res.toolCalls.length > 0) {
+        throw new Error(
+          "Provider returned tool calls despite no tool schemas being offered — nothing was executed"
+        );
+      }
+      synthesized = res.content;
+    } else {
+      synthesized = await callTurn(llm, messages, synthesisTurn, events, callOpts);
+    }
+    final = synthesized;
     }
   } catch (err) {
     // Preserve completed work: persist the partial turn (visible text + the
@@ -733,6 +965,56 @@ export async function callTurn(
         (err instanceof Error && err.name === "TurnAbortedError");
       if (aborted) throw err;
       if (!isTransientLlmError(err) || attempt === TURN_RETRY_BACKOFF_MS.length) {
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, TURN_RETRY_BACKOFF_MS[attempt]));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/**
+ * One NATIVE tool-calling turn — same transient-failure retry discipline as
+ * callTurn: a retry only happens BEFORE any content delta reached the client
+ * (a retry after partial output would duplicate visible text), cancellation
+ * is honored at every step and never retried. Tool-call argument fragments
+ * never pass through onDelta, so accumulating them cannot corrupt the live
+ * draft. No non-native fallback here: the loop only calls this when the
+ * resolved LLM declared the capability.
+ */
+/** Exported for the native-tools regression suite. */
+export async function callTurnTools(
+  llm: ResolvedLlm,
+  messages: LlmMessage[],
+  tools: ToolSchema[],
+  turn: number,
+  events?: AgentEventHandlers,
+  callOpts?: { onUsage?: (u: TokenUsage) => void; signal?: AbortSignal }
+): Promise<LlmToolsResult> {
+  if (!llm.callLLMTools) {
+    throw new Error("Resolved LLM does not implement native tool calling");
+  }
+  let emitted = false;
+  const sink = (delta: string) => {
+    emitted = true;
+    events?.onAssistantDelta?.(delta, turn);
+  };
+
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt <= TURN_RETRY_BACKOFF_MS.length; attempt++) {
+    try {
+      return await llm.callLLMTools(messages, tools, sink, callOpts);
+    } catch (err) {
+      lastErr = err;
+      const aborted =
+        callOpts?.signal?.aborted ||
+        (err instanceof Error && err.name === "TurnAbortedError");
+      if (aborted) throw err; // a cancelled turn is never retried
+      if (
+        emitted ||
+        !isTransientLlmError(err) ||
+        attempt === TURN_RETRY_BACKOFF_MS.length
+      ) {
         throw err;
       }
       await new Promise((r) => setTimeout(r, TURN_RETRY_BACKOFF_MS[attempt]));
