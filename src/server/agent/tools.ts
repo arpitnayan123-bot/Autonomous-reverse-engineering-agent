@@ -70,6 +70,14 @@ const PATH_KEY_RE =
 export interface AgentToolContext {
   target: Target;
   userId: string;
+  /**
+   * Chat session id, when the call comes from the chat loop. Enables the
+   * retry-dedup cache: after an interrupted turn is retried (resend or
+   * regenerate), an identical tool call (same tool + same args in the same
+   * session) returns the PRIOR result instead of executing again — no
+   * duplicate fetches/queries/writes. Absent → no dedup (MCP/REST paths).
+   */
+  sessionId?: string;
 }
 
 export interface AgentTool {
@@ -722,15 +730,92 @@ export async function executeAgentTool(
     }
     return `Error: unknown tool "${name}". Available tools: ${AGENT_TOOLS.map((t) => t.name).join(", ")}. REA engine tools (inspect_artifact, list_strings, …) run via the rea_tool wrapper.`;
   }
+  return runToolWithDedup(ctx.sessionId, name, args ?? {}, () =>
+    tool.run(args ?? {}, ctx)
+  );
+}
+
+/**
+ * Retry dedup shared by ALL tool surfaces (registry tools AND the free-chat
+ * direct paths, which bypass the registry). An identical call (same session
+ * + tool + args) that already succeeded within the TTL returns its prior
+ * result with an explicit annotation instead of executing again — retrying
+ * an interrupted turn must not duplicate fetches, queries or extractions.
+ */
+export async function runToolWithDedup(
+  sessionId: string | undefined,
+  toolName: string,
+  args: Record<string, unknown>,
+  run: () => Promise<string>
+): Promise<string> {
+  const key = sessionId ? toolDedupKey(sessionId, toolName, args) : null;
+  if (key) {
+    const cached = getCachedToolResult(key);
+    if (cached !== null) {
+      return `${cached}\n\n(reused from the earlier identical execution in this session — NOT re-executed; identical calls within 10 minutes are deduplicated across retries)`;
+    }
+  }
+  let result: string;
   try {
-    const result = await tool.run(args ?? {}, ctx);
-    return result.slice(0, TOOL_RESULT_MAX_CHARS);
+    result = (await run()).slice(0, TOOL_RESULT_MAX_CHARS);
   } catch (err) {
-    return `Error running tool ${name}: ${err instanceof Error ? err.message : String(err)}`.slice(
+    // The tool-execution contract: never throw — return an error string.
+    return `Error running tool ${toolName}: ${err instanceof Error ? err.message : String(err)}`.slice(
       0,
       TOOL_RESULT_MAX_CHARS
     );
   }
+  if (key) storeToolResult(key, result);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Retry-dedup cache (session-scoped, in-memory)
+// ---------------------------------------------------------------------------
+
+const TOOL_DEDUP_TTL_MS = 10 * 60_000;
+const TOOL_DEDUP_MAX_ENTRIES = 200;
+const toolDedupCache = new Map<string, { result: string; at: number }>();
+
+/** Stable, order-independent key: sorted object keys, arrays in order. */
+export function toolDedupKey(
+  sessionId: string,
+  tool: string,
+  args: Record<string, unknown>
+): string {
+  const stable = (v: unknown): string => {
+    if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
+    if (v && typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      return `{${Object.keys(o)
+        .sort()
+        .map((k) => `${JSON.stringify(k)}:${stable(o[k])}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(v ?? null);
+  };
+  return `${sessionId}|${tool}|${stable(args)}`;
+}
+
+function getCachedToolResult(key: string): string | null {
+  const hit = toolDedupCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > TOOL_DEDUP_TTL_MS) {
+    toolDedupCache.delete(key);
+    return null;
+  }
+  return hit.result;
+}
+
+/** Store a result for dedup. Failures are NEVER cached — a transient error
+ * must stay retryable. */
+function storeToolResult(key: string, result: string): void {
+  if (/^error\b/i.test(result) || result.slice(0, 100).includes("isError: true")) return;
+  if (toolDedupCache.size >= TOOL_DEDUP_MAX_ENTRIES) {
+    const oldest = toolDedupCache.keys().next().value;
+    if (oldest !== undefined) toolDedupCache.delete(oldest);
+  }
+  toolDedupCache.set(key, { result, at: Date.now() });
 }
 
 // ---------------------------------------------------------------------------
