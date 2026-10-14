@@ -34,9 +34,15 @@ import {
   executeAgentTool,
   applyPlanUpdate,
   runExploreUrlTool,
+  runFreeChatTool,
+  runWorkspaceTool,
+  FREE_CHAT_TOOL_NAMES,
   toolDedupKey,
   TOOL_REFUSAL_MARKER,
 } from "@/server/agent/tools";
+import { runCommand, writeFile as builderWriteFile } from "@/server/platform/builder";
+import { promises as fs } from "fs";
+import path from "path";
 import { freeChatSystemPrompt, systemPrompt } from "@/server/agent/prompts";
 import {
   classifyToolOutcome,
@@ -304,10 +310,11 @@ async function main(): Promise<void> {
 
   const notice = freeChatRedirectNotice("target_info");
   check(
-    "C7  redirect notice scopes refusal to THAT tool and re-asserts working tools",
+    "C7  redirect notice scopes refusal to THAT tool and re-asserts the DERIVED working tools",
     notice.includes('"target_info"') &&
       notice.includes("unavailable here") &&
-      notice.includes("update_plan and explore_url remain fully functional") &&
+      FREE_CHAT_TOOL_NAMES.every((n) => notice.includes(n)) &&
+      notice.includes("remain fully functional") &&
       !notice.includes("Do not emit tool blocks"),
     notice.slice(0, 120)
   );
@@ -320,9 +327,11 @@ async function main(): Promise<void> {
     ""
   );
   check(
-    "C9  free-chat prompt states the precise capability boundary",
-    freePrompt.includes("NO tool for running shell commands") &&
-      freePrompt.includes('not "tools are unavailable"'),
+    "C9  free-chat prompt states the precise capability boundary (real sandbox advertised, limits precise)",
+    freePrompt.includes('not "tools are unavailable"') &&
+      freePrompt.includes("workspace_run") &&
+      freePrompt.includes("not a full shell, OS environment or network sandbox") &&
+      !freePrompt.includes("NO tool for running shell commands"),
     ""
   );
 
@@ -348,7 +357,8 @@ async function main(): Promise<void> {
   );
   check(
     "C11 target-chat prompt states the precise capability boundary",
-    targetPrompt.includes("no shell or test-suite runner") &&
+    targetPrompt.includes("never executed") &&
+      targetPrompt.includes("workspace_run") &&
       targetPrompt.includes("THIS capability is unavailable"),
     ""
   );
@@ -1238,6 +1248,258 @@ async function main(): Promise<void> {
       h7Final.includes(CLIENT_INTEGRITY_MARKER),
     ""
   );
+
+  // ---------------------------------------------------------------------
+  // I. Chat workspace sandbox — the round-35 capability audit.
+  //
+  // Round-33's audit classified shell/file ops as IMPLEMENTED (builder.ts
+  // project workspaces) but NOT EXPOSED to chat, so the model's only honest
+  // move was to refuse build-and-run requests — and its dishonest move was
+  // to fabricate them. Round 35 EXPOSES the sandbox to chat. This section
+  // proves: real bytes land on disk, real commands run with real output,
+  // every escape vector tried is honestly refused, stateful tools are not
+  // dedup-cached, the advertisement derives from the registry (parity, no
+  // drift), and the full free-chat loop executes the pipeline FOR REAL.
+  // ---------------------------------------------------------------------
+
+  section("I. Chat workspace sandbox (real execution + advertisement parity)");
+
+  // I1: every registry tool declares its scope; the free set is exactly the
+  // any-scoped tools and includes the workspace quartet.
+  const i1Any = AGENT_TOOLS.filter((t) => t.scope === "any").map((t) => t.name);
+  check(
+    "I1  registry scopes complete; free set is registry-derived and includes workspace tools",
+    AGENT_TOOLS.every((t) => t.scope === "any" || t.scope === "target") &&
+      i1Any.includes("update_plan") &&
+      i1Any.includes("explore_url") &&
+      i1Any.includes("workspace_list") &&
+      i1Any.includes("workspace_read") &&
+      i1Any.includes("workspace_write") &&
+      i1Any.includes("workspace_run") &&
+      JSON.stringify(FREE_CHAT_TOOL_NAMES.slice().sort()) === JSON.stringify(i1Any.slice().sort()),
+    i1Any.join(",")
+  );
+
+  // I2/I3: advertisement parity — the prompts advertise exactly what routes.
+  const i2Prompt = freeChatSystemPrompt();
+  check(
+    "I2  free-chat prompt advertises the derived free set (no stale 'no tools' prose)",
+    i1Any.every((n) => i2Prompt.includes(n)) &&
+      !i2Prompt.includes("NO tool for running shell commands") &&
+      !i2Prompt.includes("no file access"),
+    ""
+  );
+  const i3Target = systemPrompt({} as Target);
+  check(
+    "I3  target prompt advertises the workspace and keeps the uploaded-file boundary",
+    i3Target.includes("workspace_write") &&
+      i3Target.includes("workspace_run") &&
+      i3Target.includes("never executed"),
+    ""
+  );
+
+  // Real sandbox round-trip on a throwaway session workspace.
+  const iSession = `reg-i-${Date.now()}`;
+  const iWorkspace = path.join(process.cwd(), "storage", "workspaces", `chat-${iSession}`);
+  const iContent = "console.log('2+2 =', 2 + 2);\n";
+
+  const i4 = await runFreeChatTool(
+    "workspace_write",
+    { path: "calculator.js", content: iContent },
+    { sessionId: iSession }
+  );
+  const i4Disk = await fs.readFile(path.join(iWorkspace, "calculator.js"), "utf8").catch(() => null);
+  check(
+    "I4  workspace_write lands REAL bytes on disk and reports them honestly",
+    i4.includes("OBSERVED write") &&
+      i4.includes(`bytes written: ${Buffer.byteLength(iContent, "utf8")}`) &&
+      i4.includes("created new file") &&
+      i4Disk === iContent,
+    `diskMatch:${i4Disk === iContent}`
+  );
+
+  const i5 = await runFreeChatTool("workspace_read", { path: "calculator.js" }, { sessionId: iSession });
+  check(
+    "I5  workspace_read returns the real content",
+    i5.includes("OBSERVED file content") && i5.includes("2+2 ="),
+    ""
+  );
+
+  const i6 = await runFreeChatTool("workspace_run", { command: "node calculator.js" }, { sessionId: iSession });
+  check(
+    "I6  workspace_run executes FOR REAL (node runs the written file, real stdout)",
+    i6.includes("OBSERVED execution") && i6.includes("exit code: 0") && i6.includes("2+2 = 4"),
+    i6.slice(0, 140)
+  );
+
+  const i7 = await runFreeChatTool("workspace_run", { command: "node missing-file.js" }, { sessionId: iSession });
+  check(
+    "I7  failing command is an honest FAILED state (real stderr, classified failed)",
+    i7.startsWith("Error:") &&
+      i7.includes("exit code: 1") &&
+      i7.includes("Cannot find module") &&
+      classifyToolOutcome({ pending: false, preview: i7 }) === "failed",
+    i7.slice(0, 100)
+  );
+
+  // Sandbox escape attempts — every one must be an HONEST refusal result, and
+  // nothing may appear outside the jail.
+  const i8 = await runFreeChatTool(
+    "workspace_write",
+    { path: "../../escape.txt", content: "nope" },
+    { sessionId: iSession }
+  );
+  const i8Outside = await fs
+    .readFile(path.join(process.cwd(), "storage", "workspaces", "escape.txt"), "utf8")
+    .catch(() => null);
+  check(
+    "I8  traversal write is jailed (honest error, nothing written outside)",
+    i8.startsWith("Error:") && i8Outside === null,
+    i8.slice(0, 100)
+  );
+
+  const i9 = await runFreeChatTool("workspace_run", { command: "bash -c 'echo hi'" }, { sessionId: iSession });
+  check(
+    "I9  non-allowlisted binary refused with the effective allowlist",
+    i9.startsWith("Error:") && i9.includes("NOT executed") && i9.includes("Permitted in the chat workspace sandbox"),
+    ""
+  );
+
+  const i10 = await runFreeChatTool("workspace_run", { command: 'node -e "console.log(1)"' }, { sessionId: iSession });
+  check(
+    "I10 inline eval is blocked and redirected to write-then-run",
+    i10.startsWith("Error:") && i10.includes("inline code evaluation") && i10.includes("workspace_write"),
+    ""
+  );
+
+  const i11 = await runFreeChatTool("workspace_run", { command: "cat /etc/passwd" }, { sessionId: iSession });
+  check(
+    "I11 absolute-path arguments are blocked",
+    i11.startsWith("Error:") && i11.includes("absolute path"),
+    ""
+  );
+
+  const i12 = await runFreeChatTool("workspace_run", { command: "cat ../../db/custom.db" }, { sessionId: iSession });
+  check(
+    "I12 '..' traversal arguments are blocked (the platform DB stays unreachable)",
+    i12.startsWith("Error:") && i12.includes("escapes the workspace"),
+    ""
+  );
+
+  const i13 = await runFreeChatTool("workspace_run", { command: "awk 'BEGIN{print 1}'" }, { sessionId: iSession });
+  check(
+    "I13 script/transport binaries are blocked in chat mode",
+    i13.startsWith("Error:") && i13.includes("not permitted in the chat workspace sandbox"),
+    ""
+  );
+
+  // I14: stateful tools bypass the dedup cache — identical args, changed
+  // state, FRESH execution (a cached prior result would be stale, not honest).
+  await runFreeChatTool("workspace_write", { path: "count.txt", content: "one\n" }, { sessionId: iSession });
+  const i14a = await runFreeChatTool("workspace_run", { command: "wc -l count.txt" }, { sessionId: iSession });
+  await runFreeChatTool("workspace_write", { path: "count.txt", content: "one\ntwo\n" }, { sessionId: iSession });
+  const i14b = await runFreeChatTool("workspace_run", { command: "wc -l count.txt" }, { sessionId: iSession });
+  check(
+    "I14 workspace_run is NOT dedup-cached (identical args, fresh state-visible execution)",
+    i14a.includes("1 count.txt") &&
+      i14b.includes("2 count.txt") &&
+      !i14b.includes("reused from the earlier identical execution"),
+    `${i14a.includes("1 count.txt")}/${i14b.includes("2 count.txt")}`
+  );
+
+  // I15: project workspaces keep their own (looser) posture — sed still runs
+  // there without chatMode; the guards are opt-in.
+  await builderWriteFile("reg-i-proj", "t.txt", "a\nb\n", { audit: false });
+  const i15 = await runCommand("reg-i-proj", "sed -n '1p' t.txt", 10_000);
+  check(
+    "I15 project-workspace posture unchanged (sed runs without chatMode)",
+    i15.exitCode === 0 && i15.stdout.trim() === "a",
+    `exit=${i15.exitCode} out=${i15.stdout.trim()}`
+  );
+
+  // I16: the FULL free-chat loop executes the calculator pipeline FOR REAL —
+  // the exact request class that used to fabricate a Jest run now executes
+  // end-to-end: write → run → final answer grounded in the real output.
+  const i16Session = `reg-i16-${Date.now()}`;
+  const i16Captured: Array<{ role: string; content: string }[]> = [];
+  const i16Turn1 = `I'll create and run it.\n\n\`\`\`tool\n${JSON.stringify({
+    tool: "workspace_write",
+    args: { path: "calculator.js", content: iContent },
+  })}\n\`\`\``;
+  const i16Turn2 = `Now run it.\n\n\`\`\`tool\n${JSON.stringify({
+    tool: "workspace_run",
+    args: { command: "node calculator.js" },
+  })}\n\`\`\``;
+  const i16Turn3 = "## Verified execution\n\nThe calculator ran for real: it printed `2+2 = 4` with exit code 0 (see the workspace_run trace above).";
+  const i16 = await runAgentLoop({
+    sessionId: i16Session,
+    target: null,
+    userId: "regression",
+    userMessage: "Create calculator.js in the workspace and run it.",
+    history: [],
+    llmOverride: fakeLlm([i16Turn1, i16Turn2, i16Turn3], i16Captured),
+  });
+  const i16Disk = await fs
+    .readFile(path.join(process.cwd(), "storage", "workspaces", `chat-${i16Session}`, "calculator.js"), "utf8")
+    .catch(() => null);
+  check(
+    "I16 loop executes write→run for real; final answer cites the REAL output",
+    i16.toolCalls[0]?.tool === "workspace_write" &&
+      i16.toolCalls[0].result.includes("OBSERVED write") &&
+      i16.toolCalls[1]?.tool === "workspace_run" &&
+      i16.toolCalls[1].result.includes("exit code: 0") &&
+      i16.toolCalls[1].result.includes("2+2 = 4") &&
+      i16.content.includes("2+2 = 4") &&
+      !i16.content.includes("Integrity note") &&
+      i16Disk === iContent,
+    `tools=${i16.toolCalls.map((t) => t.tool).join(",")} disk=${i16Disk !== null}`
+  );
+
+  // I17: the redirect notice derives its availability list from the registry —
+  // it must list every free tool except the refused one, workspace included.
+  const i17Notice = freeChatRedirectNotice("execute");
+  check(
+    "I17 redirect notice is registry-derived (workspace tools listed, target tools absent)",
+    i17Notice.includes("update_plan") &&
+      i17Notice.includes("workspace_run") &&
+      !i17Notice.includes("rea_tool") &&
+      i17Notice.includes("remain fully functional"),
+    ""
+  );
+
+  // I18: receipts present genuine workspace executions without refusal labels.
+  const i18 = toolReceiptSuffix(
+    JSON.stringify([
+      {
+        tool: "workspace_run",
+        args: { command: "node calculator.js" },
+        result: "# workspace_run — OBSERVED execution\n- exit code: 0",
+      },
+    ])
+  );
+  check(
+    "I18 receipts show real workspace executions as executions",
+    i18.includes("- workspace_run(") &&
+      i18.includes("→ # workspace_run — OBSERVED execution") &&
+      i18.includes("real tool outcomes"),
+    ""
+  );
+
+  // I19: workspace tools without a session context refuse honestly (they are
+  // chat-session capabilities, not ambient host access).
+  const i19 = await runWorkspaceTool("workspace_run", { command: "ls" }, { sessionId: "" });
+  check(
+    "I19 workspace tools without a chat session refuse honestly",
+    i19.startsWith("Error:") && i19.includes("chat session context"),
+    ""
+  );
+
+  // Cleanup: remove the throwaway workspaces.
+  await Promise.all([
+    fs.rm(iWorkspace, { recursive: true, force: true }),
+    fs.rm(path.join(process.cwd(), "storage", "workspaces", `chat-${i16Session}`), { recursive: true, force: true }),
+    fs.rm(path.join(process.cwd(), "storage", "workspaces", "reg-i-proj"), { recursive: true, force: true }),
+  ]);
 
   // ---------------------------------------------------------------------
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
