@@ -793,3 +793,26 @@ Stage Summary:
 - Explorer E2E-verified beyond a single fetch: recursive BFS over a real multi-page HTTP site with duplicates and cycles, depth/page budgets, honest error recording, real timeout handling, and a redirect-to-blocked refusal through the true network stack. One real SSRF gap (IPv4-embedded IPv6 hex forms) was found by the verification and fixed with precise hextet decoding; all suites re-run green after the fix.
 - Honest limits: example.com's single-page result reflects its real link-free markup; httpbin.org cases depend on a third-party service (they executed successfully this round); IPv6 DNS answers with embedded v4 and zone-id addresses are not separately exercised.
 - Next: push 4 local commits when a fresh PAT arrives; correct the 35→33→37 check-count narrative in docs.
+
+---
+Task ID: 26
+Agent: Z.ai Code (chat-agent tool-execution reliability)
+Task: "Fix REA's tool-execution reliability — the assistant invoked explore_url earlier but later claimed it could not access tools or execute tests. Inspect registration/routing/handoff, find why it falls back to conceptual guidance, make inspection/crawling/testing requests invoke tools, return real outputs, distinguish unavailable capabilities from execution failures, add regression tests, run them."
+
+Work Log:
+- INSPECTED the full handoff chain: tools.ts (10-tool AGENT_TOOLS registry, executeAgentTool never throws, engine-name auto-route via rea_tool), agent.ts (ReAct ```tool loop, MAX_CHAT_ITERATIONS=12, TOOL_RESULT fed back as user message), chat/route.ts (history built from DB rows), prompts.ts (both system prompts), chat-workspace.tsx (client fence preview).
+- ROOT CAUSES (all verified in code, no guessing):
+  RC1 cross-turn handoff erased tool evidence: DB rows carry toolCalls JSON but the route replayed only role+content, so later turns saw a transcript where tools never executed -> models concluded "I cannot access tools" even right after a successful explore_url.
+  RC2 blanket-ban redirect: free-chat feedback for a file-bound tool block said "Do not emit tool blocks here" — unscoped, poisoning even update_plan/explore_url for the rest of the turn.
+  RC3 silent degrade: TOOL_BLOCK_RE required exactly "```tool\n" — "``` tool" (space), "```TOOL", ~~~ fences, CRLF/indented variants and unterminated blocks all parsed as prose, so the intended tool call shipped as the visible answer and never executed (client preview tolerates these variants, so users saw intent flash then prose).
+  RC4 no capability boundary: no shell/test-runner tool exists by security design, but prompts never said so precisely, so "can't run tests" overgeneralized into "no tools".
+- FIXED (smallest reliable diffs, no architecture change): tolerant parser with fence backreference + unterminated-JSON fallback; scoped freeChatRedirectNotice; toolReceiptSuffix() appended to replayed assistant rows in the route; free-chat explore_url result bounded; anti-refusal + capability-boundary clauses in both prompts.
+- TESTED: new scripts/regression-agent.ts — 32/32 PASS (13 parser, 10 execution/error incl. REAL example.com fetch, 9 receipts/redirect/prompt contracts); bun run regress:explorer stays 37/37; tsc clean; eslint clean.
+- LIVE E2E through the real handoff (demo token, POST /api/chat SSE, platform LLM): turn 1 "fetch https://example.com" -> tool_call explore_url + tool_result (status 200, "Example Domain", cloudflare fingerprints) + grounded answer; turn 2 (same session) "do the same for https://www.iana.org" -> tool_call explore_url again + tool_result (200, IANA, 36 links) — cross-turn tool willingness confirmed; turn 3 "run the repository test suite" -> precise scoped refusal "I cannot execute test suites or run shell commands in this chat - that capability is unavailable" WITHOUT denying tool access. History API shows both tool turns persist toolCalls JSON (the receipts source). dev.log clean for all three turns.
+- COMMITS (authored Arpit Nayan): a0c7f70 (agent.ts fixes) -> bf0728e (route receipts) -> 2fee9c7 (prompts) -> cf53139 (regression + regress:agent) -> this worklog commit.
+- HONEST LIMITS: turn-level LLM behavior is nondeterministic — the live turns are executed evidence of the handoff working, not a guarantee for every future model turn; receipts/redirect/parser fixes are deterministically covered by the 32-check suite. Engine-call paths of rea_tool (allowlist rejection tested before engine contact) are exercised by scripts/verify-bridge.ts, not this suite. No PAT supplied this round: 5 commits ride the next push.
+
+Stage Summary:
+- The chat agent can no longer silently lose tool calls to parser strictness, talk itself into "no tools" via the redirect wording, or forget across turns that tools execute — and it now distinguishes "this capability is unavailable" from "tools are unavailable" in both prompt contracts and observed live behavior.
+- Unpushed: a0c7f70, bf0728e, 2fee9c7, cf53139, this worklog commit (5) — awaiting a fresh PAT per runbook.
+- Next candidates: surface tool receipts in the UI transcript (the DB rows already carry them); chat-agent crawl_site tool backed by crawlBounded; MCP registry unchanged (20 tools).
