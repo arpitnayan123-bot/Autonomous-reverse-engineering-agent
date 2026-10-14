@@ -27,6 +27,36 @@ const REA_SCRIPT = path.join(
 
 const INIT_TIMEOUT_MS = 20_000;
 
+/**
+ * Cap for `structuredContent` returned by engine tools/call. Text content has
+ * MAX_OUTPUT_BYTES, but structuredContent crossed the bridge UNCAPPED — a
+ * hostile/broken engine tool could stream megabytes of JSON into the agent
+ * context and the persisted trace. Serialized, byte-capped, honestly marked.
+ */
+export const STRUCTURED_CONTENT_MAX_BYTES = 512 * 1024;
+
+/** Serialize + cap structured tool output. Exported for regression coverage. */
+export function capStructured(content: unknown, maxBytes = STRUCTURED_CONTENT_MAX_BYTES): unknown {
+  if (content == null) return content;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(content);
+  } catch {
+    return {
+      __platform: "structured-content-unserializable",
+      note: "The engine returned structured content that could not be serialized; it was dropped, not passed through.",
+    };
+  }
+  if (serialized == null || serialized.length <= maxBytes) return content;
+  return {
+    __platform: "structured-content-truncated",
+    originalBytes: serialized.length,
+    maxBytes,
+    preview: serialized.slice(0, maxBytes),
+    note: "Structured content exceeded the platform output budget and was truncated — the JSON preview above is NOT the complete payload.",
+  };
+}
+
 interface JsonRpcResponse {
   jsonrpc: "2.0";
   id?: number | string;
@@ -264,7 +294,7 @@ class ReaMcpClient {
         "\n…[truncated by platform output budget]";
     }
     return {
-      structured: result.structuredContent ?? null,
+      structured: capStructured(result.structuredContent ?? null),
       text,
       isError: Boolean(result.isError),
     };
