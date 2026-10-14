@@ -4,6 +4,13 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { isPathInside } from "@/lib/security";
 import { db } from "@/lib/db";
+import {
+  detectDocker,
+  runInContainer,
+  sandboxImage,
+  tokenize,
+  type SandboxMode,
+} from "@/server/platform/sandbox";
 
 /**
  * REA Builder — isolated workspace execution.
@@ -14,6 +21,19 @@ import { db } from "@/lib/db";
  * construction. Terminal commands run WITHOUT a shell (argument tokenizer,
  * no pipes/interpolation), from an allowlist, with a hard timeout and output
  * cap, in a scrubbed environment, always with cwd = the project workspace.
+ *
+ * Execution context — sandbox modes (see sandbox.ts):
+ *   "process" — the process-level jail (no shell, allowlist, cwd pin, hard
+ *               timeout, scrubbed env). The historical baseline.
+ *   "docker"  — the same command policy, but the command runs INSIDE a
+ *               disposable container (--network none, --read-only rootfs,
+ *               tmpfs /tmp, 512 MB memory, 1 CPU, workspace bind-mounted
+ *               rw at /workspace). Refused honestly when no container
+ *               daemon is reachable — the command is NOT executed.
+ *   "auto"    — container when one is available, process jail otherwise
+ *               (the platform default).
+ * The chosen mode is carried on the result (`sandbox`) so tool outputs can
+ * report which context actually executed — never implied, always stated.
  *
  * Workspaces carry a built-in git history (see the "Git version control"
  * section): creation runs `git init` + an initial empty commit, and every
@@ -311,37 +331,9 @@ const COMMAND_ALLOWLIST = new Set([
   "which", "env", "date", "true",
 ]);
 
-/** Tokenizer honoring single/double quotes — the shell is never involved. */
-function tokenize(input: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let quote: '"' | "'" | null = null;
-  let started = false;
-  for (const ch of input) {
-    if (quote) {
-      if (ch === quote) quote = null;
-      else cur += ch;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      started = true;
-      continue;
-    }
-    if (ch === " " || ch === "\t" || ch === "\n") {
-      if (started || cur) {
-        out.push(cur);
-        cur = "";
-        started = false;
-      }
-      continue;
-    }
-    cur += ch;
-    started = true;
-  }
-  if (started || cur) out.push(cur);
-  return out;
-}
+// The no-shell tokenizer (single/double quotes honored, shell never involved)
+// lives in sandbox.ts and is shared with the container execution path — one
+// implementation for both sandboxes, no drift.
 
 export interface CommandResult {
   command: string;
@@ -351,6 +343,13 @@ export interface CommandResult {
   timedOut: boolean;
   durationMs: number;
   blocked?: string;
+  /**
+   * Which sandbox actually executed the command — "docker" (container) or
+   * "process" (jail). Absent on refusals (blocked) because nothing ran.
+   * Tool outputs MUST derive their "executed in … sandbox" line from this
+   * field, never from the requested mode: "auto" resolves at run time.
+   */
+  sandbox?: "docker" | "process";
 }
 
 export interface CommandOptions {
@@ -365,7 +364,22 @@ export interface CommandOptions {
    * execute with server privileges; that class is documented, not hidden.
    */
   chatMode?: boolean;
+  /**
+   * Execution context for this command:
+   *   "auto" (default) — Docker container sandbox when a daemon is
+   *     reachable, else the process-level jail below;
+   *   "process" — always the process-level jail (pre-Docker behavior);
+   *   "docker" — always the container sandbox; when Docker is unavailable
+   *     the command is REFUSED with "Docker sandbox requested but not
+   *     available" instead of silently downgrading.
+   * Every mode passes the SAME command policy first: allowlist, chat-mode
+   * guards, quota. The sandbox changes WHERE code runs, never WHAT may run.
+   */
+  sandbox?: SandboxMode;
 }
+
+/** Alias — runCommand's option contract (kept in sync with CommandOptions). */
+export type RunCommandOptions = CommandOptions;
 
 /** Binaries never permitted in chat workspaces (script/transport escape vectors). */
 const CHAT_BLOCKED_BINS = new Set(["sed", "awk", "find", "tar", "git", "env"]);
@@ -507,50 +521,115 @@ export async function runCommand(
   // unavailable or no repository: bookkeeping silently skipped.
   const gitBefore = await gitStatusSnapshot(projectId);
 
-  const result = await new Promise<CommandResult>((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    const MAX_OUT = 200 * 1024;
-    const child = spawn(bin, argv.slice(1), {
-      cwd,
-      env: env as NodeJS.ProcessEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        /* already dead */
-      }
-    }, Math.min(timeoutMs, 120_000));
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (d: string) => {
-      if (stdout.length < MAX_OUT) stdout += d;
-    });
-    child.stderr.on("data", (d: string) => {
-      if (stderr.length < MAX_OUT) stderr += d;
-    });
-    const finish = (code: number) => {
-      clearTimeout(timer);
-      resolve({
-        command,
-        exitCode: code,
-        stdout: stdout.slice(0, MAX_OUT),
-        stderr: stderr.slice(0, MAX_OUT),
-        timedOut,
-        durationMs: Date.now() - started,
+  // --- execution: resolve the sandbox mode and run --------------------------
+  //
+  // The command policy above is IDENTICAL for both sandboxes; only the
+  // execution context differs. The result records the mode that ACTUALLY
+  // ran (`sandbox`) so callers report honestly instead of echoing the ask.
+  const mode: SandboxMode = opts?.sandbox ?? "auto";
+
+  /** The historical process-level jail (no shell, cwd pinned, scrubbed env). */
+  const runProcessJail = (): Promise<CommandResult> =>
+    new Promise<CommandResult>((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      const MAX_OUT = 200 * 1024;
+      const child = spawn(bin, argv.slice(1), {
+        cwd,
+        env: env as NodeJS.ProcessEnv,
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
       });
-    };
-    child.on("close", (code) => finish(code ?? (timedOut ? 124 : 1)));
-    child.on("error", (err) => {
-      stderr += String(err);
-      finish(127);
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* already dead */
+        }
+        // A grandchild that outlived the command (a spawned test runner, a
+        // daemon) inherits the stdio pipes and would keep "close" pending
+        // until IT exits — destroy the streams so the timeout lands now.
+        try { child.stdin?.destroy(); } catch { /* noop */ }
+        try { child.stdout?.destroy(); } catch { /* noop */ }
+        try { child.stderr?.destroy(); } catch { /* noop */ }
+      }, Math.min(timeoutMs, 120_000));
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (d: string) => {
+        if (stdout.length < MAX_OUT) stdout += d;
+      });
+      child.stderr.on("data", (d: string) => {
+        if (stderr.length < MAX_OUT) stderr += d;
+      });
+      const finish = (code: number) => {
+        clearTimeout(timer);
+        resolve({
+          command,
+          exitCode: code,
+          stdout: stdout.slice(0, MAX_OUT),
+          stderr: stderr.slice(0, MAX_OUT),
+          timedOut,
+          durationMs: Date.now() - started,
+          sandbox: "process",
+        });
+      };
+      child.on("close", (code) => finish(code ?? (timedOut ? 124 : 1)));
+      child.on("error", (err) => {
+        stderr += String(err);
+        finish(127);
+      });
     });
-  });
+
+  let result: CommandResult;
+  if (mode === "process") {
+    result = await runProcessJail();
+  } else if (await detectDocker()) {
+    // Container path: the SAME scrubbed env goes in via -e (runInContainer
+    // translates the host workspace paths to /workspace), with PATH pinned
+    // to the container-standard lookup dirs — the host PATH entries are
+    // meaningless inside the image and could only break binary resolution.
+    const containerEnv: Record<string, string> = {
+      ...env,
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+    };
+    const c = await runInContainer(cwd, command, Math.min(timeoutMs, 120_000), containerEnv);
+    if (c.refused) {
+      // Mount-path rejection / runtime vanished between probe and spawn —
+      // the command did NOT run; refuse honestly.
+      result = {
+        command,
+        exitCode: c.exitCode,
+        stdout: "",
+        stderr: c.stderr,
+        timedOut: false,
+        durationMs: c.durationMs,
+        blocked: c.refused,
+      };
+    } else {
+      result = {
+        command,
+        exitCode: c.exitCode,
+        stdout: c.stdout,
+        stderr: c.stderr,
+        timedOut: c.timedOut,
+        durationMs: c.durationMs,
+        sandbox: "docker",
+      };
+    }
+  } else if (mode === "docker") {
+    // Explicit container request, no daemon: refuse — never silently
+    // downgrade an explicit security choice.
+    return blockedResult(
+      command,
+      "Docker sandbox requested but not available",
+      `No docker/podman daemon answered. Switch the sandbox mode to "auto" or "process" in Security settings, or start the container runtime (image: ${sandboxImage()}).`
+    );
+  } else {
+    // "auto" with no container runtime: the historical process jail.
+    result = await runProcessJail();
+  }
 
   // Auto-commit a run that changed the working tree ("run: <command>").
   // Blocked commands never executed — nothing to commit. Git bookkeeping
