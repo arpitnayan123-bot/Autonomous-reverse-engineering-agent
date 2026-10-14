@@ -40,7 +40,12 @@ import {
   toolDedupKey,
   TOOL_REFUSAL_MARKER,
 } from "@/server/agent/tools";
-import { runCommand, writeFile as builderWriteFile } from "@/server/platform/builder";
+import {
+  CHAT_WORKSPACE_QUOTA_BYTES,
+  runCommand,
+  workspaceDiskUsage,
+  writeFile as builderWriteFile,
+} from "@/server/platform/builder";
 import { promises as fs } from "fs";
 import path from "path";
 import { freeChatSystemPrompt, systemPrompt } from "@/server/agent/prompts";
@@ -1494,11 +1499,121 @@ async function main(): Promise<void> {
     ""
   );
 
+  // I20: honest usage reporting — workspace_list carries the REAL disk state
+  // against the quota (the walk reports actual file bytes on disk).
+  const i20 = await runFreeChatTool("workspace_list", {}, { sessionId: iSession });
+  const i20Usage = await workspaceDiskUsage(`chat-${iSession}`);
+  check(
+    "I20 workspace_list reports real usage against the quota",
+    i20.includes("Workspace usage:") &&
+      i20.includes("of 8.00 MB quota") &&
+      i20Usage.files >= 2 &&
+      i20Usage.bytes >= Buffer.byteLength(iContent, "utf8"),
+    `files=${i20Usage.files} bytes=${i20Usage.bytes}`
+  );
+
+  // I21-I23: quota enforcement logic at the builder level — a tiny quota makes
+  // the tests fast and deterministic. Overwrite accounting credits the bytes a
+  // file replaces; crossing the quota refuses with NOTHING written.
+  const iQuotaDir = "reg-i-quota";
+  let i21Err = "";
+  try {
+    await builderWriteFile(iQuotaDir, "big.txt", "x".repeat(20_000), { audit: false, quotaBytes: 10_000 });
+  } catch (err) {
+    i21Err = err instanceof Error ? err.message : String(err);
+  }
+  const i21OnDisk = await fs
+    .stat(path.join(process.cwd(), "storage", "workspaces", iQuotaDir, "big.txt"))
+    .then(() => true)
+    .catch(() => false);
+  check(
+    "I21 over-quota write is refused (honest error, nothing written)",
+    i21Err.includes("quota") && i21Err.includes("NOTHING was written") && i21OnDisk === false,
+    i21Err.slice(0, 120)
+  );
+
+  await builderWriteFile(iQuotaDir, "acc.txt", "a".repeat(4_000), { audit: false, quotaBytes: 10_000 });
+  let i22Err = "";
+  try {
+    await builderWriteFile(iQuotaDir, "acc.txt", "b".repeat(9_000), { audit: false, quotaBytes: 10_000 });
+  } catch (err) {
+    i22Err = err instanceof Error ? err.message : String(err);
+  }
+  check(
+    "I22 overwrite credits the replaced bytes (4 KB -> 9 KB fits a 10 KB quota)",
+    i22Err === "",
+    i22Err.slice(0, 120)
+  );
+
+  let i23Err = "";
+  try {
+    await builderWriteFile(iQuotaDir, "other.txt", "c".repeat(4_000), { audit: false, quotaBytes: 10_000 });
+  } catch (err) {
+    i23Err = err instanceof Error ? err.message : String(err);
+  }
+  check(
+    "I23 write that would cross the quota (9 KB + 4 KB > 10 KB) is refused",
+    i23Err.includes("quota") && i23Err.includes("NOTHING was written"),
+    i23Err.slice(0, 120)
+  );
+
+  // I24: chat-level enforcement on the REAL 8 MB quota — seed the session
+  // workspace to its quota on disk, then a chat write and a chat run must both
+  // refuse honestly (write refused BEFORE any bytes land; run blocked BEFORE
+  // spawn).
+  const i24Session = `reg-i24-${Date.now()}`;
+  const i24Workspace = path.join(process.cwd(), "storage", "workspaces", `chat-${i24Session}`);
+  await fs.mkdir(i24Workspace, { recursive: true });
+  await fs.writeFile(path.join(i24Workspace, "filler.bin"), Buffer.alloc(CHAT_WORKSPACE_QUOTA_BYTES));
+  const i24write = await runFreeChatTool(
+    "workspace_write",
+    { path: "x.txt", content: "hello" },
+    { sessionId: i24Session }
+  );
+  const i24xOnDisk = await fs
+    .stat(path.join(i24Workspace, "x.txt"))
+    .then(() => true)
+    .catch(() => false);
+  check(
+    "I24a chat write at quota is refused honestly (nothing written)",
+    i24write.startsWith("Error:") &&
+      i24write.includes("quota") &&
+      i24write.includes("NOTHING was written") &&
+      i24xOnDisk === false,
+    i24write.slice(0, 140)
+  );
+  const i24run = await runFreeChatTool("workspace_run", { command: "echo hi" }, { sessionId: i24Session });
+  check(
+    "I24b chat command at quota is blocked BEFORE spawn (honest block)",
+    i24run.startsWith("Error:") &&
+      i24run.includes("command NOT executed") &&
+      i24run.includes("disk quota") &&
+      !i24run.includes("\nhi"),
+    i24run.slice(0, 140)
+  );
+
+  // I25: the write receipt carries the honest post-write usage note.
+  const i25 = await runFreeChatTool(
+    "workspace_write",
+    { path: "usage-note.txt", content: "note" },
+    { sessionId: iSession }
+  );
+  check(
+    "I25 write receipt reports post-write workspace usage against the quota",
+    i25.includes("OBSERVED write") &&
+      i25.includes("bytes written: 4") &&
+      i25.includes("workspace now:") &&
+      i25.includes("of 8.00 MB quota"),
+    i25.slice(0, 160)
+  );
+
   // Cleanup: remove the throwaway workspaces.
   await Promise.all([
     fs.rm(iWorkspace, { recursive: true, force: true }),
     fs.rm(path.join(process.cwd(), "storage", "workspaces", `chat-${i16Session}`), { recursive: true, force: true }),
     fs.rm(path.join(process.cwd(), "storage", "workspaces", "reg-i-proj"), { recursive: true, force: true }),
+    fs.rm(path.join(process.cwd(), "storage", "workspaces", iQuotaDir), { recursive: true, force: true }),
+    fs.rm(i24Workspace, { recursive: true, force: true }),
   ]);
 
   // ---------------------------------------------------------------------
