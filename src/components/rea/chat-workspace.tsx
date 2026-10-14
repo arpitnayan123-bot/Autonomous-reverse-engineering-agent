@@ -1086,6 +1086,12 @@ function friendlyError(raw: string): { title: string; hint?: string } {
       hint: "Check the account behind your API key, or switch models in Settings → API key & model.",
     };
   }
+  if (/connection dropped|completion frame/.test(m)) {
+    return {
+      title: "Connection lost mid-answer.",
+      hint: "The partial text above is preserved — resend the message or use Regenerate to continue.",
+    };
+  }
   if (/timeout|etimedout|econnreset|econnrefused|fetch failed|network|socket|enotfound|dns/i.test(m)) {
     return {
       title: "Lost contact with the model mid-answer.",

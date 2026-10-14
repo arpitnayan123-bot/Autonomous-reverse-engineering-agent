@@ -513,6 +513,20 @@ export async function streamChat(
   const decoder = new TextDecoder();
   let buffer = "";
 
+  /**
+   * A stream that ends WITHOUT the terminal frame (done | error) did NOT
+   * finish — the connection was cut mid-answer (proxy idle timeout, network
+   * drop). Resolving silently would strand the user with a half answer and
+   * no explanation; throw an explicit, honest error instead. The caller
+   * keeps the already-streamed partial content (error is merged into the
+   * entry, content untouched).
+   */
+  let sawTerminal = false;
+  const trackedOnEvent = (ev: ChatStreamEvent) => {
+    if (ev.type === "done" || ev.type === "error") sawTerminal = true;
+    onEvent(ev);
+  };
+
   const consumeFrame = (frame: string) => {
     for (const line of frame.split("\n")) {
       const trimmed = line.trim();
@@ -520,7 +534,7 @@ export async function streamChat(
       const payload = trimmed.slice(5).trim();
       if (!payload || payload === "[DONE]") continue;
       try {
-        onEvent(JSON.parse(payload) as ChatStreamEvent);
+        trackedOnEvent(JSON.parse(payload) as ChatStreamEvent);
       } catch {
         // Malformed frame — ignore, keep the stream alive.
       }
@@ -540,6 +554,11 @@ export async function streamChat(
   }
   // Flush any trailing frame that was not \n\n-terminated.
   if (buffer.trim()) consumeFrame(buffer);
+  if (!sawTerminal) {
+    throw new Error(
+      "The connection dropped before the model finished (no completion frame). Your partial answer is preserved — resend the message or use Regenerate to continue."
+    );
+  }
   return {
     rateLimitRemaining: Number.isFinite(rateLimitRemaining) ? rateLimitRemaining : null,
   };
