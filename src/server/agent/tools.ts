@@ -857,9 +857,15 @@ export async function runWorkspaceTool(
         return `Error: command NOT executed — ${r.stderr.slice(0, 500)}`;
       }
       const head = [
-        `# workspace_run — OBSERVED execution`,
+        // Honest classification: a non-zero exit is a FAILED execution — the
+        // command genuinely ran and failed, and the result carries the real
+        // stderr below. "Error:"-prefixing keeps the UI/state machine honest
+        // (tool-status classifies it failed, never a green EXECUTED row).
+        r.exitCode === 0
+          ? `# workspace_run — OBSERVED execution`
+          : `Error: command exited with code ${r.exitCode}${r.timedOut ? ` (killed: exceeded the ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s cap)` : ""} — OBSERVED execution of the workspace command:`,
         `- command: ${command}`,
-        `- exit code: ${r.exitCode}${r.timedOut ? ` (killed: exceeded the ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s cap)` : ""}`,
+        `- exit code: ${r.exitCode}`,
         `- duration: ${r.durationMs}ms`,
       ].join("\n");
       return `${head}\n\n## stdout\n${r.stdout.trim() ? truncate(r.stdout.trim(), 4000) : "(empty)"}\n\n## stderr\n${r.stderr.trim() ? truncate(r.stderr.trim(), 2500) : "(empty)"}`;
