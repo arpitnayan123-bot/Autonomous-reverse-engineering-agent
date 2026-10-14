@@ -4,6 +4,7 @@ import * as React from "react";
 import { motion } from "framer-motion";
 import {
   ArrowDown,
+  Ban,
   Binary,
   Check,
   ChevronDown,
@@ -20,8 +21,10 @@ import {
   ScanSearch,
   SearchCheck,
   SendHorizontal,
+  ShieldAlert,
   Square,
   Timer,
+  TimerOff,
   Wrench,
   X,
 } from "lucide-react";
@@ -43,6 +46,13 @@ import { MAX_MESSAGE_CHARS, CHAR_COUNTER_AT } from "@/components/rea/chat-limits
 import { SlashMenu, filterPrompts, slashTokenOf, type PromptEntry } from "@/components/rea/prompt-library";
 import { SpeakButton } from "@/components/rea/speak-button";
 import { estimateCostUsd, formatCostUsd } from "@/lib/pricing";
+import {
+  classifyToolOutcome,
+  extractTurnNote,
+  turnNoteLines,
+  type ToolOutcome,
+  type TurnNote,
+} from "@/lib/tool-status";
 import { PenLine } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -584,30 +594,20 @@ export function ChatWorkspace({
         }
       } else {
         // Local abort (Stop button / navigation). The server-side turn was
-        // asked to stop via /api/chat/stop; render what actually persisted
-        // (usually the interrupted-turn note + preserved tool trace).
+        // asked to stop via /api/chat/stop; the interrupted row (note +
+        // preserved trace) lands within a few seconds — poll history for it
+        // (a single fetch can race the persistence) and render exactly what
+        // persisted, banner included.
         const sid = turnSessionId;
         const uid = turnUserRowId;
         if (sid && uid) {
-          void (async () => {
-            await new Promise((r) => setTimeout(r, 1500));
-            try {
-              const { messages } = await getChatSession(sid);
-              const idx = messages.findIndex((m) => m.id === uid);
-              if (idx >= 0 && messages[idx + 1]?.role === "assistant") {
-                const row = rowToEntry(messages[idx + 1]);
-                applyAssistant((e) => ({
-                  ...e,
-                  id: row.id,
-                  content: row.content,
-                  trace: row.trace,
-                  error: undefined,
-                }));
-              }
-            } catch {
-              /* history hiccup — the locally-aborted transcript stands */
-            }
-          })();
+          void recoverDetachedTurn(
+            sid,
+            uid,
+            applyAssistant,
+            "Stopping this turn — recovering the work that persisted…",
+            "The turn was stopped, but its persisted state did not appear in history within the recovery window. Reload this chat to see what was saved."
+          );
         }
       }
     } finally {
@@ -1306,16 +1306,22 @@ const PREMATURE_CLOSE_PREFIX = "The connection dropped before the model finished
  * finishes detached and persists normally — so the client polls history for
  * the assistant row that follows this turn's user row and renders it when it
  * lands (full content + tool trace + usage via rowToEntry).
+ *
+ * Also used after an explicit STOP: the server aborts the turn and persists
+ * the interrupted row (note + preserved trace) within a few seconds, but a
+ * single history fetch can race that persistence — polling renders whatever
+ * actually persisted instead of stranding the local draft.
  */
 async function recoverDetachedTurn(
   sessionId: string,
   userRowId: string,
-  apply: (fn: (e: ChatEntry) => ChatEntry) => void
+  apply: (fn: (e: ChatEntry) => ChatEntry) => void,
+  pendingMessage = "Connection interrupted — the model is still finishing this turn server-side. Recovering the answer…",
+  exhaustedMessage = "The connection dropped and the answer did not appear within the recovery window. The server still finishes the turn and saves it — reload this chat shortly to see the result."
 ): Promise<boolean> {
   apply((e) => ({
     ...e,
-    error:
-      "Connection interrupted — the model is still finishing this turn server-side. Recovering the answer…",
+    error: pendingMessage,
   }));
   // 90 × 5s = 7.5 min of patient recovery (the server's own turn safety
   // deadline is 10 min; past this window the fallback message points at
@@ -1346,8 +1352,7 @@ async function recoverDetachedTurn(
   }
   apply((e) => ({
     ...e,
-    error:
-      "The connection dropped and the answer did not appear within the recovery window. The server still finishes the turn and saves it — reload this chat shortly to see the result.",
+    error: exhaustedMessage,
   }));
   return false;
 }
@@ -1500,6 +1505,9 @@ function MessageRow({
   const traceRows = entryPlan
     ? entry.trace.filter((s) => s.tool !== "update_plan")
     : entry.trace;
+  // Turn-level system note (interrupted / integrity gate) the server appended
+  // to the persisted content — rendered as a banner, NOT as inline prose.
+  const turnNote = entry.role === "assistant" ? extractTurnNote(entry.content) : null;
 
   return (
     <div className="group flex items-start gap-2.5">
@@ -1557,8 +1565,13 @@ function MessageRow({
             </div>
           );
         })()}
+        {/* Turn-level honest-status banner (interrupted / simulated-output) */}
+        {turnNote && <TurnNoteBanner note={turnNote} />}
         {entry.content && (
-          <MessageBody content={entry.content} streaming={streaming} />
+          <MessageBody
+            content={turnNote ? turnNote.body : entry.content}
+            streaming={streaming}
+          />
         )}
         <MessageMeta entry={entry} model={model} streaming={streaming}>
           {evidenceTargetId && onOpenEvidence && (
@@ -1610,6 +1623,61 @@ function StreamingCaret() {
       aria-hidden
       className="ml-0.5 inline-block h-3.5 w-[7px] translate-y-[2px] animate-pulse rounded-[2px] bg-emerald-400/90"
     />
+  );
+}
+
+/**
+ * Turn-level system note rendered as a banner instead of inline markdown —
+ * the honest-status contract at the TURN level:
+ *  - interrupted: the turn ended mid-flight; preserved work stays in the
+ *    trace and a retry reuses its tool results (server: formatInterruptedTurn).
+ *  - integrity: tool blocks in this answer were SIMULATED by the model —
+ *    they did not execute, and any terminal output beside them is fabricated
+ *    (server: finalizeTurnContent).
+ * The note's raw lines are shown verbatim (emphasis stripped) — never rewritten.
+ */
+function TurnNoteBanner({ note }: { note: TurnNote }) {
+  const lines = turnNoteLines(note.note);
+  const interrupted = note.kind === "interrupted";
+  // The banner title already carries the marker phrase — strip it from the
+  // body so the explanation reads clean (interrupted note's first line is
+  // dropped entirely; integrity note's first line loses only its prefix).
+  const bodyLines = lines
+    .filter((l) => !l.startsWith("Turn interrupted before completion:"))
+    .map((l) => l.replace(/^Integrity note \(system\):\s*/, ""));
+  return (
+    <div
+      role="status"
+      className={cn(
+        "flex items-start gap-2.5 rounded-lg border px-3 py-2.5",
+        interrupted
+          ? "border-amber-500/30 bg-amber-500/[0.07]"
+          : "border-rose-500/30 bg-rose-500/[0.07]"
+      )}
+    >
+      {interrupted ? (
+        <TimerOff className="mt-0.5 size-3.5 shrink-0 text-amber-400" aria-hidden />
+      ) : (
+        <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-rose-400" aria-hidden />
+      )}
+      <div className="min-w-0 flex-1">
+        <p className={cn("text-xs font-medium", interrupted ? "text-amber-200" : "text-rose-200")}>
+          {interrupted
+            ? "Turn interrupted before completion"
+            : "Simulated tool output — integrity note"}
+        </p>
+        <div
+          className={cn(
+            "mt-0.5 space-y-0.5 text-[11px] leading-relaxed",
+            interrupted ? "text-amber-300/80" : "text-rose-300/80"
+          )}
+        >
+          {bodyLines.map((l, i) => (
+            <p key={i}>{l}</p>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1789,8 +1857,39 @@ function argsPreview(args: unknown): string {
   return pairs.join("  ");
 }
 
+/** Per-outcome visual contract — the four honest tool states, no inventions. */
+const OUTCOME_STYLE: Record<
+  ToolOutcome,
+  { icon: React.ReactNode; label: string; triggerClass?: string; resultClass?: string }
+> = {
+  running: {
+    icon: <Loader2 className="size-3 shrink-0 animate-spin text-amber-400" aria-hidden />,
+    label: "running",
+  },
+  executed: {
+    icon: <Wrench className="size-3 shrink-0 text-emerald-500/80" aria-hidden />,
+    label: "executed",
+  },
+  refused: {
+    icon: <Ban className="size-3 shrink-0 text-amber-500" aria-hidden />,
+    label: "NOT EXECUTED",
+    triggerClass: "border-amber-500/25 bg-amber-500/[0.06] text-amber-300/90",
+    resultClass: "border-amber-500/25 text-amber-200/70",
+  },
+  failed: {
+    icon: <CircleAlert className="size-3 shrink-0 text-rose-500" aria-hidden />,
+    label: "failed",
+    triggerClass: "border-rose-500/25 bg-rose-500/[0.06] text-rose-300/90",
+    resultClass: "border-rose-500/25 text-rose-200/70",
+  },
+};
+
 function TraceRow({ step }: { step: TraceStep }) {
   const preview = argsPreview(step.args);
+  // Honest outcome — derived from the result the platform actually produced
+  // (or the live pending flag), never from what the model claimed.
+  const outcome = classifyToolOutcome(step);
+  const style = OUTCOME_STYLE[outcome];
   // Live elapsed timer while the tool is running (Cursor-style "running 1.2s").
   const [elapsed, setElapsed] = React.useState<number | null>(null);
   React.useEffect(() => {
@@ -1808,20 +1907,25 @@ function TraceRow({ step }: { step: TraceStep }) {
       <CollapsibleTrigger
         className={cn(
           "group flex w-full items-center gap-2 rounded-md border border-zinc-800/70 bg-zinc-900/40 px-2.5 py-1.5 text-left font-mono text-[11px] transition-colors hover:bg-zinc-900 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none",
-          step.pending ? "text-amber-300" : "text-zinc-400"
+          outcome === "running" ? "text-amber-300" : "text-zinc-400",
+          style.triggerClass
         )}
       >
-        {step.pending ? (
-          <Loader2 className="size-3 shrink-0 animate-spin text-amber-400" aria-hidden />
-        ) : (
-          <Wrench className="size-3 shrink-0 text-emerald-500/80" aria-hidden />
-        )}
+        {style.icon}
         <span className="truncate">
-          <span className={step.pending ? "text-amber-200" : "text-zinc-300"}>{step.tool}</span>
+          <span
+            className={cn(
+              outcome === "running" ? "text-amber-200" : "text-zinc-300",
+              outcome === "refused" && "text-amber-200",
+              outcome === "failed" && "text-rose-200"
+            )}
+          >
+            {step.tool}
+          </span>
           {preview && <span className="ml-1.5 text-zinc-600">{preview}</span>}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[9px] tracking-wider text-zinc-600 uppercase">
-          {step.pending ? (
+          {outcome === "running" ? (
             <>
               running
               {elapsed != null && (
@@ -1831,15 +1935,33 @@ function TraceRow({ step }: { step: TraceStep }) {
               )}
             </>
           ) : (
-            "done"
+            <span
+              className={cn(
+                outcome === "executed" && "text-emerald-500/80",
+                outcome === "refused" && "text-amber-400",
+                outcome === "failed" && "text-rose-400"
+              )}
+            >
+              {style.label}
+            </span>
           )}
           <ChevronDown className="size-3 transition-transform group-data-[state=open]:rotate-180" aria-hidden />
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="relative mt-1">
-          <pre className="max-h-48 overflow-auto rea-scroll rounded-md border border-zinc-800/70 bg-zinc-950 p-2.5 pr-9 font-mono text-[10px] leading-relaxed whitespace-pre-wrap text-zinc-400">
-            {step.preview || "(no output)"}
+          {outcome === "refused" && (
+            <p className="mb-1 font-mono text-[9px] tracking-wider text-amber-400/80 uppercase">
+              the platform did not run this — no output exists for it
+            </p>
+          )}
+          <pre
+            className={cn(
+              "max-h-48 overflow-auto rea-scroll rounded-md border border-zinc-800/70 bg-zinc-950 p-2.5 pr-9 font-mono text-[10px] leading-relaxed whitespace-pre-wrap text-zinc-400",
+              style.resultClass
+            )}
+          >
+            {step.preview || (outcome === "refused" ? "(not executed)" : "(no output)")}
           </pre>
           <div className="absolute top-1.5 right-1.5">
             <CopyButton value={step.preview ?? ""} label="Copy tool output" />
