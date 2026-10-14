@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { MAX_CHAT_ITERATIONS } from "@/lib/security";
 import { documentationPrompt, freeChatSystemPrompt, systemPrompt } from "./prompts";
-import { buildTargetContext, executeAgentTool, applyPlanUpdate, runExploreUrlTool, runToolWithDedup, TOOL_RESULT_MAX_CHARS, TOOL_REFUSAL_MARKER, AGENT_TOOLS, type AgentToolContext } from "./tools";
+import { buildTargetContext, executeAgentTool, runFreeChatTool, runToolWithDedup, TOOL_RESULT_MAX_CHARS, TOOL_REFUSAL_MARKER, AGENT_TOOLS, FREE_CHAT_TOOL_NAMES, type AgentToolContext } from "./tools";
 import {
   resolveLlmForUser,
   type LlmMessage,
@@ -118,8 +118,13 @@ const TURN_RETRY_BACKOFF_MS = [900, 2200];
  */
 const MAX_TOOL_BLOCKS_PER_MESSAGE = 4;
 
-/** Tools the model may route in a FREE chat (no file target attached). */
-const FREE_CHAT_TOOL_NAMES = ["update_plan", "explore_url"];
+/**
+ * Tools the model may route in a FREE chat — DERIVED from the registry
+ * scope flags (imported from tools.ts): update_plan, explore_url and the
+ * four sandboxed workspace tools. Advertisement (prompts), routing (this
+ * loop) and refusals all read the same list — drift is impossible.
+ */
+const FREE_CHAT_TOOL_SET = new Set(FREE_CHAT_TOOL_NAMES);
 
 function availableToolNames(ctx: AgentToolContext | null): string[] {
   return ctx ? AGENT_TOOLS.map((t) => t.name) : FREE_CHAT_TOOL_NAMES;
@@ -280,11 +285,18 @@ export function toolReceiptSuffix(raw: string | null | undefined): string {
  * remains available.
  */
 export function freeChatRedirectNotice(tool: string): string {
+  // Registry-derived availability: the notice can never advertise a tool
+  // that is not routable, nor omit one that is.
+  const available = FREE_CHAT_TOOL_NAMES.filter((n) => n !== tool);
+  const list =
+    available.length <= 1
+      ? available.join("")
+      : `${available.slice(0, -1).join(", ")} and ${available[available.length - 1]}`;
   return (
     `SYSTEM: Tool "${tool}" operates on an uploaded file target, which this chat does not have — so THAT tool specifically is unavailable here. ` +
-    `This does NOT mean tools are unavailable in general: update_plan and explore_url remain fully functional in this chat and must be used when they help ` +
-    `(explore_url fetches any public URL the user asks about). ` +
-    `Do not re-emit "${tool}". For the user's request, either use one of those tools or answer directly; if real file analysis is essential, tell the user to upload the file in the sidebar (Files → upload) and start a chat on it.`
+    `This does NOT mean tools are unavailable in general: ${list} remain fully functional in this chat and must be used when they help ` +
+    `(explore_url fetches any public URL the user asks about; the workspace tools create files and run commands for real in this chat's sandbox). ` +
+    `Do not re-emit "${tool}". For the user's request, either use one of those tools or answer directly; if analysis of an UPLOADED binary is essential, tell the user to upload the file in the sidebar (Files → upload) and start a chat on it.`
   );
 }
 
@@ -456,15 +468,18 @@ export async function runAgentLoop(opts: {
               ? `SYSTEM: You already ran this exact call (${action.tool} with identical arguments) ${repeats} times in this turn. The result will not change on another run. Either vary the arguments, choose a DIFFERENT tool, or write your final answer from the evidence you have.`
               : undefined,
         });
-      } else if (action.tool === "update_plan" || action.tool === "explore_url") {
-        // Free chat: the two target-independent tools stay fully functional
-        // (planning + SSRF-guarded public web fetch), with the same
-        // retry-dedup as the registry path.
+      } else if (FREE_CHAT_TOOL_SET.has(action.tool)) {
+        // Free chat: every any-scoped tool (planning, SSRF-guarded web fetch,
+        // the sandboxed workspace) stays fully functional, with the same
+        // dedup policy as the registry path — including per-tool opt-out for
+        // stateful tools (workspace_write/workspace_run re-execute by design).
+        const freeTool = AGENT_TOOLS.find((t) => t.name === action.tool);
         events?.onToolCall?.(action.tool, action.args);
-        const result = await runToolWithDedup(sessionId, action.tool, action.args ?? {}, () =>
-          action.tool === "update_plan"
-            ? applyPlanUpdate(action.args)
-            : runExploreUrlTool(action.args ?? {})
+        const result = await runToolWithDedup(
+          freeTool?.dedup === false ? undefined : sessionId,
+          action.tool,
+          action.args ?? {},
+          () => runFreeChatTool(action.tool, action.args ?? {}, { sessionId })
         );
         events?.onToolResult?.(action.tool, result);
         toolTrace.push({ tool: action.tool, args: action.args, result });

@@ -7,6 +7,13 @@ import { CHAT_TOOL_TIMEOUT_MS } from "@/lib/security";
 // against storage/uploads/<targetId>/strings-cache.json.
 import { getStringsForTarget } from "@/server/engine/strings";
 import { probeUrl, PROBE_TIMEOUT_MS } from "@/server/platform/explorer";
+import {
+  chatCommandAllowlist,
+  listFiles as workspaceListFiles,
+  readFile as workspaceReadFile,
+  runCommand as workspaceRunCommand,
+  writeFile as workspaceWriteFile,
+} from "@/server/platform/builder";
 import { BlockedUrlError } from "@/server/platform/net";
 import type { Target } from "@prisma/client";
 
@@ -95,6 +102,20 @@ export interface AgentTool {
   description: string;
   /** JSON-schema-ish description of accepted args (for the system prompt). */
   args: Record<string, unknown>;
+  /**
+   * "any" — routable in BOTH target chats and FREE chats (no file target
+   * needed). "target" — operates on the attached target, unavailable in
+   * free chats. The free-chat availability list, the loop's routing, the
+   * refusal wording and both system prompts all DERIVE from this flag, so
+   * a tool cannot be advertised but unroutable (or vice versa).
+   */
+  scope: "any" | "target";
+  /**
+   * Apply the cross-turn retry-dedup cache (default true). Stateful/mutating
+   * tools set false: re-running them after a retry or a workspace change is
+   * the POINT — a cached prior result would be stale, not honest.
+   */
+  dedup?: boolean;
   run: (args: Record<string, unknown>, ctx: AgentToolContext) => Promise<string>;
 }
 
@@ -155,6 +176,7 @@ function qIdent(name: string): string {
 
 const targetInfoTool: AgentTool = {
   name: "target_info",
+  scope: "target",
   description:
     "Full metadata of the current investigation target (name, size, sha256, detected format, status, summary) plus its recent analysis runs.",
   args: { type: "object", properties: {}, additionalProperties: false },
@@ -193,6 +215,7 @@ const targetInfoTool: AgentTool = {
 
 const listFindingsTool: AgentTool = {
   name: "list_findings",
+  scope: "target",
   description:
     "Query findings recorded by prior REA analysis runs on this target. Filter by type and/or name substring.",
   args: {
@@ -236,6 +259,7 @@ const listFindingsTool: AgentTool = {
 
 const getEvidenceTool: AgentTool = {
   name: "get_evidence",
+  scope: "target",
   description:
     "Recent evidence ledger entries (raw REA engine observations) for this target, newest first, with payload snippets.",
   args: {
@@ -264,6 +288,7 @@ const getEvidenceTool: AgentTool = {
 
 const readStringsTool: AgentTool = {
   name: "read_strings",
+  scope: "target",
   description:
     "Extracted printable strings (ASCII + UTF-16LE) from the target file with their hex offsets. Filter by substring.",
   args: {
@@ -296,6 +321,7 @@ const readStringsTool: AgentTool = {
 
 const readHexTool: AgentTool = {
   name: "read_hex",
+  scope: "target",
   description:
     "Hexdump of a byte range of the target file (max 1024 bytes per call). Use for header / structure inspection.",
   args: {
@@ -394,6 +420,7 @@ export async function runExploreUrlTool(args: Record<string, unknown>): Promise<
 
 const exploreUrlTool: AgentTool = {
   name: "explore_url",
+  scope: "any",
   description:
     "Fetch ONE public web page (http/https) through the SSRF-guarded Explorer and return REAL observations: final URL after redirects, HTTP status, response time, title, meta description, headings (h1-h3), links (href+text), technology fingerprints from headers/markup, sha256 and a short text excerpt. Use this for any analyze/open/check-this-URL request instead of answering from memory. Internal/private/metadata addresses are refused.",
   args: {
@@ -412,6 +439,7 @@ const exploreUrlTool: AgentTool = {
 
 const reaTool: AgentTool = {
   name: "rea_tool",
+  scope: "target",
   description:
     "THE core tool: execute a REAL REA engine (MCP) tool against the current target. The platform opens/closes the binary session and injects the target path automatically — never pass a path.",
   args: {
@@ -514,6 +542,7 @@ async function openTargetSqlite(ctx: AgentToolContext): Promise<SqliteDb> {
 
 const sqlSchemaTool: AgentTool = {
   name: "sql_schema",
+  scope: "target",
   description:
     "List tables, columns, and row counts of the target SQLite database (readOnly). Only valid when the target is a SQLite database.",
   args: { type: "object", properties: {}, additionalProperties: false },
@@ -571,6 +600,7 @@ const SQL_FORBIDDEN_RE =
 
 const sqlQueryTool: AgentTool = {
   name: "sql_query",
+  scope: "target",
   description:
     "Run a read-only SELECT against the target SQLite database (max 25 rows, auto-LIMIT enforced). Only valid when the target is a SQLite database.",
   args: {
@@ -674,6 +704,7 @@ export async function applyPlanUpdate(args: Record<string, unknown>): Promise<st
 
 const planTool: AgentTool = {
   name: "update_plan",
+  scope: "any",
   description:
     "Maintain a visible task plan for multi-step work. Call FIRST with 2-8 concrete steps (first in_progress, rest pending), then re-emit the FULL updated list whenever a step starts or finishes. The plan renders live in the UI as a checklist.",
   args: {
@@ -702,6 +733,212 @@ const planTool: AgentTool = {
 };
 
 // ---------------------------------------------------------------------------
+// Chat workspace tools — REAL sandboxed file read/write + command execution
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-chat-session sandboxed workspace under storage/workspaces/chat-<sessionId>/
+ * (same root and the same battle-tested jail as project workspaces:
+ * isPathInside path prison, no-shell tokenizer, allowlisted binaries, hard
+ * timeout, scrubbed env, output caps). This closes the round-33 gap for real:
+ * the calculator/Jest class of request ("create a project and run the tests")
+ * no longer must be refused — the model can genuinely create files and run
+ * them, and every result is a genuine platform execution.
+ *
+ * Chat-mode guards (stricter than project workspaces) are enforced inside
+ * builder.runCommand: sed/awk/find/tar/git/env blocked (script/transport
+ * escape vectors), interpreter eval flags blocked (node -e, python3 -c),
+ * absolute-path and ".." arguments blocked. Honest limits (documented in the
+ * security posture, not hidden): the jail is process-level, NOT an OS
+ * namespace jail — workspace-resident code run by an interpreter executes
+ * with server privileges; env is scrubbed (no secrets), HOME is the
+ * workspace, and the deployment model is self-hosted single-tenant.
+ */
+
+/** Chat workspace command cap — leaves headroom under CHAT_TOOL_TIMEOUT_MS. */
+const WORKSPACE_RUN_TIMEOUT_MS = 55_000;
+
+/** Workspace dir key for a chat session: chat-<sessionId>. */
+function chatWorkspaceKey(sessionId: string): string {
+  return `chat-${sessionId}`;
+}
+
+const WORKSPACE_TOOL_NAMES = [
+  "workspace_list",
+  "workspace_read",
+  "workspace_write",
+  "workspace_run",
+] as const;
+
+export type WorkspaceToolName = (typeof WORKSPACE_TOOL_NAMES)[number];
+
+function workspaceErr(context: string, err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return `Error: ${context}: ${msg.slice(0, 400)}`;
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}\n…[truncated after ${max} chars]` : text;
+}
+
+/**
+ * Execute a chat-workspace tool for a session. Every result is an honest
+ * string: a REAL outcome (bytes written, exit code, stdout/stderr), a
+ * precise Error: failure (missing file, cap exceeded, sandbox rejection —
+ * the command did not run), or never a fabrication. Throws nothing except
+ * on programmer error; callers still wrap with runToolWithDedup, which
+ * converts throws to error strings.
+ */
+export async function runWorkspaceTool(
+  name: string,
+  args: Record<string, unknown>,
+  session: { sessionId: string }
+): Promise<string> {
+  if (!session?.sessionId) {
+    return `Error: workspace tools require a chat session context — they are unavailable outside chat conversations.`;
+  }
+  const key = chatWorkspaceKey(session.sessionId);
+
+  switch (name) {
+    case "workspace_list": {
+      const sub = argStr(args, "sub") ?? "";
+      let entries;
+      try {
+        entries = await workspaceListFiles(key, sub);
+      } catch (err) {
+        return workspaceErr(`cannot list "${sub || "."}" in the workspace (paths must stay inside it)`, err);
+      }
+      if (entries.length === 0) {
+        return `Workspace listing for "${sub || "."}": empty.${sub ? "" : " Create files with workspace_write — writes are real and land on disk."}`;
+      }
+      const rows = entries
+        .slice(0, 100)
+        .map((e) => `| ${e.path} | ${e.type}${e.sizeBytes !== undefined ? ` (${fmtBytes(e.sizeBytes)})` : ""} |`);
+      return `Workspace listing for "${sub || "."}" — ${entries.length} entr${entries.length === 1 ? "y" : "ies"}:\n\n| path | type |\n|---|---|\n${rows.join("\n")}`;
+    }
+
+    case "workspace_read": {
+      const rel = argStr(args, "path");
+      if (!rel) return "Error: 'path' is required (workspace-relative, e.g. \"calculator.js\"). List files with workspace_list.";
+      try {
+        const content = await workspaceReadFile(key, rel);
+        return `# workspace_read — OBSERVED file content\n- path: ${rel}\n- bytes: ${Buffer.byteLength(content, "utf8")}\n\n${truncate(content, 5500)}`;
+      } catch (err) {
+        return workspaceErr(`cannot read "${rel}" from the workspace (1 MB read cap; paths must stay inside it)`, err);
+      }
+    }
+
+    case "workspace_write": {
+      const rel = argStr(args, "path");
+      if (!rel) return "Error: 'path' is required (workspace-relative, e.g. \"calculator.js\").";
+      const content = args?.["content"];
+      if (typeof content !== "string" || content.length === 0) {
+        return "Error: 'content' is required (the full file content as a string).";
+      }
+      try {
+        const r = await workspaceWriteFile(key, rel, content, { audit: false });
+        return `# workspace_write — OBSERVED write\n- path: ${r.path}\n- bytes written: ${r.bytes}\n- ${r.created ? "created new file" : "overwrote existing file"}\nThe file is now on disk in this session's workspace (verify with workspace_read or workspace_list).`;
+      } catch (err) {
+        return workspaceErr(`write failed for "${rel}" (512 KB cap; paths must stay inside the workspace)`, err);
+      }
+    }
+
+    case "workspace_run": {
+      const command = argStr(args, "command");
+      if (!command) {
+        return `Error: 'command' is required, e.g. {"command":"node calculator.js"}. One allowlisted binary per call, no shell (no pipes/globs/redirection).`;
+      }
+      const started = Date.now();
+      const r = await workspaceRunCommand(key, command, WORKSPACE_RUN_TIMEOUT_MS, { chatMode: true });
+      if (r.blocked) {
+        // The command did NOT run — say exactly why (honest failure, never
+        // fabricated output). tool-status classifies "Error:"-prefixed
+        // results as failed, which is the honest state: processed, denied.
+        return `Error: command NOT executed — ${r.stderr.slice(0, 500)}`;
+      }
+      const head = [
+        `# workspace_run — OBSERVED execution`,
+        `- command: ${command}`,
+        `- exit code: ${r.exitCode}${r.timedOut ? ` (killed: exceeded the ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s cap)` : ""}`,
+        `- duration: ${r.durationMs}ms`,
+      ].join("\n");
+      return `${head}\n\n## stdout\n${r.stdout.trim() ? truncate(r.stdout.trim(), 4000) : "(empty)"}\n\n## stderr\n${r.stderr.trim() ? truncate(r.stderr.trim(), 2500) : "(empty)"}`;
+    }
+
+    default:
+      return `Error: unknown workspace tool "${name}". Workspace tools: ${WORKSPACE_TOOL_NAMES.join(", ")}.`;
+  }
+}
+
+function workspaceRun(name: WorkspaceToolName) {
+  return async (args: Record<string, unknown>, ctx: AgentToolContext) =>
+    runWorkspaceTool(name, args ?? {}, { sessionId: ctx.sessionId ?? "" });
+}
+
+const workspaceListTool: AgentTool = {
+  name: "workspace_list",
+  scope: "any",
+  description:
+    "List files and directories in this chat's sandboxed workspace (a per-session directory on the platform server). Every chat session gets its own isolated workspace; paths are workspace-relative. Use it to verify what actually exists before claiming it.",
+  args: {
+    type: "object",
+    properties: {
+      sub: { type: "string", description: "Optional subdirectory to list (workspace-relative, default: root)." },
+    },
+    additionalProperties: false,
+  },
+  run: workspaceRun("workspace_list"),
+};
+
+const workspaceReadTool: AgentTool = {
+  name: "workspace_read",
+  scope: "any",
+  description:
+    "Read a file from this chat's sandboxed workspace and return its REAL content (1 MB cap). Paths are workspace-relative; nothing outside the workspace is readable. Use it to verify a write or inspect a file you or a command created.",
+  args: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Workspace-relative file path, e.g. \"calculator.js\" or \"src/index.js\"." },
+    },
+    required: ["path"],
+    additionalProperties: false,
+  },
+  run: workspaceRun("workspace_read"),
+};
+
+const workspaceWriteTool: AgentTool = {
+  name: "workspace_write",
+  scope: "any",
+  description:
+    "Create or overwrite a file in this chat's sandboxed workspace — the write is REAL (result reports the actual byte count written). 512 KB cap, workspace-relative paths only, parent directories created automatically. Write code/config/docs here, then execute it with workspace_run.",
+  args: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "Workspace-relative file path, e.g. \"calculator.js\"." },
+      content: { type: "string", description: "The FULL file content (UTF-8 text)." },
+    },
+    required: ["path", "content"],
+    additionalProperties: false,
+  },
+  run: workspaceRun("workspace_write"),
+};
+
+const workspaceRunTool: AgentTool = {
+  name: "workspace_run",
+  scope: "any",
+  description: `Execute ONE allowlisted command inside this chat's sandboxed workspace (cwd = the workspace) and return the REAL exit code, stdout and stderr. No shell: pipes, redirection, \`*\` globs and \`\$VAR\` interpolation are NOT interpreted — pass plain arguments. Blocked: non-allowlisted binaries, sed/awk/find/tar/git/env, absolute paths, ".." traversal, inline-eval flags (node -e, python3 -c). Allowed binaries: ${chatCommandAllowlist().join(", ")}. To run code, workspace_write it to a file first, then run it as a file. Each call is capped at ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s.`,
+  args: {
+    type: "object",
+    properties: {
+      command: { type: "string", description: 'One command with plain arguments, e.g. "node calculator.js" or "npm test".' },
+    },
+    required: ["command"],
+    additionalProperties: false,
+  },
+  run: workspaceRun("workspace_run"),
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -716,7 +953,38 @@ export const AGENT_TOOLS: AgentTool[] = [
   sqlSchemaTool,
   sqlQueryTool,
   exploreUrlTool,
+  workspaceListTool,
+  workspaceReadTool,
+  workspaceWriteTool,
+  workspaceRunTool,
 ];
+
+/**
+ * Tools routable in a FREE chat (no target attached) — DERIVED from the
+ * registry scope flags, never hand-maintained: advertisement (prompts),
+ * routing (the loop) and refusal wording all read this list, so a tool
+ * cannot be advertised but unroutable, or routable but unadvertised.
+ */
+export const FREE_CHAT_TOOL_NAMES: string[] = AGENT_TOOLS.filter(
+  (t) => t.scope === "any"
+).map((t) => t.name);
+
+/**
+ * Dispatch an "any"-scoped tool by name for the FREE-chat loop (no target
+ * context exists there, so target-scoped tools never reach this).
+ */
+export async function runFreeChatTool(
+  name: string,
+  args: Record<string, unknown>,
+  session: { sessionId: string }
+): Promise<string> {
+  if (name === "update_plan") return applyPlanUpdate(args ?? {});
+  if (name === "explore_url") return runExploreUrlTool(args ?? {});
+  if ((WORKSPACE_TOOL_NAMES as readonly string[]).includes(name)) {
+    return runWorkspaceTool(name, args ?? {}, session);
+  }
+  return `Error: "${name}" cannot be routed in a free chat. Available here: ${FREE_CHAT_TOOL_NAMES.join(", ")}.`;
+}
 
 /** Execute a registry tool; never throws — returns an error string instead. */
 export async function executeAgentTool(
@@ -740,8 +1008,14 @@ export async function executeAgentTool(
     }
     return `Error: unknown tool "${name}". Available tools: ${AGENT_TOOLS.map((t) => t.name).join(", ")}. REA engine tools (inspect_artifact, list_strings, …) run via the rea_tool wrapper.`;
   }
-  return runToolWithDedup(ctx.sessionId, name, args ?? {}, () =>
-    tool.run(args ?? {}, ctx)
+  // Stateful tools (dedup:false — workspace_write/workspace_run) bypass the
+  // retry-dedup cache: re-executing them IS the honest behavior, both across
+  // a turn retry and after the workspace changed between turns.
+  return runToolWithDedup(
+    tool.dedup === false ? undefined : ctx.sessionId,
+    name,
+    args ?? {},
+    () => tool.run(args ?? {}, ctx)
   );
 }
 
