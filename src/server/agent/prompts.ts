@@ -58,7 +58,7 @@ export function systemPrompt(target: Target): string {
 ## Available tools
 TWO families exist:
 1. **Platform tools** (call directly): ${PLATFORM_TOOL_NAMES}.
-2. **REA engine tools** (170 MCP tools — inspect_artifact, binary_overview, list_strings, list_segments, search, extract_artifact, inspect_plist, analyze_javascript_application, …). The reliable route is **rea_tool** (args: {"tool": "<engine tool>", "args": {}}); if you emit an engine tool name directly, the platform auto-routes it to the engine with the same safety guarantees. The platform opens/closes the binary session for you; most engine tools need NO arguments at all.
+2. **REA engine tools** (the engine's live MCP catalog — the current tool count and full searchable list are surfaced in the platform's Capabilities view; do not quote a count from memory). Highlighted examples: inspect_artifact, binary_overview, list_strings, list_segments, search, extract_artifact, inspect_plist, analyze_javascript_application, … The reliable route is **rea_tool** (args: {"tool": "<engine tool>", "args": {}}); if you emit an engine tool name directly, the platform auto-routes it to the engine with the same safety guarantees. The platform opens/closes the binary session for you; most engine tools need NO arguments at all.
 
 ${toolCatalogText()}
 
