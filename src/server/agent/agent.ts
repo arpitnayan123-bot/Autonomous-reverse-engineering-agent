@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { MAX_CHAT_ITERATIONS } from "@/lib/security";
 import { documentationPrompt, freeChatSystemPrompt, systemPrompt } from "./prompts";
-import { buildTargetContext, executeAgentTool, applyPlanUpdate, runExploreUrlTool, type AgentToolContext } from "./tools";
+import { buildTargetContext, executeAgentTool, applyPlanUpdate, runExploreUrlTool, TOOL_RESULT_MAX_CHARS, type AgentToolContext } from "./tools";
 import {
   resolveLlmForUser,
   type LlmMessage,
@@ -73,7 +73,17 @@ export { resolveLlmForUser } from "./providers";
 // Action-block parsing
 // ---------------------------------------------------------------------------
 
-const TOOL_BLOCK_RE = /```tool\s*\r?\n([\s\S]*?)```/g;
+/**
+ * Tool-block grammar. Tolerant on FENCE SPELLING (a classic silent failure:
+ * "``` tool" with a space, "```TOOL" upper-case, ~~~ fences, or a block the
+ * model forgot to close were all parsed as prose, so the intended tool call
+ * degraded into the visible answer and the loop ended without executing
+ * anything — the model then "answered conceptually" on the next turn).
+ * The backreference keeps opener/closer fence tokens consistent.
+ */
+const TOOL_BLOCK_RE = /(```|~~~)[ \t]*tool[ \t]*\r?\n([\s\S]*?)\1/gi;
+/** Opener-only pattern for the unterminated-block fallback. */
+const TOOL_OPEN_RE = /(?:```|~~~)[ \t]*tool[ \t]*\r?\n/gi;
 
 /**
  * Detect TRANSIENT provider/infrastructure failures worth an automatic
@@ -95,13 +105,26 @@ const TURN_RETRY_BACKOFF_MS = [900, 2200];
 export function parseToolAction(
   text: string
 ): { tool: string; args: Record<string, unknown> } | null {
-  const re = new RegExp(TOOL_BLOCK_RE.source, "g"); // fresh lastIndex
+  // 1) LAST properly closed block wins.
+  const re = new RegExp(TOOL_BLOCK_RE.source, "gi"); // fresh lastIndex
   let last: RegExpExecArray | null = null;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) last = m;
-  if (!last) return null;
+  let body = last?.[2];
+  // 2) Fallback: an opener with NO closed block anywhere — the model forgot
+  //    the closing fence. Take the tail and require it to parse as valid JSON
+  //    below, so explanatory prose never executes; only a well-formed
+  //    {tool,args} object does (same safety bar as a closed block).
+  if (body === undefined) {
+    const open = new RegExp(TOOL_OPEN_RE.source, "gi");
+    let lastOpen: RegExpExecArray | null = null;
+    let om: RegExpExecArray | null;
+    while ((om = open.exec(text)) !== null) lastOpen = om;
+    if (lastOpen) body = text.slice(lastOpen.index + lastOpen[0].length);
+  }
+  if (body === undefined) return null;
   try {
-    const parsed = JSON.parse(last[1].trim()) as {
+    const parsed = JSON.parse(body.trim()) as {
       tool?: unknown;
       args?: unknown;
     };
@@ -121,6 +144,72 @@ export function parseToolAction(
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-turn tool receipts — prove to later turns that tools REALLY run here
+// ---------------------------------------------------------------------------
+
+const RECEIPT_MAX_TOOLS = 5;
+const RECEIPT_ARG_CHARS = 120;
+const RECEIPT_RESULT_CHARS = 160;
+
+/**
+ * Compact receipt appended to a PAST assistant message when it is replayed
+ * as history. The loop never persists tool traffic into the visible
+ * transcript, so on later turns the model otherwise sees a conversation in
+ * which tools never executed — a proven trigger for "I cannot access tools"
+ * refusals even right after a successful tool call. The receipt is plainly
+ * labeled as system-injected context (NOT model output) and tightly bounded.
+ */
+export function toolReceiptSuffix(raw: string | null | undefined): string {
+  if (!raw) return "";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return "";
+  }
+  if (!Array.isArray(parsed)) return "";
+  const lines: string[] = [];
+  for (const t of parsed.slice(0, RECEIPT_MAX_TOOLS)) {
+    if (!t || typeof t !== "object") continue;
+    const tool = (t as { tool?: unknown }).tool;
+    if (typeof tool !== "string" || !tool) continue;
+    const args = JSON.stringify((t as { args?: unknown }).args ?? {}).slice(
+      0,
+      RECEIPT_ARG_CHARS
+    );
+    const result = String((t as { result?: unknown }).result ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, RECEIPT_RESULT_CHARS);
+    lines.push(
+      `- ${tool}(${args}) → ${result}${result.length >= RECEIPT_RESULT_CHARS ? "…" : ""}`
+    );
+  }
+  if (lines.length === 0) return "";
+  return (
+    "\n\n[SYSTEM receipt — the platform genuinely executed these tools during the turn above; tool execution works in this conversation:]\n" +
+    lines.join("\n")
+  );
+}
+
+/**
+ * Feedback for a free-chat turn that emitted a file-bound tool block. The
+ * previous wording ("Do not emit tool blocks here") read as a blanket tool
+ * ban: after ONE disallowed call the model stopped invoking even the tools
+ * that DO work (update_plan, explore_url) and told users it had no tool
+ * access. This wording scopes the refusal to THAT tool and re-asserts what
+ * remains available.
+ */
+export function freeChatRedirectNotice(tool: string): string {
+  return (
+    `SYSTEM: Tool "${tool}" operates on an uploaded file target, which this chat does not have — so THAT tool specifically is unavailable here. ` +
+    `This does NOT mean tools are unavailable in general: update_plan and explore_url remain fully functional in this chat and must be used when they help ` +
+    `(explore_url fetches any public URL the user asks about). ` +
+    `Do not re-emit "${tool}". For the user's request, either use one of those tools or answer directly; if real file analysis is essential, tell the user to upload the file in the sidebar (Files → upload) and start a chat on it.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -233,17 +322,16 @@ export async function runAgentLoop(opts: {
         messages.push({ role: "assistant", content: text });
         messages.push({
           role: "user",
-          content: `TOOL RESULT for ${action.tool}:\n${result}`,
+          content: `TOOL RESULT for ${action.tool}:\n${result.slice(0, TOOL_RESULT_MAX_CHARS)}`,
         });
         continue;
       }
-      // The model emitted a tool block despite the system prompt.
-      // Redirect once per occurrence; the iteration budget still bounds it.
+      // The model emitted a file-bound tool block despite the system prompt.
+      // Redirect once per occurrence with SCOPED wording (never a blanket
+      // "no tools" message — that taught models to deny tool access); the
+      // iteration budget still bounds it.
       messages.push({ role: "assistant", content: text });
-      messages.push({
-        role: "user",
-        content: `SYSTEM: Tool "${action.tool}" is unavailable in this chat because no file is attached. Do not emit tool blocks here. Answer the user directly from your own knowledge, and mention that file analysis requires uploading a file first.`,
-      });
+      messages.push({ role: "user", content: freeChatRedirectNotice(action.tool) });
       continue;
     }
     events?.onToolCall?.(action.tool, action.args);
