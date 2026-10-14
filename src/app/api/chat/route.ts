@@ -442,12 +442,35 @@ export async function POST(req: Request) {
 
     const encoder = new TextEncoder();
     let closed = false;
+    /** SSE keepalive timer — created in start(), cleared on finish/cancel. */
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
     req.signal.addEventListener("abort", () => {
       closed = true;
     });
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
+        /**
+         * SSE keepalive. During silent windows — slow model first token, a
+         * long tool execution (up to 60s), or a stalled upstream stream — no
+         * business events flow, and intermediary proxies treat the idle
+         * connection as dead and cut it mid-answer ("lost contact with the
+         * model"). A comment frame every 15s keeps every hop alive; SSE
+         * comments are skipped by the client's frame parser (only `data:`
+         * lines are consumed).
+         */
+        const heartbeatInterval = setInterval(() => {
+          if (closed) {
+            clearInterval(heartbeatInterval);
+            return;
+          }
+          try {
+            controller.enqueue(encoder.encode(": ping\n\n"));
+          } catch {
+            clearInterval(heartbeatInterval);
+          }
+        }, 15_000);
+        heartbeat = heartbeatInterval;
         const send = (obj: unknown) => {
           if (closed) return;
           try {
@@ -509,6 +532,7 @@ export async function POST(req: Request) {
         } finally {
           send({ type: "done" });
           closed = true;
+          if (heartbeat) clearInterval(heartbeat);
           inFlightTurns.delete(session!.id);
           try {
             controller.close();
@@ -519,6 +543,7 @@ export async function POST(req: Request) {
       },
       cancel() {
         closed = true;
+        if (heartbeat) clearInterval(heartbeat);
         if (session) inFlightTurns.delete(session.id);
       },
     });
