@@ -1820,7 +1820,18 @@ async function main(): Promise<void> {
   const l4 = `${freeChatSystemPrompt()}\n${systemPrompt({} as Target)}`;
   check(
     "L4  prompts no longer hardcode the engine tool count",
-    !/170 MCP tools/.test(l4),
+    !/170 MCP tools|full REA toolchain \(170 tools\)/.test(l4),
+    ""
+  );
+
+  // L5: fence discipline is taught in BOTH prompts — the live failure mode was
+  // a stray trailing brace inside tool fences (malformed → refused → the model
+  // fabricated a "report" beside it). The prompt must state the contract.
+  check(
+    "L5  both prompts teach the one-JSON-object fence contract",
+    freeChatSystemPrompt().includes("trailing braces") &&
+      systemPrompt({} as Target).includes("trailing braces") &&
+      freeChatSystemPrompt().includes("EXACTLY ONE parseable JSON object"),
     ""
   );
 

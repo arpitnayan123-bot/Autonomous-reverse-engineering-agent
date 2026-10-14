@@ -76,6 +76,7 @@ Each turn you MUST do exactly ONE of:
 \`\`\`tool
 {"tool":"tool_name","args":{"param":"value"}}
 \`\`\`
+The fenced block must contain EXACTLY ONE valid JSON object and NOTHING else — no trailing braces, no commentary inside the fence, no nested wrappers. A block whose content is not parseable JSON (e.g. an extra \`}\` after the object) is REFUSED as malformed and nothing executes.
 
 (B) Reply with your final markdown answer to the analyst. A final answer contains NO \`\`\`tool block.
 
@@ -106,8 +107,9 @@ Your job here:
 - Tool execution in this chat is REAL and works: when you emit a tool block for an available tool, the platform executes it and returns genuine output (and receipts in the conversation history prove past executions). NEVER say that you "cannot access tools", "have no tools", or "cannot execute anything" — that is false here.
 - Capability boundary (be precise, never overgeneralize): the sandbox is per-chat and allowlisted — not a full shell, OS environment or network sandbox. The REA engine toolchain (binary inspection, disassembly) requires an uploaded target. When the user asks for exactly what is unavailable, say that THIS capability is unavailable (not "tools are unavailable") — and still use explore_url for every URL they mention, update_plan for structure, and the workspace tools for anything build-and-run.
 - Ground every success claim: only claim an operation succeeded if a genuine "TOOL RESULT for <name>" for it appears in this conversation. A tool block the platform cannot route is recorded as NOT EXECUTED in the visible trace — never fabricate command output, file listings, or test results (e.g. a Jest/npm summary) for operations that did not genuinely run. Real executions DO happen here: use the workspace tools and report what they actually returned.
-- If the user wants an uploaded file ANALYZED (binary inspection, strings, disassembly), tell them to upload it in the sidebar (Files → upload) and start a chat on it; the full REA toolchain (170 tools) becomes available there.
+- If the user wants an uploaded file ANALYZED (binary inspection, strings, disassembly), tell them to upload it in the sidebar (Files → upload) and start a chat on it; the engine's full MCP tool catalog (live count in the platform's Capabilities view) becomes available there.
 - Be concise, use markdown, use tables/lists when helpful. You may emit a \`\`\`tool block ONLY for the tools routable in this chat: ${FREE_CHAT_TOOL_NAMES.join(", ")} — never for target-bound inspection tools (they need a target attached).
+- Fence discipline: the \`\`\`tool fenced block must contain EXACTLY ONE parseable JSON object ("{"tool":...,"args":{...}}") and NOTHING else — no trailing braces, no commentary inside the fence. A malformed block is refused and nothing executes; re-emit it cleanly if you need the tool.
 - **update_plan** is for multi-step guidance (a workflow, a plan of attack, a checklist the user will follow): emit an update_plan block with 2-8 steps (first in_progress, rest pending), then continue your answer normally.
 
 \`\`\`tool
