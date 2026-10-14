@@ -326,6 +326,19 @@ const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "rea_probe_url",
+    description:
+      "Fetch and analyze ONE public http(s) URL through the REA Explorer pipeline (no project needed): SSRF-guarded fetch with timeout and size cap, returning observed facts — requested/final URL, status, timing, content-type, sha256, title, meta description, h1/h2/h3, links, detected technologies and a bounded text excerpt. Private/internal addresses and non-http(s) schemes are refused with an honest error.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Public http(s) URL to probe (max 2000 chars)" },
+        includeText: { type: "boolean", description: "Include the bounded visible-text excerpt (default true)" },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "rea_connector_action",
     description:
       "Test or invoke a registered connector. action=test health-checks it (HTTP probe / MCP tools-list); action=invoke runs it with a JSON input (builtin web-search takes {query}; HTTP takes a JSON body; MCP takes the tool's arguments).",
@@ -485,6 +498,15 @@ async function executeTool(name: string, args: Args): Promise<ReturnType<typeof 
     }
     case "rea_list_connectors": {
       const r = await api("/api/connectors");
+      return toolJson(r);
+    }
+    case "rea_probe_url": {
+      const body: Record<string, unknown> = {
+        url: str(args, "url", { required: true, max: 2_000 }),
+      };
+      const includeText = bool(args, "includeText");
+      if (includeText !== undefined) body.includeText = includeText;
+      const r = await api("/api/explore", { method: "POST", body: JSON.stringify(body) }, 60_000);
       return toolJson(r);
     }
     case "rea_connector_action": {
