@@ -19,6 +19,7 @@ import {
 import { BlockedUrlError } from "@/server/platform/net";
 import { platformWebSearch } from "@/server/platform/research";
 import type { Target } from "@prisma/client";
+import type { ToolSchema } from "./providers";
 
 /**
  * Server-side tools exposed to the REA investigation agent.
@@ -1257,6 +1258,41 @@ export const AGENT_TOOLS: AgentTool[] = [
 export const FREE_CHAT_TOOL_NAMES: string[] = AGENT_TOOLS.filter(
   (t) => t.scope === "any"
 ).map((t) => t.name);
+
+// ---------------------------------------------------------------------------
+// Native tool schemas (OpenAI function-calling format)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a registry tool into the OpenAI function-calling schema consumed
+ * by the native tool-calling path (`callLLMTools`). The registry's `args`
+ * object IS the JSON Schema for the parameters — advertisement (system
+ * prompt catalog) and the native wire format derive from the same source,
+ * so the model can never be shown a different tool surface per protocol.
+ */
+export function toNativeSchema(tool: AgentTool): ToolSchema {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.args,
+    },
+  };
+}
+
+/**
+ * Native schemas for the tools a chat can actually route — ALL registry
+ * tools for a target chat, only "any"-scoped tools for a FREE chat. The
+ * model only ever sees tool schemas for tools the loop will genuinely
+ * execute (advertisement parity with the text protocol's prompt catalog,
+ * derived from the same registry, never hand-maintained).
+ */
+export function nativeToolSchemas(scope: "target" | "free"): ToolSchema[] {
+  return AGENT_TOOLS.filter((t) => (scope === "target" ? true : t.scope === "any")).map(
+    toNativeSchema
+  );
+}
 
 /**
  * Dispatch an "any"-scoped tool by name for the FREE-chat loop (no target
