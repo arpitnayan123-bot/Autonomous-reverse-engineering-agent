@@ -83,6 +83,61 @@ export async function readFile(projectId: string, relPath: string): Promise<stri
   return fs.readFile(abs, "utf8");
 }
 
+export interface WorkspaceUsage {
+  bytes: number;
+  files: number;
+  /** true when the walk hit its entry cap — bytes is then a LOWER bound. */
+  truncated: boolean;
+}
+
+/** Walk entry cap so a pathological tree cannot pin the event loop. */
+const DISK_USAGE_MAX_ENTRIES = 5000;
+
+/**
+ * Total bytes + file count of a workspace (recursive, entry-capped walk).
+ * Powers the chat-workspace disk quota and honest usage reporting.
+ */
+export async function workspaceDiskUsage(projectId: string): Promise<WorkspaceUsage> {
+  const root = workspaceDir(projectId);
+  const usage: WorkspaceUsage = { bytes: 0, files: 0, truncated: false };
+  const stack: string[] = [root];
+  let visited = 0;
+  while (stack.length > 0) {
+    if (visited >= DISK_USAGE_MAX_ENTRIES) {
+      usage.truncated = true;
+      break;
+    }
+    const dir = stack.pop() as string;
+    let entries: fsSync.Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue; // vanished / unreadable dir — contributes nothing
+    }
+    for (const e of entries) {
+      visited++;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) stack.push(p);
+      else if (e.isFile()) {
+        try {
+          usage.bytes += (await fs.stat(p)).size;
+          usage.files++;
+        } catch {
+          /* unreadable file */
+        }
+      }
+    }
+  }
+  return usage;
+}
+
+/**
+ * Per-workspace disk quota for CHAT workspaces (model-driven writes and
+ * command-created files). Project workspaces are operator-driven and are NOT
+ * quota-enforced — repo materialization can legitimately be large.
+ */
+export const CHAT_WORKSPACE_QUOTA_BYTES = 8 * 1024 * 1024;
+
 export interface WriteResult {
   path: string;
   bytes: number;
@@ -91,6 +146,13 @@ export interface WriteResult {
 
 export interface WriteOptions {
   maxBytes?: number;
+  /**
+   * Enforce a total per-workspace byte quota: the write is refused when
+   * current usage − this file's existing size + the incoming bytes would
+   * exceed quotaBytes (overwriting a file credits the bytes it replaces).
+   * CHAT workspace tools pass CHAT_WORKSPACE_QUOTA_BYTES.
+   */
+  quotaBytes?: number;
   /**
    * Persist a BuildArtifact audit row (default true). CHAT workspace tools
    * pass false: the chat tool trace (persisted on the ChatMessage row) is
@@ -107,11 +169,27 @@ export async function writeFile(
   opts?: WriteOptions
 ): Promise<WriteResult> {
   const maxBytes = opts?.maxBytes ?? 512 * 1024;
-  if (Buffer.byteLength(content, "utf8") > maxBytes) {
+  const incoming = Buffer.byteLength(content, "utf8");
+  if (incoming > maxBytes) {
     throw new Error(`Content exceeds the ${Math.round(maxBytes / 1024)} KB write cap`);
   }
   await ensureWorkspace(projectId);
   const abs = resolveSafe(projectId, relPath);
+  if (opts?.quotaBytes !== undefined) {
+    let existing = 0;
+    try {
+      existing = (await fs.stat(abs)).size;
+    } catch {
+      /* new file — nothing to credit */
+    }
+    const usage = await workspaceDiskUsage(projectId);
+    const projected = usage.bytes - existing + incoming;
+    if (projected > opts.quotaBytes) {
+      throw new Error(
+        `Workspace disk quota exceeded: this write would put the workspace at ${projected} bytes, over the ${opts.quotaBytes}-byte quota (${usage.files} file(s), ${usage.bytes} bytes currently used). Remove unused files (e.g. rm) or write smaller content — NOTHING was written.`
+      );
+    }
+  }
   const existed = fsSync.existsSync(abs);
   await fs.mkdir(path.dirname(abs), { recursive: true });
   await fs.writeFile(abs, content, "utf8");
@@ -123,11 +201,11 @@ export async function writeFile(
         path: relPath,
         content: content.slice(0, 20_000),
         kind: "file",
-        sizeBytes: Buffer.byteLength(content, "utf8"),
+        sizeBytes: incoming,
       },
     });
   }
-  return { path: relPath, bytes: Buffer.byteLength(content, "utf8"), created: !existed };
+  return { path: relPath, bytes: incoming, created: !existed };
 }
 
 export interface PatchResult {
@@ -370,6 +448,21 @@ export async function runCommand(
           chatHint
         );
       }
+    }
+  }
+
+  // Chat-mode disk-quota guard (LAST cheap→expensive guard, pre-spawn): a
+  // workspace already at its quota must refuse further execution —
+  // command-created files could otherwise grow it unbounded. Honest block:
+  // the command did NOT run.
+  if (opts?.chatMode) {
+    const usage = await workspaceDiskUsage(projectId);
+    if (usage.bytes >= CHAT_WORKSPACE_QUOTA_BYTES) {
+      return blockedResult(
+        command,
+        `Workspace is at its disk quota (${usage.bytes} of ${CHAT_WORKSPACE_QUOTA_BYTES} bytes) — command NOT executed.`,
+        "Free space first (e.g. rm an unused file), then re-run."
+      );
     }
   }
 
