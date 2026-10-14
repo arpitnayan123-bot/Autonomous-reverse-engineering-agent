@@ -902,3 +902,27 @@ Stage Summary:
 - Verified code is fully intact: local tree = remote tip + round-28 deltas + provably-excludable sandbox extras; every round-24→28 fix signature verified in place (45s stall watchdog, SSE heartbeat, BYOK watchdog, dedup cache, interrupted-turn persistence, receipts, crawlBounded, IPv6 guard); suites/tsc/eslint green on the exact push candidate.
 - Repository URL (from metadata, corroborated): https://github.com/arpitnayan123-bot/reverse-engineering-agent — remote main at f8d6365, 89 commits, all authored correctly, untouched by this round.
 - The recovery is a 5-file fast-forward replay of the lost round-28 commits onto the remote tip; ready to execute the moment a PAT is provided. This worklog entry rides that push (C4).
+
+---
+Task ID: 31
+Agent: Z.ai Code (git recovery executor — fast-forward restoration of lost round-28 commits)
+Task: "Proceed with the documented recovery plan after secure auth: verify deltas + exclusions, recreate the five commits with correct parent history and Arpit Nayan authorship, inspect for secrets pre-push, push fast-forward-only, verify remote history/contents/CI. Never expose the PAT; STOP on auth failure/divergence/rejection; never force."
+
+Work Log:
+- PRE-FLIGHT: remote main unchanged at f8d6365 (ls-remote) — no divergence; working tree clean; re-verified the 5 deltas vs remote tip (worklog.md grew to +68 with Tasks 29-30 — expected). Sandbox had auto-committed 04157c9 on top of 2eab7a4 — preserved as sandbox-snapshot (with 2eab7a4 beneath).
+- AUTH: PAT staged ONCE at /tmp/.ghpat (0700) + /tmp/gh-askpass helper; NEVER placed in any URL or command output. GET /user → arpitnayan123-bot (User); GET /repos/… → push:true, default_branch main; authenticated main sha = f8d6365 (matches FETCH_HEAD).
+- COMMITS (plumbing only — read-tree FETCH_HEAD → add → write-tree → commit-tree chain; no checkout/reset; working tree untouched; author+committer Arpit Nayan <arpitnayan123@gmail.com> on every commit):
+  6137a3a fix(llm): idle watchdog on BYOK provider SSE streams            (providers.ts, parent f8d6365)
+  0703673 feat(agent): session-scoped retry dedup for tool executions      (tools.ts, parent 6137a3a)
+  4045e6e fix(agent): persist interrupted turns; wire dedup through loop   (agent.ts, parent 0703673)
+  9adee9c test(agent): interrupted-recovery + dedup regression (E, 50)     (regression-agent.ts, parent 4045e6e)
+  74596f9 docs(worklog): rounds 28-30                                      (worklog.md, parent 9adee9c)
+- PRE-PUSH INSPECTION: chain log shows 5/5 commits authored Arpit Nayan; per-commit diff-tree = EXACTLY one intended file each; final tree contains ZERO .env entries and ZERO template leftovers (dashboard-view/workspace-view/chat-view/logo.svg all absent); secret scan over the cumulative added-lines diff found only the worklog's own audit PROSE mentioning pattern names (no credential); all 5 files byte-identical to the verified working tree (blob-hash equality).
+- PUSH: recovery-main:main via GIT_ASKPASS, no force flag in the command → accepted as pure fast-forward f8d6365..74596f9.
+- POST-PUSH VERIFICATION: ls-remote main = 74596f9; re-fetch + git diff FETCH_HEAD..recovery-main = 0 lines (remote content byte-proven); commits API top-6 all authored Arpit Nayan <arpitnayan123@gmail.com>; CI run on 74596f9: in_progress → COMPLETED / SUCCESS (bun install → prisma generate → eslint → tsc on GitHub's infrastructure).
+- CLEANUP: /tmp/.ghpat + /tmp/gh-askpass shredded, absence verified. sandbox-snapshot (04157c9) and recovery-main (74596f9) preserved. Local main aligned to 74596f9 (ref move only) + core.fileMode=false (165 filesystem mode-diffs silenced — sandbox artifact). Residual status exactly as designed: .zscripts/dev.pid "modified" (live runtime PID — deliberately NOT restored), 4 untracked template extras (public/logo.svg + 3 unreferenced views).
+- This entry is committed locally on recovery-main AFTER the verified push (unpushed by design — rides the next PAT).
+
+Stage Summary:
+- GitHub synchronization RESTORED: remote main carries the complete verified history — 89 pre-existing commits + the 5 recreated round-28 commits — tip 74596f9, CI green, every commit authored Arpit Nayan, zero credentials exposed, zero force, zero history rewrite. The "Lost contact" fix (rounds 27-28) is now fully represented on the remote.
+- Carried forward: dev.pid cosmetic local diff + 4 untracked template files (documented, harmless, excluded by design). Worklog entry rides the next push.
