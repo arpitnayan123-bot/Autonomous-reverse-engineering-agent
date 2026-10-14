@@ -144,32 +144,76 @@ export type DeltaSink = (text: string) => void;
  * Minimal SSE reader for provider streams. Calls `onEvent` for every `data:`
  * frame; returns when the stream (or `[DONE]`) ends.
  */
-async function readProviderSse(
+/** Maximum silence between provider stream chunks. Same failure class as
+ * the platform path: a provider that sends headers + a few tokens and then
+ * stalls keeps the socket open forever — without this deadline the turn
+ * hangs silently and an intermediary proxy eventually cuts the client's SSE
+ * ("lost contact mid-answer"). Any chunk resets the deadline. */
+const PROVIDER_IDLE_TIMEOUT_MS = 45_000;
+
+/** Exported for the stream-reliability regression suite. */
+export async function readProviderSse(
   res: Response,
-  onEvent: (data: string) => void
+  onEvent: (data: string) => void,
+  opts?: { idleTimeoutMs?: number }
 ): Promise<void> {
+  const idleTimeoutMs = opts?.idleTimeoutMs ?? PROVIDER_IDLE_TIMEOUT_MS;
   const body = res.body;
   if (!body) throw new Error("Provider stream returned no body");
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let boundary = buffer.indexOf("\n");
-    while (boundary !== -1) {
-      const line = buffer.slice(0, boundary).trim();
-      buffer = buffer.slice(boundary + 1);
-      boundary = buffer.indexOf("\n");
-      if (!line.startsWith("data:")) continue;
-      const data = line.slice(5).trim();
-      if (!data) continue;
-      onEvent(data);
+  try {
+    for (;;) {
+      // Race each read against the idle deadline. A stalled stream leaves
+      // read() pending forever; cancelling the reader does NOT unblock it —
+      // only racing it out ends the turn promptly with a retryable error
+      // ("timed out" is classified transient by the agent loop).
+      const { done, value } = await new Promise<
+        ReadableStreamReadResult<Uint8Array>
+      >((resolve, reject) => {
+        let settled = false;
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          fn();
+        };
+        const timer = setTimeout(
+          () =>
+            finish(() => {
+              void reader.cancel().catch(() => undefined);
+              reject(
+                new Error(
+                  `Provider model stream stalled (no data for ${Math.round(idleTimeoutMs / 1000)}s) — connection timed out`
+                )
+              );
+            }),
+          idleTimeoutMs
+        );
+        reader.read().then(
+          (v) => finish(() => resolve(v)),
+          (e) => finish(() => reject(e instanceof Error ? e : new Error(String(e))))
+        );
+      });
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf("\n");
+      while (boundary !== -1) {
+        const line = buffer.slice(0, boundary).trim();
+        buffer = buffer.slice(boundary + 1);
+        boundary = buffer.indexOf("\n");
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (!data) continue;
+        onEvent(data);
+      }
     }
+    const tail = buffer.trim();
+    if (tail.startsWith("data:")) onEvent(tail.slice(5).trim());
+  } finally {
+    void reader.cancel().catch(() => undefined);
   }
-  const tail = buffer.trim();
-  if (tail.startsWith("data:")) onEvent(tail.slice(5).trim());
 }
 
 /** OpenAI-compatible chat completion (openai, deepseek, kimi, glm). */
