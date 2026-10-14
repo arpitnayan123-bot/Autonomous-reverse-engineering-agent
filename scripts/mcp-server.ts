@@ -339,6 +339,20 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "rea_crawl_url",
+    description:
+      "Bounded same-domain recursive crawl of one public http(s) URL through the REA Explorer pipeline (no project needed): breadth-first, visited-URL set, configurable maxPages (1-20) and maxDepth (0-3), per-page timeouts, robots.txt respected. Returns structured results: visited URLs with final URL/status/title/depth, same-origin links per page, per-page errors, duplicates skipped, queued (unfetched) count and the effective limits. Internal addresses are refused by the SSRF guard.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Public http(s) start URL (max 2000 chars)" },
+        maxPages: { type: "number", description: "Page budget 1-20 (default 5)" },
+        maxDepth: { type: "number", description: "Link-depth budget 0-3 (default 1; 0 = entry page only)" },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "rea_connector_action",
     description:
       "Test or invoke a registered connector. action=test health-checks it (HTTP probe / MCP tools-list); action=invoke runs it with a JSON input (builtin web-search takes {query}; HTTP takes a JSON body; MCP takes the tool's arguments).",
@@ -507,6 +521,18 @@ async function executeTool(name: string, args: Args): Promise<ReturnType<typeof 
       const includeText = bool(args, "includeText");
       if (includeText !== undefined) body.includeText = includeText;
       const r = await api("/api/explore", { method: "POST", body: JSON.stringify(body) }, 60_000);
+      return toolJson(r);
+    }
+    case "rea_crawl_url": {
+      const body: Record<string, unknown> = {
+        url: str(args, "url", { required: true, max: 2_000 }),
+        mode: "crawl",
+      };
+      const maxPages = num(args, "maxPages");
+      const maxDepth = num(args, "maxDepth");
+      if (maxPages !== undefined) body.maxPages = maxPages;
+      if (maxDepth !== undefined) body.maxDepth = maxDepth;
+      const r = await api("/api/explore", { method: "POST", body: JSON.stringify(body) }, SLOW_MS);
       return toolJson(r);
     }
     case "rea_connector_action": {
