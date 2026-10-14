@@ -19,7 +19,7 @@
  */
 import { AGENT_TOOLS, executeAgentTool } from "@/server/agent/tools";
 import type { AgentToolContext } from "@/server/agent/tools";
-import { probeUrl } from "@/server/platform/explorer";
+import { probeUrl, crawlBounded, type ProbeResult } from "@/server/platform/explorer";
 import { BlockedUrlError } from "@/server/platform/net";
 import type { Target } from "@prisma/client";
 
@@ -123,6 +123,192 @@ async function main(): Promise<void> {
     "unknown tool lists the registry (routing intact)",
     unknownOut.startsWith("Error: unknown tool") && unknownOut.includes("explore_url")
   );
+
+  // 9. BOUNDED CRAWL (crawlBounded) — deterministic synthetic graph via the
+  // fetchPage seam (hosted on a genuinely resolvable host, because the
+  // fail-fast start guard does a real DNS lookup by design), then the real
+  // network on https://example.com.
+  const FAKE = "https://example.com";
+
+  /** Bounded retry for transient sandbox-DNS failures on the START guard;
+   *  the guard itself stays fail-closed — we only retry real DNS hiccups. */
+  async function crawlRetry(url: string, opts: Parameters<typeof crawlBounded>[1]): Promise<Awaited<ReturnType<typeof crawlBounded>>> {
+    let lastErr: unknown = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await crawlBounded(url, opts);
+      } catch (err) {
+        lastErr = err;
+        if (!(err instanceof BlockedUrlError && /dns/i.test(err.message))) throw err;
+        console.log(`… attempt ${attempt} hit transient DNS failure, retrying`);
+        await new Promise((r) => setTimeout(r, 1_500));
+      }
+    }
+    throw lastErr;
+  }
+  function mkProbe(url: string, title: string | null, hrefs: string[]): ProbeResult {
+    return {
+      requestUrl: url,
+      finalUrl: url,
+      status: 200,
+      ms: 1,
+      contentType: "text/html",
+      title,
+      description: null,
+      headings: { h1: [], h2: [], h3: [] },
+      links: hrefs.map((h) => ({ href: h, text: h })),
+      tech: [],
+      textExcerpt: null,
+      contentHash: "0".repeat(64),
+    };
+  }
+  const graph: Record<string, ProbeResult> = {
+    [`${FAKE}/a`]: mkProbe(`${FAKE}/a`, "A", ["/b", "/a", "/c", "https://other.test/x", "/logo.png"]),
+    [`${FAKE}/b`]: mkProbe(`${FAKE}/b`, "B", ["/c", "/d"]),
+    [`${FAKE}/c`]: mkProbe(`${FAKE}/c`, "C", ["/d"]),
+    [`${FAKE}/d`]: mkProbe(`${FAKE}/d`, "D", ["/e"]),
+    [`${FAKE}/e`]: mkProbe(`${FAKE}/e`, "E", []),
+  };
+  const fakeFetch = (url: string): Promise<ProbeResult> => {
+    const hit = graph[url];
+    if (!hit) return Promise.reject(new Error(`404 ${url}`));
+    return Promise.resolve(hit);
+  };
+
+  // 9a. successful crawl + duplicate-link handling + same-origin filter.
+  const t1 = await crawlRetry(`${FAKE}/a`, {
+    maxPages: 10,
+    maxDepth: 3,
+    respectRobots: false,
+    fetchPage: fakeFetch,
+  });
+  check(
+    "crawl visits the whole same-origin graph breadth-first",
+    t1.visited.join(",") === ["/a", "/b", "/c", "/d", "/e"].map((p) => FAKE + p).join(",") &&
+      t1.pages.every((p) => p.status === 200 && p.title),
+    `visited: ${t1.visited.join(" → ")}`
+  );
+  check(
+    "crawl counts duplicate links via the visited set (self + re-discovered)",
+    t1.duplicatesSkipped === 3,
+    `duplicatesSkipped=${t1.duplicatesSkipped}`
+  );
+  check(
+    "crawl stays on the start origin and skips asset links",
+    !t1.visited.some((u) => u.includes("other.test")) && !t1.visited.some((u) => u.endsWith(".png")),
+    `origin=${t1.origin}`
+  );
+
+  // 9b. depth limit: maxDepth 1 must stop after depth-1 pages.
+  const t2 = await crawlRetry(`${FAKE}/a`, {
+    maxPages: 10,
+    maxDepth: 1,
+    respectRobots: false,
+    fetchPage: fakeFetch,
+  });
+  check(
+    "depth limit holds (maxDepth 1 → entry + depth-1 pages only)",
+    t2.visited.join(",") === ["/a", "/b", "/c"].map((p) => FAKE + p).join(",") &&
+      !t2.visited.includes(`${FAKE}/d`),
+    `visited: ${t2.visited.join(" → ")}`
+  );
+
+  // 9c. page budget: attempts stop at maxPages, remainder reported as queued.
+  const t3 = await crawlRetry(`${FAKE}/a`, {
+    maxPages: 2,
+    maxDepth: 3,
+    respectRobots: false,
+    fetchPage: fakeFetch,
+  });
+  check(
+    "page limit holds (2 fetched, remainder queued)",
+    t3.pages.length === 2 && t3.queued === 2 && t3.limits.maxPages === 2,
+    `pages=${t3.pages.length} queued=${t3.queued}`
+  );
+
+  // 9d. per-page error reporting keeps the crawl going.
+  const errGraph: Record<string, ProbeResult> = {
+    [`${FAKE}/a`]: mkProbe(`${FAKE}/a`, "A", ["/bad"]),
+  };
+  const t4 = await crawlRetry(`${FAKE}/a`, {
+    maxPages: 5,
+    maxDepth: 1,
+    respectRobots: false,
+    fetchPage: (url) =>
+      url === `${FAKE}/bad`
+        ? Promise.reject(new Error("connection refused"))
+        : Promise.resolve(errGraph[url]!),
+  });
+  check(
+    "page errors are recorded with status 0 and the crawl continues",
+    t4.pages.length === 2 &&
+      t4.pages[1].status === 0 &&
+      t4.pages[1].error === "connection refused" &&
+      t4.errors.length === 1 &&
+      t4.errors[0].url === `${FAKE}/bad`,
+    `errors: ${t4.errors.map((e) => e.url).join(", ")}`
+  );
+
+  // 9e. invalid URL → honest fail-fast rejection.
+  try {
+    await crawlBounded("not a url at all", { fetchPage: fakeFetch, respectRobots: false });
+    check("invalid URL is rejected (unparseable)", false, "crawlBounded unexpectedly succeeded");
+  } catch (err) {
+    check(
+      "invalid URL is rejected (unparseable)",
+      err instanceof BlockedUrlError && /unparseable/i.test(err.message),
+      err instanceof Error ? err.message.slice(0, 80) : String(err)
+    );
+  }
+
+  // 9f. SSRF: internal destinations refused before any fetch (fail-fast).
+  for (const [bad, label] of [
+    ["http://127.0.0.1:3000/", "loopback"],
+    ["http://169.254.169.254/latest/meta-data/", "cloud metadata (link-local)"],
+    ["http://10.0.0.5/internal", "private range"],
+    ["ftp://example.com/", "non-http(s) scheme"],
+  ] as const) {
+    try {
+      await crawlBounded(bad, { fetchPage: fakeFetch });
+      check(`crawl SSRF guard blocks ${label}`, false, "unexpectedly succeeded");
+    } catch (err) {
+      check(
+        `crawl SSRF guard blocks ${label}`,
+        err instanceof BlockedUrlError,
+        err instanceof Error ? err.message.slice(0, 90) : String(err)
+      );
+    }
+  }
+
+  // 9g. REAL crawl against the mandated safe live URL (crawlRetry absorbs
+  // transient sandbox-DNS hiccups; any other failure is reported honestly).
+  let t5: Awaited<ReturnType<typeof crawlBounded>> | null = null;
+  let lastErr: unknown = null;
+  try {
+    t5 = await crawlRetry("https://example.com", { maxPages: 3, maxDepth: 1 });
+  } catch (err) {
+    lastErr = err;
+  }
+  if (t5) {
+    check(
+      "real crawl of https://example.com — 1 page, 200, limits recorded",
+      t5.pages.length === 1 &&
+        t5.pages[0].status === 200 &&
+        t5.pages[0].title === "Example Domain" &&
+        t5.errors.length === 0 &&
+        t5.visited[0] === "https://example.com/" &&
+        t5.limits.maxPages === 3 &&
+        t5.limits.maxDepth === 1 &&
+        t5.elapsedMs > 0,
+      `pages=${t5.pages.length} status=${t5.pages[0]?.status} title=${t5.pages[0]?.title} ms=${t5.elapsedMs}`
+    );
+  } else {
+    check(
+      "real crawl of https://example.com — 1 page, 200, limits recorded",
+      false,
+      `crawl failed: ${lastErr instanceof Error ? lastErr.message.slice(0, 120) : String(lastErr)}`
+    );
+  }
 
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
   process.exit(failures === 0 ? 0 : 1);
