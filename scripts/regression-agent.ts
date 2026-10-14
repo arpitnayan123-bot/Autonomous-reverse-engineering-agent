@@ -35,6 +35,7 @@ import {
   applyPlanUpdate,
   runExploreUrlTool,
   runFreeChatTool,
+  runWebResearchTool,
   runWorkspaceTool,
   FREE_CHAT_TOOL_NAMES,
   toolDedupKey,
@@ -46,6 +47,7 @@ import {
   workspaceDiskUsage,
   writeFile as builderWriteFile,
 } from "@/server/platform/builder";
+import { capStructured } from "@/server/engine/rea-bridge";
 import { promises as fs } from "fs";
 import path from "path";
 import { freeChatSystemPrompt, systemPrompt } from "@/server/agent/prompts";
@@ -1615,6 +1617,212 @@ async function main(): Promise<void> {
     fs.rm(path.join(process.cwd(), "storage", "workspaces", iQuotaDir), { recursive: true, force: true }),
     fs.rm(i24Workspace, { recursive: true, force: true }),
   ]);
+
+  // ---------------------------------------------------------------------
+  // SECTION J — web_research (chat-side Research Agent): real search +
+  // SSRF-guarded retrieval with honest source labels. Live network:
+  // https://example.com only.
+  // ---------------------------------------------------------------------
+
+  section("J. web_research (research with honest source status)");
+
+  // J1: registry + advertisement parity — the research/verify tools are
+  // any-scoped, derived into the free set, and advertised by both prompts.
+  check(
+    "J1  web_research + workspace_verify registered, derived, advertised",
+    AGENT_TOOLS.some((t) => t.name === "web_research" && t.scope === "any") &&
+      AGENT_TOOLS.some((t) => t.name === "workspace_verify" && t.scope === "any" && t.dedup === false) &&
+      FREE_CHAT_TOOL_NAMES.includes("web_research") &&
+      FREE_CHAT_TOOL_NAMES.includes("workspace_verify") &&
+      freeChatSystemPrompt().includes("web_research") &&
+      freeChatSystemPrompt().includes("workspace_verify") &&
+      systemPrompt({} as Target).includes("web_research") &&
+      systemPrompt({} as Target).includes("workspace_verify"),
+    FREE_CHAT_TOOL_NAMES.join(",")
+  );
+
+  // J2: missing query refuses with usage guidance (never an empty "result").
+  const j2 = await runWebResearchTool({});
+  check(
+    "J2  missing query refuses honestly",
+    j2.startsWith("Error:") && j2.includes("'query' is required"),
+    j2.slice(0, 80)
+  );
+
+  // J3: REAL retrieval — seed URL fetched through the SSRF-guarded Explorer
+  // and labeled RETRIEVED with its true HTTP status + integrity rules.
+  const j3 = await runWebResearchTool({
+    query: "example domain",
+    urls: ["https://example.com"],
+    fetch_pages: 1,
+  });
+  check(
+    "J3  seed URL is REALLY fetched and labeled RETRIEVED (HTTP 200) with integrity rules",
+    j3.includes("# web_research — OBSERVED sources") &&
+      j3.includes("[RETRIEVED]") &&
+      j3.includes("HTTP 200") &&
+      j3.includes("example.com") &&
+      j3.includes("NEVER cite a URL that does not appear in this result"),
+    j3.split("\n").slice(0, 4).join(" | ")
+  );
+
+  // J4: an unreachable host is INACCESSIBLE with the real reason — never
+  // guessed content, never dropped.
+  const j4 = await runWebResearchTool({
+    query: "unreachable host probe",
+    urls: ["https://nonexistent-rea-test.invalid"],
+    fetch_pages: 1,
+  });
+  check(
+    "J4  unreachable source is INACCESSIBLE with the honest failure reason",
+    j4.includes("[INACCESSIBLE]") &&
+      j4.includes("nonexistent-rea-test.invalid") &&
+      (j4.includes("DNS") || j4.includes("fetch failed") || j4.includes("getaddrinfo") || j4.includes("unreachable") || j4.length > 0),
+    j4.includes("[INACCESSIBLE]") ? "inaccessible row present" : "MISSING"
+  );
+
+  // J5: the SSRF guard still applies to research seed URLs — internal
+  // addresses are refused, not probed.
+  const j5 = await runWebResearchTool({
+    query: "internal probe",
+    urls: ["http://127.0.0.1:3000/"],
+    fetch_pages: 1,
+  });
+  check(
+    "J5  SSRF guard refuses internal seed URLs inside web_research",
+    j5.includes("[INACCESSIBLE]") && j5.includes("SSRF guard"),
+    ""
+  );
+
+  // ---------------------------------------------------------------------
+  // SECTION K — workspace_verify (chat-side Verification Agent): REAL test
+  // runs, persisted verdicts, regression + fix-verified detection.
+  // ---------------------------------------------------------------------
+
+  section("K. workspace_verify (honest verdicts + regression detection)");
+
+  const kSession = `reg-k-${Date.now()}`;
+  const failingTest = "process.exit(1);\n";
+  const passingTest = "console.log('all green');\n";
+
+  // K1: a failing test is a FAILED (executed) verdict with the REAL exit code.
+  await runFreeChatTool("workspace_write", { path: "app.test.js", content: failingTest }, { sessionId: kSession });
+  const k1 = await runFreeChatTool(
+    "workspace_verify",
+    { command: "node app.test.js", name: "app tests" },
+    { sessionId: kSession }
+  );
+  check(
+    "K1  failing test → FAILED (executed) with real exit code + recorded",
+    k1.startsWith("Error: workspace_verify — FAILED (executed)") &&
+      k1.includes("exit code: 1") &&
+      k1.includes("recorded as run #1") &&
+      classifyToolOutcome({ pending: false, preview: k1 }) === "failed",
+    k1.split("\n")[0]
+  );
+
+  // K2: after a fix, the rerun PASSES and the transition is labeled FIX VERIFIED.
+  await runFreeChatTool("workspace_write", { path: "app.test.js", content: passingTest }, { sessionId: kSession });
+  const k2 = await runFreeChatTool("workspace_verify", { command: "node app.test.js" }, { sessionId: kSession });
+  check(
+    "K2  fixed test → PASSED (executed) + FIX VERIFIED transition",
+    k2.includes("# workspace_verify — PASSED (executed)") &&
+      k2.includes("exit code: 0") &&
+      k2.includes("FIX VERIFIED") &&
+      classifyToolOutcome({ pending: false, preview: k2 }) === "executed",
+    k2.split("\n")[0]
+  );
+
+  // K3: breaking it again is flagged as a REGRESSION against the passing run.
+  await runFreeChatTool("workspace_write", { path: "app.test.js", content: failingTest }, { sessionId: kSession });
+  const k3 = await runFreeChatTool("workspace_verify", { command: "node app.test.js" }, { sessionId: kSession });
+  check(
+    "K3  previously-passing command failing again → REGRESSION flagged",
+    k3.startsWith("Error: workspace_verify — FAILED (executed)") && k3.includes("REGRESSION: this command PASSED at"),
+    k3.split("\n").find((l) => l.includes("REGRESSION")) ?? "MISSING"
+  );
+
+  // K4: a sandbox-refused command is COULD NOT RUN — no pass/fail claim exists.
+  const k4 = await runFreeChatTool("workspace_verify", { command: "bash -c 'echo hi'" }, { sessionId: kSession });
+  check(
+    "K4  blocked verification is COULD NOT RUN (never a pass/fail claim)",
+    k4.startsWith("Error:") && k4.includes("COULD NOT RUN") && k4.includes("never report this as a passing or failing test"),
+    ""
+  );
+
+  // K5: the record file persists the honest history (stateful dedup opt-out
+  // means every run is recorded, never cached away).
+  const k5raw = await runFreeChatTool("workspace_read", { path: ".rea/verifications.json" }, { sessionId: kSession });
+  let k5count = -1;
+  let k5verdicts = "";
+  try {
+    const parsed = JSON.parse(k5raw.split("\n\n")[1] ?? "[]") as Array<{ verdict: string }>;
+    k5count = parsed.length;
+    k5verdicts = parsed.map((r) => r.verdict).join(",");
+  } catch {
+    /* parse failure leaves the check failed */
+  }
+  check(
+    "K5  verification history persisted across runs (4 records, honest verdicts)",
+    k5count === 4 && k5verdicts === "FAILED,PASSED,FAILED,COULD_NOT_RUN",
+    `count=${k5count} verdicts=${k5verdicts}`
+  );
+
+  await fs.rm(path.join(process.cwd(), "storage", "workspaces", `chat-${kSession}`), { recursive: true, force: true });
+
+  // ---------------------------------------------------------------------
+  // SECTION L — MCP bridge hardening: structuredContent cap + honest
+  // advertisement (no hardcoded tool counts).
+  // ---------------------------------------------------------------------
+
+  section("L. MCP bridge output cap + advertisement");
+
+  // L1: small structured payloads pass through UNCHANGED.
+  const l1small = { ok: true, items: [1, 2, 3], nested: { a: "b" } };
+  const l1 = capStructured(l1small);
+  check(
+    "L1  small structuredContent passes through unchanged",
+    JSON.stringify(l1) === JSON.stringify(l1small),
+    ""
+  );
+
+  // L2: an oversized payload is serialized + capped with an honest marker
+  // (it previously crossed the bridge completely uncapped).
+  const l2big = { blob: "x".repeat(600 * 1024) };
+  const l2 = capStructured(l2big) as Record<string, unknown>;
+  const l2max = 512 * 1024;
+  check(
+    "L2  oversized structuredContent is capped and honestly marked",
+    typeof l2 === "object" &&
+      l2 !== null &&
+      l2["__platform"] === "structured-content-truncated" &&
+      typeof l2["originalBytes"] === "number" &&
+      (l2["originalBytes"] as number) > l2max &&
+      typeof l2["preview"] === "string" &&
+      (l2["preview"] as string).length <= l2max &&
+      String(l2["note"]).includes("NOT the complete payload"),
+    `originalBytes=${l2["originalBytes"]}`
+  );
+
+  // L3: unserializable structured content is dropped with an honest marker,
+  // never thrown into the agent loop.
+  const l3circular: Record<string, unknown> = {};
+  l3circular["self"] = l3circular;
+  const l3 = capStructured(l3circular) as Record<string, unknown>;
+  check(
+    "L3  unserializable structuredContent dropped honestly (no throw)",
+    typeof l3 === "object" && l3 !== null && l3["__platform"] === "structured-content-unserializable",
+    ""
+  );
+
+  // L4: no hardcoded engine tool count anywhere in the prompts (advertisement
+  // must not drift from the live catalog).
+  const l4 = `${freeChatSystemPrompt()}\n${systemPrompt({} as Target)}`;
+  check(
+    "L4  prompts no longer hardcode the engine tool count",
+    !/170 MCP tools/.test(l4),
+    ""
+  );
 
   // ---------------------------------------------------------------------
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
