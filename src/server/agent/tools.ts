@@ -8,11 +8,13 @@ import { CHAT_TOOL_TIMEOUT_MS } from "@/lib/security";
 import { getStringsForTarget } from "@/server/engine/strings";
 import { probeUrl, PROBE_TIMEOUT_MS } from "@/server/platform/explorer";
 import {
+  CHAT_WORKSPACE_QUOTA_BYTES,
   chatCommandAllowlist,
   listFiles as workspaceListFiles,
   readFile as workspaceReadFile,
   runCommand as workspaceRunCommand,
   writeFile as workspaceWriteFile,
+  workspaceDiskUsage,
 } from "@/server/platform/builder";
 import { BlockedUrlError } from "@/server/platform/net";
 import type { Target } from "@prisma/client";
@@ -808,13 +810,17 @@ export async function runWorkspaceTool(
       } catch (err) {
         return workspaceErr(`cannot list "${sub || "."}" in the workspace (paths must stay inside it)`, err);
       }
+      // Honest usage line: the model sees the REAL disk state and the quota,
+      // so it can plan before a refused write teaches it the hard way.
+      const usage = await workspaceDiskUsage(key);
+      const usageLine = `Workspace usage: ${usage.files} file(s), ${fmtBytes(usage.bytes)}${usage.truncated ? "+" : ""} of ${fmtBytes(CHAT_WORKSPACE_QUOTA_BYTES)} quota.`;
       if (entries.length === 0) {
-        return `Workspace listing for "${sub || "."}": empty.${sub ? "" : " Create files with workspace_write — writes are real and land on disk."}`;
+        return `Workspace listing for "${sub || "."}": empty. ${usageLine}${sub ? "" : " Create files with workspace_write — writes are real and land on disk."}`;
       }
       const rows = entries
         .slice(0, 100)
         .map((e) => `| ${e.path} | ${e.type}${e.sizeBytes !== undefined ? ` (${fmtBytes(e.sizeBytes)})` : ""} |`);
-      return `Workspace listing for "${sub || "."}" — ${entries.length} entr${entries.length === 1 ? "y" : "ies"}:\n\n| path | type |\n|---|---|\n${rows.join("\n")}`;
+      return `Workspace listing for "${sub || "."}" — ${entries.length} entr${entries.length === 1 ? "y" : "ies"}. ${usageLine}\n\n| path | type |\n|---|---|\n${rows.join("\n")}`;
     }
 
     case "workspace_read": {
@@ -836,10 +842,26 @@ export async function runWorkspaceTool(
         return "Error: 'content' is required (the full file content as a string).";
       }
       try {
-        const r = await workspaceWriteFile(key, rel, content, { audit: false });
-        return `# workspace_write — OBSERVED write\n- path: ${r.path}\n- bytes written: ${r.bytes}\n- ${r.created ? "created new file" : "overwrote existing file"}\nThe file is now on disk in this session's workspace (verify with workspace_read or workspace_list).`;
+        const r = await workspaceWriteFile(key, rel, content, {
+          audit: false,
+          quotaBytes: CHAT_WORKSPACE_QUOTA_BYTES,
+        });
+        // Post-write usage is best-effort reporting — the write itself already
+        // succeeded and is attested by r.bytes; a failed usage walk must not
+        // turn an OBSERVED write into an error.
+        let usageNote = "";
+        try {
+          const usage = await workspaceDiskUsage(key);
+          usageNote = `\n- workspace now: ${usage.files} file(s), ${fmtBytes(usage.bytes)} of ${fmtBytes(CHAT_WORKSPACE_QUOTA_BYTES)} quota`;
+        } catch {
+          /* usage reporting is best-effort */
+        }
+        return `# workspace_write — OBSERVED write\n- path: ${r.path}\n- bytes written: ${r.bytes}\n- ${r.created ? "created new file" : "overwrote existing file"}${usageNote}\nThe file is now on disk in this session's workspace (verify with workspace_read or workspace_list).`;
       } catch (err) {
-        return workspaceErr(`write failed for "${rel}" (512 KB cap; paths must stay inside the workspace)`, err);
+        return workspaceErr(
+          `write failed for "${rel}" (512 KB per-file cap, ${fmtBytes(CHAT_WORKSPACE_QUOTA_BYTES)} per-workspace quota; paths must stay inside the workspace)`,
+          err
+        );
       }
     }
 
@@ -916,7 +938,7 @@ const workspaceWriteTool: AgentTool = {
   name: "workspace_write",
   scope: "any",
   description:
-    "Create or overwrite a file in this chat's sandboxed workspace — the write is REAL (result reports the actual byte count written). 512 KB cap, workspace-relative paths only, parent directories created automatically. Write code/config/docs here, then execute it with workspace_run.",
+    "Create or overwrite a file in this chat's sandboxed workspace — the write is REAL (result reports the actual byte count written). 512 KB per-file cap and an 8 MB per-workspace disk quota (over-quota writes are refused with nothing written), workspace-relative paths only, parent directories created automatically. Write code/config/docs here, then execute it with workspace_run.",
   args: {
     type: "object",
     properties: {
@@ -932,7 +954,7 @@ const workspaceWriteTool: AgentTool = {
 const workspaceRunTool: AgentTool = {
   name: "workspace_run",
   scope: "any",
-  description: `Execute ONE allowlisted command inside this chat's sandboxed workspace (cwd = the workspace) and return the REAL exit code, stdout and stderr. No shell: pipes, redirection, \`*\` globs and \`\$VAR\` interpolation are NOT interpreted — pass plain arguments. Blocked: non-allowlisted binaries, sed/awk/find/tar/git/env, absolute paths, ".." traversal, inline-eval flags (node -e, python3 -c). Allowed binaries: ${chatCommandAllowlist().join(", ")}. To run code, workspace_write it to a file first, then run it as a file. Each call is capped at ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s.`,
+  description: `Execute ONE allowlisted command inside this chat's sandboxed workspace (cwd = the workspace) and return the REAL exit code, stdout and stderr. No shell: pipes, redirection, \`*\` globs and \`\$VAR\` interpolation are NOT interpreted — pass plain arguments. Blocked: non-allowlisted binaries, sed/awk/find/tar/git/env, absolute paths, ".." traversal, inline-eval flags (node -e, python3 -c); commands are also refused while the workspace sits at its 8 MB disk quota. Allowed binaries: ${chatCommandAllowlist().join(", ")}. To run code, workspace_write it to a file first, then run it as a file. Each call is capped at ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s.`,
   args: {
     type: "object",
     properties: {
