@@ -370,6 +370,30 @@ model VerificationRun {
 }
 
 /**
+ * Cross-session persistent memory for the agent. Rows are scoped per user:
+ * targetId = null → GLOBAL (recalled in every chat of this user, including
+ * free chats); otherwise the memory belongs to that one target and is only
+ * recalled in chats on it. Plain columns (no FK) by design — memories are
+ * authored by the agent from chat context, may use synthetic ids in tests,
+ * and global knowledge must survive target deletion (orphaned target rows
+ * simply become unreachable). Uniqueness is enforced in application code
+ * (remember() upserts on userId+targetId+key) because SQLite treats NULLs
+ * as distinct in unique indexes, which would break global-scope upserts.
+ */
+model Memory {
+  id        String   @id @default(cuid())
+  userId    String
+  targetId  String?
+  key       String
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, targetId, updatedAt])
+  @@index([userId, key])
+}
+
+/**
  * A reusable external capability: built-in platform services, plain HTTP
  * endpoints, or MCP servers. Header secrets are sealed with the same
  * AES-256-GCM vault as provider keys.
