@@ -730,3 +730,27 @@ Stage Summary:
 - The Explorer is now reachable from BOTH surfaces: the Platform workspace (as before) and the chat agent (new explore_url tool, target-attached and free chat), over one shared SSRF-guarded extraction pipeline. URL analysis requests execute for real and return actual visited URLs, status, titles, headings, links, technologies, hashes, excerpts and honest errors.
 - Honest limits: explore_url is a single-page probe by design (multi-page crawling stays in the Platform Explorer; robots.txt applies there, the one-page probe is equivalent to a user browser visit); chat tool results are truncated at 6000 chars so only ≤40 links render per page; example.com's real served variant has no headings/links and the regression asserts exactly that rather than folklore.
 - Next candidates: wire explore_url into the MCP server toolset (REA_MCP) for external agents; optional deep-crawl tool for chat backed by crawlSite+project auto-create; GitHub push of these commits awaits a fresh PAT (none on disk — shredded by design last round).
+
+---
+Task ID: 23 (continuation)
+Agent: Z.ai Code (Explorer audit — verification + MCP registration extension)
+Task: "Continue the REA Explorer audit from the current repository state... run a real test against https://example.com. Show actual execution results and changed files."
+
+Work Log:
+- VERIFIED prior fix is intact in the repo: 6 Task-23 commits present (fd66356→1d72d75), tree clean, explore_url registered in agent/tools.ts and routed in agent/agent.ts + agent/prompts.ts.
+- RE-RAN the automated regression: `bun run regress:explorer` → 21/21 checks PASS, including the agent-layer REAL fetch of https://example.com (status 200, title "Example Domain", OBSERVED-evidence output, SSRF guards blocking 127.0.0.1 / 169.254.169.254 / ftp:).
+- DIRECT live probe (probeUrl on https://example.com): finalUrl https://example.com/, status 200, 30ms, text/html; charset=utf-8, title "Example Domain", h1/h2/h3 empty + 0 links (honest — the served variant is title-only), tech [server:cloudflare, cdn:cloudflare], textExcerpt real, sha256 25ddf2c883e0d195….
+- FOUND the remaining registration gap from Task-23 next-candidates: the MCP stdio server (external coding agents) exposed 18 tools with NO URL-probe capability, and no API route exposed probeUrl. Fixed with the smallest reliable change following the MCP server's 1:1 bridge design:
+  - NEW src/app/api/explore/route.ts — POST {url, includeText?} → session auth (401), rate limit (30/10min per user → 429), probeUrl over the SAME SSRF guard; BlockedUrlError→400 honest reason, timeout→504, network/DNS→502 real message; no project or DB writes.
+  - scripts/mcp-server.ts — rea_probe_url tool registered (inputSchema url/includeText) + executeTool case POSTing /api/explore (60s cap). Registry now 19 tools.
+  - README.md — tool count 18→19 + rea_probe_url documented.
+- LIVE-TESTED the new surfaces (real HTTP, session token via scripts/mcp-token.ts --demo):
+  - POST /api/explore {url:"https://example.com"} → 200 {ok:true, result:{finalUrl:"https://example.com/", status:200, ms:108, title:"Example Domain", tech:[server:cloudflare, cdn:cloudflare], textExcerpt:real, contentHash:25ddf2c8…}} (dev.log: "POST /api/explore 200 in 62ms").
+  - SSRF via HTTP: POST {url:"http://169.254.169.254/latest/meta-data"} → HTTP 400 {"ok":false,"error":"URL blocked by SSRF guard: private address 169.254.169.254"}.
+  - MCP end-to-end over stdio (initialize → tools/list → tools/call rea_probe_url): real JSON-RPC response "HTTP 200 … status:200, ms:43, title Example Domain, tech cloudflare, textExcerpt…" — external agents can now execute the Explorer, not read guidance.
+- tsc --noEmit clean; eslint clean; dev server healthy (POST /api/explore visible in dev.log).
+
+Stage Summary:
+- Explorer is now executable from THREE surfaces, one shared SSRF-guarded pipeline: Platform Explorer tab (crawlSite), chat agent (explore_url — verified last round), and REST + MCP (new /api/explore + rea_probe_url, verified live this round). No fabricated results anywhere: example.com's title-only variant is reported as-is.
+- Changed files this continuation: src/app/api/explore/route.ts (new), scripts/mcp-server.ts, README.md. Commits: 2fe125e (api route) → 8edc0ce (mcp tool) → bd2471e (readme) → this worklog commit.
+- Next candidates: GitHub push of the 9 unpushed commits awaits a fresh PAT (none on disk — shredded by design); optional deep-crawl chat tool backed by crawlSite; per-chat evidence rows for platform tool calls.
