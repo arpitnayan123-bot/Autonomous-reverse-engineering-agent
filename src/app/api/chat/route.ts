@@ -4,6 +4,7 @@ import { getSessionUser } from "@/lib/auth";
 import { audit, clientIp, isSafeId, rateLimit } from "@/lib/security";
 import { estimateCostUsd } from "@/lib/pricing";
 import { runAgentLoop, toolReceiptSuffix } from "@/server/agent/agent";
+import { TurnControl, activeTurns } from "@/server/agent/turn-control";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -413,6 +414,16 @@ export async function POST(req: Request) {
       );
     }
     inFlightTurns.add(session.id);
+    /**
+     * Turn lifetime is decoupled from the SSE viewer: external proxies cut
+     * long responses (~30s measured), which is a TRANSPORT event, not an
+     * intent. The turn now keeps running to completion when the viewer dies
+     * (its result persists normally and the client recovers it via history);
+     * only an explicit stop (POST /api/chat/stop) or the safety deadline
+     * cancels it.
+     */
+    const turn = new TurnControl();
+    activeTurns.set(session.id, turn);
 
     // Truncation + user-row creation happen atomically so a concurrent turn
     // can never observe half-applied edit/regenerate state.
@@ -431,6 +442,8 @@ export async function POST(req: Request) {
       });
     } catch (err) {
       inFlightTurns.delete(session.id);
+      activeTurns.delete(session.id);
+      turn.dispose();
       throw err;
     }
 
@@ -504,8 +517,9 @@ export async function POST(req: Request) {
                 m.content.slice(0, 4000) +
                 toolReceiptSuffix(m.role === "assistant" ? m.toolCalls : null),
             })),
-            // Client disconnects propagate into LLM calls (timeout+abort).
-            signal: req.signal,
+            // The turn's own control (explicit stop / safety deadline) — NOT
+            // req.signal, which fires when the viewer connection dies.
+            signal: turn.signal,
             events: {
               onModelResolved: (info) => send({ type: "model", ...info }),
               onTurnStart: (turn) => send({ type: "turn_start", turn }),
@@ -513,7 +527,8 @@ export async function POST(req: Request) {
               onToolCall: (tool, args) => send({ type: "tool_call", tool, args }),
               onToolResult: (tool, result) =>
                 send({ type: "tool_result", tool, preview: result.slice(0, 1000) }),
-              shouldCancel: () => closed || req.signal.aborted,
+              shouldCancel: () => turn.stopped,
+              cancellationReason: () => turn.reason,
             },
           });
           send({
@@ -534,6 +549,8 @@ export async function POST(req: Request) {
           closed = true;
           if (heartbeat) clearInterval(heartbeat);
           inFlightTurns.delete(session!.id);
+          activeTurns.delete(session!.id);
+          turn.dispose();
           try {
             controller.close();
           } catch {
@@ -542,9 +559,11 @@ export async function POST(req: Request) {
         }
       },
       cancel() {
+        // Viewer transport loss (proxy cut, tab close). The turn keeps
+        // running detached: it holds the writer lock (inFlightTurns) until
+        // its own finally releases it, and its result persists normally.
         closed = true;
         if (heartbeat) clearInterval(heartbeat);
-        if (session) inFlightTurns.delete(session.id);
       },
     });
 
