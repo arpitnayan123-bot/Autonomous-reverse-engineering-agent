@@ -32,6 +32,7 @@ import {
 } from "./memory";
 import { BlockedUrlError } from "@/server/platform/net";
 import { platformWebSearch } from "@/server/platform/research";
+import { getUserSandboxMode } from "@/server/platform/sandbox";
 import type { Target } from "@prisma/client";
 import type { ToolSchema } from "./providers";
 
@@ -837,7 +838,7 @@ async function gitToolPreflight(key: string): Promise<string | null> {
 export async function runWorkspaceTool(
   name: string,
   args: Record<string, unknown>,
-  session: { sessionId: string }
+  session: { sessionId: string; userId?: string }
 ): Promise<string> {
   if (!session?.sessionId) {
     return `Error: workspace tools require a chat session context — they are unavailable outside chat conversations.`;
@@ -921,14 +922,22 @@ export async function runWorkspaceTool(
       if (!command) {
         return `Error: 'command' is required, e.g. {"command":"node calculator.js"}. One allowlisted binary per call, no shell (no pipes/globs/redirection).`;
       }
+      // The user's Security-tab choice decides WHERE the command runs (Docker
+      // container sandbox vs process jail); the allowlist and chat guards
+      // above decide WHAT may run — identical in every mode.
+      const sandboxMode = await getUserSandboxMode(session.userId);
       const started = Date.now();
-      const r = await workspaceRunCommand(key, command, WORKSPACE_RUN_TIMEOUT_MS, { chatMode: true });
+      const r = await workspaceRunCommand(key, command, WORKSPACE_RUN_TIMEOUT_MS, { chatMode: true, sandbox: sandboxMode });
       if (r.blocked) {
         // The command did NOT run — say exactly why (honest failure, never
         // fabricated output). tool-status classifies "Error:"-prefixed
         // results as failed, which is the honest state: processed, denied.
         return `Error: command NOT executed — ${r.stderr.slice(0, 500)}`;
       }
+      // Honest sandbox receipt: which context ACTUALLY executed (r.sandbox is
+      // resolved at run time — "auto" can go either way; a refusal above
+      // means nothing ran at all).
+      const sandboxLine = r.sandbox === "docker" ? "executed in Docker sandbox" : "executed in process sandbox";
       const head = [
         // Honest classification: a non-zero exit is a FAILED execution — the
         // command genuinely ran and failed, and the result carries the real
@@ -940,6 +949,7 @@ export async function runWorkspaceTool(
         `- command: ${command}`,
         `- exit code: ${r.exitCode}`,
         `- duration: ${r.durationMs}ms`,
+        `- sandbox: ${sandboxLine}`,
       ].join("\n");
       return `${head}\n\n## stdout\n${r.stdout.trim() ? truncate(r.stdout.trim(), 4000) : "(empty)"}\n\n## stderr\n${r.stderr.trim() ? truncate(r.stderr.trim(), 2500) : "(empty)"}`;
     }
@@ -953,7 +963,10 @@ export async function runWorkspaceTool(
       const history = await loadVerifyHistory(key);
       const previousAny = [...history].reverse().find((r) => r.command === command);
 
-      const r = await workspaceRunCommand(key, command, WORKSPACE_RUN_TIMEOUT_MS, { chatMode: true });
+      // Same sandbox resolution as workspace_run — a verification verdict is
+      // only meaningful when the report states WHERE the command ran.
+      const sandboxMode = await getUserSandboxMode(session.userId);
+      const r = await workspaceRunCommand(key, command, WORKSPACE_RUN_TIMEOUT_MS, { chatMode: true, sandbox: sandboxMode });
       const verdict: VerificationRecord["verdict"] = r.blocked
         ? "COULD_NOT_RUN"
         : r.timedOut
@@ -1004,6 +1017,7 @@ export async function runWorkspaceTool(
         `- command: ${command}`,
         `- exit code: ${r.exitCode}`,
         `- duration: ${r.durationMs}ms`,
+        `- sandbox: ${r.sandbox === "docker" ? "executed in Docker sandbox" : "executed in process sandbox"}`,
         `- ${recordNote}`,
         ...(notes.length ? ["", ...notes.map((n) => `⚠️ ${n}`)] : []),
       ].join("\n");
@@ -1147,7 +1161,7 @@ async function saveVerifyHistory(key: string, records: VerificationRecord[]): Pr
 
 function workspaceRun(name: WorkspaceToolName | "workspace_verify") {
   return async (args: Record<string, unknown>, ctx: AgentToolContext) =>
-    runWorkspaceTool(name, args ?? {}, { sessionId: ctx.sessionId ?? "" });
+    runWorkspaceTool(name, args ?? {}, { sessionId: ctx.sessionId ?? "", userId: ctx.userId });
 }
 
 const workspaceListTool: AgentTool = {
@@ -1201,7 +1215,7 @@ const workspaceWriteTool: AgentTool = {
 const workspaceRunTool: AgentTool = {
   name: "workspace_run",
   scope: "any",
-  description: `Execute ONE allowlisted command inside this chat's sandboxed workspace (cwd = the workspace) and return the REAL exit code, stdout and stderr. No shell: pipes, redirection, \`*\` globs and \`\$VAR\` interpolation are NOT interpreted — pass plain arguments. Blocked: non-allowlisted binaries, sed/awk/find/tar/git/env, absolute paths, ".." traversal, inline-eval flags (node -e, python3 -c); commands are also refused while the workspace sits at its 8 MB disk quota. Allowed binaries: ${chatCommandAllowlist().join(", ")}. Runs that change files are auto-committed to the workspace's built-in git history ("run: <command>") — inspect with workspace_log/workspace_diff, undo with workspace_reset. To run code, workspace_write it to a file first, then run it as a file. Each call is capped at ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s.`,
+  description: `Execute ONE allowlisted command inside this chat's sandboxed workspace (cwd = the workspace) and return the REAL exit code, stdout and stderr. No shell: pipes, redirection, \`*\` globs and \`\$VAR\` interpolation are NOT interpreted — pass plain arguments. Blocked: non-allowlisted binaries, sed/awk/find/tar/git/env, absolute paths, ".." traversal, inline-eval flags (node -e, python3 -c); commands are also refused while the workspace sits at its 8 MB disk quota. Allowed binaries: ${chatCommandAllowlist().join(", ")}. Runs that change files are auto-committed to the workspace's built-in git history ("run: <command>") — inspect with workspace_log/workspace_diff, undo with workspace_reset. To run code, workspace_write it to a file first, then run it as a file. Each call is capped at ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s. The execution context follows the account's Security setting: a Docker container sandbox (no network, read-only rootfs, 512 MB memory, 1 CPU, workspace mounted at /workspace) or the process-level jail — the result's "sandbox:" line reports which one ACTUALLY ran ("executed in Docker sandbox" or "executed in process sandbox"); a refused run reports why and never pretends to have executed.`,
   args: {
     type: "object",
     properties: {
