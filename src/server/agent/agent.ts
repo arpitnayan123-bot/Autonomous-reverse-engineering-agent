@@ -149,6 +149,26 @@ export interface ToolBlockParse {
 }
 
 function tryParseAction(body: string): ParsedToolBlock | null {
+  const direct = tryParseActionStrict(body);
+  if (direct) return direct;
+  // Trailing-garbage repair (unambiguous cases only): some models emit a
+  // COMPLETE tool action and then close the fence with stray braces
+  // (`{"tool":...}}`). Removing ONE trailing brace at a time (max 3) and
+  // re-parsing turns a refused-then-fabricated-around outcome into a REAL
+  // execution — the integrity goal is that operations genuinely run, and the
+  // repair only accepts content that parses to a well-formed {tool,args}
+  // object. Wrong-key objects ({"execute":{...}}) stay malformed: stripping
+  // their last brace leaves invalid JSON, so they can never sneak through.
+  let candidate = body.trim();
+  for (let i = 0; i < 3 && candidate.endsWith("}"); i++) {
+    candidate = candidate.slice(0, -1).trimEnd();
+    const repaired = tryParseActionStrict(candidate);
+    if (repaired) return repaired;
+  }
+  return null;
+}
+
+function tryParseActionStrict(body: string): ParsedToolBlock | null {
   try {
     const parsed = JSON.parse(body.trim()) as {
       tool?: unknown;
@@ -190,15 +210,18 @@ export function parseToolActions(text: string): ToolBlockParse {
   let malformedCount = 0;
   const closed = new RegExp(TOOL_BLOCK_RE.source, "gi"); // fresh lastIndex
   let m: RegExpExecArray | null;
+  let lastClosedEnd = -1;
   while ((m = closed.exec(text)) !== null) {
     const parsed = tryParseAction(m[2]);
     if (parsed) actions.push(parsed);
     else malformedCount++;
+    lastClosedEnd = m.index + m[0].length;
   }
-  if (actions.length === 0) {
-    // Unterminated-block fallback — same priority as before: only when no
-    // closed block produced a valid action. The tail must parse as a valid
-    // action object, so explanatory prose never executes.
+  if (actions.length === 0 && lastOpenPast(text, lastClosedEnd)) {
+    // Unterminated-block fallback — only when the message ends inside an
+    // OPEN fence (opener with no closer after it). A closed malformed block
+    // was already counted exactly once above; without this guard the tail
+    // pass re-parsed the same closed body and double-counted it.
     const open = new RegExp(TOOL_OPEN_RE.source, "gi");
     let lastOpen: RegExpExecArray | null = null;
     let om: RegExpExecArray | null;
@@ -214,6 +237,15 @@ export function parseToolActions(text: string): ToolBlockParse {
     malformedCount,
     hasToolFences: actions.length > 0 || malformedCount > 0,
   };
+}
+
+/** True when an unclosed tool-fence opener exists after the last closed block. */
+function lastOpenPast(text: string, lastClosedEnd: number): boolean {
+  const open = new RegExp(TOOL_OPEN_RE.source, "gi");
+  let lastOpen: RegExpExecArray | null = null;
+  let om: RegExpExecArray | null;
+  while ((om = open.exec(text)) !== null) lastOpen = om;
+  return Boolean(lastOpen && lastOpen.index >= lastClosedEnd);
 }
 
 export function parseToolAction(text: string): ParsedToolBlock | null {

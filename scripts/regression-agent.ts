@@ -1836,6 +1836,52 @@ async function main(): Promise<void> {
   );
 
   // ---------------------------------------------------------------------
+  // SECTION M — trailing-brace fence repair: the live glm-platform failure
+  // mode (complete action + stray `}` in the fence) must now EXECUTE for
+  // real, while wrong-key fabrication tails stay malformed.
+  // ---------------------------------------------------------------------
+
+  section("M. trailing-brace fence repair (live model failure mode)");
+
+  // M1: the exact live shape — complete action + trailing garbage brace.
+  const m1 = parseToolActions(
+    'Sure.\n\n```tool\n{"tool":"web_research","args":{"query":"ECMAScript spec"}}\n}\n```'
+  );
+  check(
+    "M1  complete action + stray trailing brace is REPAIRED and executes",
+    m1.actions.length === 1 &&
+      m1.actions[0].tool === "web_research" &&
+      m1.actions[0].args.query === "ECMAScript spec" &&
+      m1.malformedCount === 0,
+    `actions=${m1.actions.length} malformed=${m1.malformedCount}`
+  );
+
+  // M2: multiple garbage braces are repaired iteratively (cap 3).
+  const m2 = parseToolActions('```tool\n{"tool":"workspace_run","args":{"command":"node t.js"}}}}\n```');
+  check(
+    "M2  multiple trailing braces repaired (still exactly one action)",
+    m2.actions.length === 1 && m2.actions[0].tool === "workspace_run" && m2.malformedCount === 0,
+    ""
+  );
+
+  // M3: wrong-key fabrication tails (the G1 shape) stay malformed — the
+  // repair must never resurrect a no-tool-key object as an action.
+  const m3 = parseToolActions('```tool\n{"execute":{"command":"cat package.json"}}\n```');
+  check(
+    "M3  wrong-key object stays malformed (repair cannot resurrect it)",
+    m3.actions.length === 0 && m3.malformedCount === 1,
+    `actions=${m3.actions.length} malformed=${m3.malformedCount}`
+  );
+
+  // M4: truncated JSON is still malformed (repair never fabricates a tool).
+  const m4 = parseToolActions('```tool\n{"tool":"web_research","args":{"que\n```');
+  check(
+    "M4  truncated fence content stays malformed",
+    m4.actions.length === 0 && m4.malformedCount === 1,
+    ""
+  );
+
+  // ---------------------------------------------------------------------
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
   if (failures > 0) process.exit(1);
 }
