@@ -140,11 +140,13 @@ bun run mcp:token -- --demo          # mint a session token (or --email/--passwo
 REA_MCP_TOKEN=<token> bun run mcp:server
 ```
 
-- **18 tools** — `rea_health`, `rea_list_projects`, `rea_create_project`,
+- **19 tools** — `rea_health`, `rea_list_projects`, `rea_create_project`,
   `rea_crawl`, `rea_recon`, `rea_research`, `rea_graph`, `rea_verify`,
-  `rea_workspace_op`, `rea_orchestrate` (start / approve / cancel gates),
-  `rea_orchestration_status`, `rea_list_connectors`, `rea_connector_action`
-  and friends — every one a 1:1 bridge onto the authenticated REST API.
+  `rea_probe_url` (single-page Explorer probe — SSRF-guarded, no project
+  needed), `rea_workspace_op`, `rea_orchestrate` (start / approve / cancel
+  gates), `rea_orchestration_status`, `rea_list_connectors`,
+  `rea_connector_action` and friends — every one a 1:1 bridge onto the
+  authenticated REST API.
 - **One source of truth** — the server never touches the database or vault.
   Auth, ownership scoping, rate limits, sandboxing and auditing all stay in
   the platform; the token is held in memory only and renews itself when the
