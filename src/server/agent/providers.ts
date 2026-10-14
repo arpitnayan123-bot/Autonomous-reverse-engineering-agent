@@ -132,6 +132,135 @@ export function getProviderDef(id: string): ProviderDef | undefined {
 const REQUEST_TIMEOUT_MS = 120_000;
 
 // ---------------------------------------------------------------------------
+// Context window management — known windows + a cheap token estimator
+// ---------------------------------------------------------------------------
+
+/**
+ * Known context windows (tokens) per model id. Values are CONSERVATIVE
+ * planning numbers (rounded down where vendors quote odd sizes): a slight
+ * under-estimate only makes compaction run a little earlier — the safe
+ * direction; an over-estimate would let an over-window request reach the
+ * provider and fail. Matched case-insensitively, exact id first, then the
+ * longest table prefix (dated vendor ids like "claude-sonnet-4-20250514"
+ * resolve through their undated base entry).
+ */
+export const DEFAULT_CONTEXT_WINDOW = 128_000;
+
+const CONTEXT_WINDOWS: Record<string, number> = {
+  // OpenAI
+  "gpt-4o": 128_000,
+  "gpt-4o-mini": 128_000,
+  "gpt-4.1": 1_000_000,
+  "gpt-4.1-mini": 1_000_000,
+  "o4-mini": 200_000,
+  // Anthropic
+  "claude-sonnet-4": 200_000,
+  "claude-sonnet-4-20250514": 200_000,
+  "claude-opus-4": 200_000,
+  "claude-opus-4-20250514": 200_000,
+  "claude-3-5-haiku": 200_000,
+  "claude-3-5-haiku-20241022": 200_000,
+  // DeepSeek
+  "deepseek-chat": 64_000,
+  "deepseek-reasoner": 64_000,
+  // GLM (Z.ai) — the platform fallback resolves provider=model="glm-platform"
+  "glm-4": 128_000,
+  "glm-4.5": 128_000,
+  "glm-4.5-air": 128_000,
+  "glm-4.6": 200_000,
+  "glm-platform": 128_000,
+  // Kimi (Moonshot) — window encoded in the id; explicit entries + suffix rule
+  "moonshot-v1-8k": 8_000,
+  "moonshot-v1-32k": 32_000,
+  "moonshot-v1-128k": 128_000,
+  // Google Gemini
+  "gemini-2.5-flash": 1_000_000,
+  "gemini-2.5-pro": 1_000_000,
+  "gemini-2.0-flash": 1_000_000,
+};
+
+/**
+ * Known context window for a provider/model pair, for compaction planning.
+ * Unknown models default to 128k (the most common current window). The
+ * provider argument is accepted for future per-provider overrides and
+ * vendor-specific quirks; matching today is by model id.
+ */
+export function getContextWindowSize(provider: string, model: string): number {
+  void provider; // reserved: per-provider overrides land here
+  const key = String(model ?? "").trim().toLowerCase();
+  if (!key) return DEFAULT_CONTEXT_WINDOW;
+  const exact = CONTEXT_WINDOWS[key];
+  if (exact != null) return exact;
+  // Kimi-style ids encode their window in a trailing "-Nk" suffix.
+  const sized = key.match(/-(\d{1,4})k$/);
+  if (sized) {
+    const n = Number.parseInt(sized[1], 10);
+    if (n > 0 && n <= 2048) return n * 1_000;
+  }
+  // Dated/suffixed variants of known models resolve through the longest
+  // matching base entry ("claude-sonnet-4-20250514" → "claude-sonnet-4").
+  let best: { len: number; win: number } | null = null;
+  for (const [k, win] of Object.entries(CONTEXT_WINDOWS)) {
+    if (key.startsWith(k) && (!best || k.length > best.len)) {
+      best = { len: k.length, win };
+    }
+  }
+  return best?.win ?? DEFAULT_CONTEXT_WINDOW;
+}
+
+/** Heuristic rates: ~4 characters per token for prose, ~2 for code. */
+export const ENGLISH_CHARS_PER_TOKEN = 4;
+export const CODE_CHARS_PER_TOKEN = 2;
+/** Per-message framing overhead (role, separators) in tokens. */
+export const MESSAGE_OVERHEAD_TOKENS = 4;
+/** Tool calls ride the wire as JSON — counted at the code rate, plus id/name framing. */
+const TOOL_CALL_OVERHEAD_TOKENS = 8;
+
+/**
+ * Cheap deterministic token estimate for a message list — the compaction
+ * trigger must run on EVERY iteration without a provider round-trip, and
+ * not every provider reports usage. Fenced code blocks (and ```tool action
+ * blocks, which are JSON) count at the code rate; prose at the English rate;
+ * native toolCalls arguments as code. Deliberately simple and stable — it
+ * needs to be DIRECTIONALLY right (fire compaction before the real window
+ * overflows), not tokenizer-exact.
+ */
+export function estimateTokens(messages: LlmMessage[]): number {
+  let tokens = 0;
+  for (const m of messages) {
+    tokens += MESSAGE_OVERHEAD_TOKENS;
+    const content = m.content ?? "";
+    let codeChars = 0;
+    let plainChars = 0;
+    let cursor = 0;
+    // Fenced blocks (closed or unterminated at the end of the content) count
+    // whole; everything outside them counts as prose.
+    const fence = /```[ \t]*[a-zA-Z0-9_-]*[ \t]*\r?\n[\s\S]*?(?:```|$)/g;
+    let fm: RegExpExecArray | null;
+    while ((fm = fence.exec(content)) !== null) {
+      codeChars += fm[0].length;
+      plainChars += fm.index - cursor;
+      cursor = fm.index + fm[0].length;
+    }
+    plainChars += content.length - cursor;
+    if (plainChars > 0) {
+      tokens += Math.ceil(plainChars / ENGLISH_CHARS_PER_TOKEN);
+    }
+    if (codeChars > 0) {
+      tokens += Math.ceil(codeChars / CODE_CHARS_PER_TOKEN);
+    }
+    if (m.toolCalls?.length) {
+      for (const tc of m.toolCalls) {
+        const argsJson = JSON.stringify(tc.arguments ?? {});
+        tokens +=
+          Math.ceil(argsJson.length / CODE_CHARS_PER_TOKEN) + TOOL_CALL_OVERHEAD_TOKENS;
+      }
+    }
+  }
+  return tokens;
+}
+
+// ---------------------------------------------------------------------------
 // Unified completion calls
 // ---------------------------------------------------------------------------
 
