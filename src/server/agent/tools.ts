@@ -99,6 +99,13 @@ export interface AgentToolContext {
    * duplicate fetches/queries/writes. Absent → no dedup (MCP/REST paths).
    */
   sessionId?: string;
+  /**
+   * When set (subagent runs), the retry-dedup cache key is PREFIXED with
+   * this namespace (the subagent id): a subagent never reuses the parent
+   * loop's cached results even for identical calls. The workspace key stays
+   * the raw sessionId — subagents SHARE the session workspace.
+   */
+  dedupNamespace?: string;
 }
 
 export interface AgentTool {
@@ -1227,6 +1234,144 @@ const workspaceVerifyTool: AgentTool = {
 };
 
 // ---------------------------------------------------------------------------
+// spawn_subagent — delegate ONE focused task to a nested agent loop
+// ---------------------------------------------------------------------------
+
+/**
+ * Default tool allowlist for a spawned subagent: the any-scoped, web-and-
+ * workspace tools a bounded side investigation needs. Deliberately EXCLUDES
+ * update_plan (the visible plan belongs to the primary agent) and
+ * workspace_verify (regression bookkeeping is a primary-loop concern).
+ */
+export const SUBAGENT_DEFAULT_TOOLS = [
+  "explore_url",
+  "web_research",
+  "workspace_read",
+  "workspace_list",
+  "workspace_run",
+  "workspace_write",
+] as const;
+
+/** Iteration budget a subagent gets when spawn_subagent omits max_iterations. */
+export const SUBAGENT_DEFAULT_MAX_ITERATIONS = 8;
+
+/** Hard cap for spawn_subagent's max_iterations argument. */
+export const SUBAGENT_MAX_ITERATIONS_CAP = 15;
+
+/** spawn_subagent's own name — a subagent can never be granted it. */
+const SPAWN_SELF_NAME = "spawn_subagent";
+
+export interface SubagentParsedArgs {
+  task: string;
+  tools: string[];
+  maxIterations: number;
+}
+
+/**
+ * Validate + normalize spawn_subagent arguments. Honest precise errors (the
+ * model can re-emit a corrected call) — never a guessed interpretation:
+ * task must be a non-empty string (the subagent's ENTIRE assignment), tools
+ * must name REAL registry tools (spawn_subagent itself is never grantable),
+ * max_iterations is clamped into 1..SUBAGENT_MAX_ITERATIONS_CAP.
+ */
+export function parseSubagentArgs(
+  args: Record<string, unknown>
+): { ok: true; value: SubagentParsedArgs } | { ok: false; error: string } {
+  const task = typeof args?.task === "string" ? args.task.trim() : "";
+  if (!task) {
+    return {
+      ok: false,
+      error:
+        "spawn_subagent requires a non-empty string 'task' — it is the subagent's ENTIRE assignment (it sees no other context).",
+    };
+  }
+  if (task.length > 4000) {
+    return {
+      ok: false,
+      error: "spawn_subagent 'task' exceeds 4000 characters — keep the assignment focused.",
+    };
+  }
+  let tools: string[] = [...SUBAGENT_DEFAULT_TOOLS];
+  if (args?.tools !== undefined) {
+    if (!Array.isArray(args.tools) || args.tools.some((t) => typeof t !== "string")) {
+      return {
+        ok: false,
+        error: "spawn_subagent 'tools' must be an array of tool-name strings (omit it for the default set).",
+      };
+    }
+    const requested = [...new Set((args.tools as string[]).map((t) => t.trim()).filter(Boolean))];
+    if (requested.length === 0) {
+      return {
+        ok: false,
+        error: "spawn_subagent 'tools' must not be empty when provided — omit the argument for the default set.",
+      };
+    }
+    const registryNames = AGENT_TOOLS.map((t) => t.name);
+    const unknown = requested.filter((t) => !registryNames.includes(t));
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        error: `spawn_subagent 'tools' contains unknown tool(s): ${unknown.join(", ")}. Valid names: ${registryNames.join(", ")}.`,
+      };
+    }
+    if (requested.includes(SPAWN_SELF_NAME)) {
+      return {
+        ok: false,
+        error:
+          "spawn_subagent cannot grant spawn_subagent — subagents cannot spawn sub-subagents (recursion depth limit 2).",
+      };
+    }
+    tools = requested;
+  }
+  let maxIterations = SUBAGENT_DEFAULT_MAX_ITERATIONS;
+  if (args?.max_iterations !== undefined) {
+    const n = Math.floor(Number(args.max_iterations));
+    if (!Number.isFinite(n)) {
+      return { ok: false, error: "spawn_subagent 'max_iterations' must be a number (1-15)." };
+    }
+    maxIterations = Math.min(SUBAGENT_MAX_ITERATIONS_CAP, Math.max(1, n));
+  }
+  return { ok: true, value: { task, tools, maxIterations } };
+}
+
+const spawnSubagentTool: AgentTool = {
+  name: SPAWN_SELF_NAME,
+  scope: "any",
+  // Every spawn is a fresh execution by design — identical spawn arguments
+  // must run (or be refused) again, never served from the dedup cache.
+  dedup: false,
+  description:
+    "Spawn a subagent: a fresh agent loop (same target and workspace, ISOLATED message history, restricted tool allowlist, own iteration budget) that works ONE focused task end-to-end and returns a single self-contained report to you (prefixed SUBAGENT RESULT). Use it to delegate bounded research or verification side-quests without polluting the main investigation transcript. Max 3 concurrent subagents per session; each runs at most max_iterations tool iterations (default 8, cap 15); a subagent CANNOT spawn further subagents. Give a fully self-contained task — the subagent sees ONLY that text.",
+  args: {
+    type: "object",
+    properties: {
+      task: {
+        type: "string",
+        description:
+          "Self-contained assignment for the subagent: what to do, what evidence to collect, and what the final report must contain. This is the ONLY context the subagent receives.",
+      },
+      tools: {
+        type: "array",
+        items: { type: "string" },
+        description: `Optional allowlist of registry tools the subagent may call. Default: ${SUBAGENT_DEFAULT_TOOLS.join(", ")}.`,
+      },
+      max_iterations: {
+        type: "number",
+        description: `Max tool iterations for the subagent (1-${SUBAGENT_MAX_ITERATIONS_CAP}, default ${SUBAGENT_DEFAULT_MAX_ITERATIONS}).`,
+      },
+    },
+    required: ["task"],
+    additionalProperties: false,
+  },
+  async run() {
+    // The REAL execution path is the agent loop itself (it needs the loop's
+    // LLM, event stream and depth state). Direct invocation through the plain
+    // tool runner (MCP/REST surfaces) is honestly refused — never simulated.
+    return `${TOOL_REFUSAL_MARKER} — spawn_subagent is executed by the agent loop itself, not through the plain tool runner. It is available in chat turns only.`;
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -1247,6 +1392,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   workspaceWriteTool,
   workspaceRunTool,
   workspaceVerifyTool,
+  spawnSubagentTool,
 ];
 
 /**
@@ -1336,12 +1482,15 @@ export async function executeAgentTool(
   }
   // Stateful tools (dedup:false — workspace_write/workspace_run) bypass the
   // retry-dedup cache: re-executing them IS the honest behavior, both across
-  // a turn retry and after the workspace changed between turns.
+  // a turn retry and after the workspace changed between turns. Subagent
+  // runs carry ctx.dedupNamespace (the subagent id) so their cache keys are
+  // prefixed and never collide with the parent loop's cached results.
   return runToolWithDedup(
     tool.dedup === false ? undefined : ctx.sessionId,
     name,
     args ?? {},
-    () => tool.run(args ?? {}, ctx)
+    () => tool.run(args ?? {}, ctx),
+    ctx.dedupNamespace
   );
 }
 
@@ -1356,9 +1505,14 @@ export async function runToolWithDedup(
   sessionId: string | undefined,
   toolName: string,
   args: Record<string, unknown>,
-  run: () => Promise<string>
+  run: () => Promise<string>,
+  /** Subagent namespace: prefixes the cache key so a subagent never reuses
+   * the parent loop's cached results (see AgentToolContext.dedupNamespace). */
+  dedupNamespace?: string
 ): Promise<string> {
-  const key = sessionId ? toolDedupKey(sessionId, toolName, args) : null;
+  const scopedSession =
+    sessionId && dedupNamespace ? `${dedupNamespace}:${sessionId}` : sessionId;
+  const key = scopedSession ? toolDedupKey(scopedSession, toolName, args) : null;
   if (key) {
     const cached = getCachedToolResult(key);
     if (cached !== null) {
