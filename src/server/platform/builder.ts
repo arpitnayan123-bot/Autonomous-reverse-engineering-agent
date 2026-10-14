@@ -312,6 +312,15 @@ export async function runCommand(
     return { ...blocked, blocked: "absolute or relative binary paths are not allowed", stderr: "only allowlisted commands by bare name may run" };
   }
   if (!COMMAND_ALLOWLIST.has(bin)) {
+    if (opts?.chatMode) {
+      // Chat mode lists the EFFECTIVE chat allowlist — naming binaries that
+      // chatMode blocks would be a dishonest advertisement.
+      return blockedResult(
+        command,
+        `Command "${bin}" is not in the chat workspace allowlist.`,
+        `Permitted in the chat workspace sandbox: ${chatCommandAllowlist().join(" ")}. Paths must be workspace-relative; no eval flags.`
+      );
+    }
     return {
       ...blocked,
       blocked: `command not in allowlist: ${bin}`,
