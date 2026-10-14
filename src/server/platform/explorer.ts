@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
 import { db } from "@/lib/db";
-import { safeFetch, BlockedUrlError } from "./net";
+import { safeFetch, assertPublicUrl, BlockedUrlError } from "./net";
 import { upsertGraph, type NodeRef, type EdgeRef } from "./graph";
 
 /**
@@ -430,5 +430,157 @@ export async function crawlSite(
     tech: [...techSeen.keys()],
     urls: fetchedUrls,
     robots: { fetched: rules.fetched, sitemaps: rules.sitemaps.length, disallowCount: rules.disallow.length },
+  };
+}
+
+// --- Bounded same-domain recursive crawl (no project, structured result) ---
+
+export interface BoundedCrawlPage {
+  url: string; // requested (normalized, deduped)
+  finalUrl: string | null; // after redirects; null when the fetch failed
+  status: number; // 0 = fetch error
+  depth: number;
+  title: string | null;
+  links: string[]; // same-origin links discovered on this page (absolute)
+  linksAll: number; // total links captured on the page
+  ms: number | null;
+  error: string | null;
+}
+
+export interface BoundedCrawlResult {
+  startUrl: string;
+  origin: string;
+  pages: BoundedCrawlPage[]; // fetch order (breadth-first)
+  visited: string[]; // requested URLs in fetch order
+  queued: number; // discovered but never fetched (budget exhausted)
+  duplicatesSkipped: number; // URLs seen again after first discovery
+  errors: Array<{ url: string; error: string }>;
+  limits: { maxPages: number; maxDepth: number; pageTimeoutMs: number };
+  robots: { checked: boolean; disallowCount: number };
+  elapsedMs: number;
+}
+
+export interface BoundedCrawlOptions {
+  maxPages?: number; // default 5, hard cap 20 (attempts, incl. errors)
+  maxDepth?: number; // default 1, hard cap 3 (0 = entry page only)
+  timeoutMs?: number; // per-page fetch timeout, default PROBE_TIMEOUT_MS
+  respectRobots?: boolean; // default true — same-origin robots.txt disallows
+  /**
+   * Per-page fetcher seam (defaults to probeUrl). Used by the regression to
+   * exercise duplicates/depth/caps deterministically; every real fetch still
+   * goes through probeUrl's SSRF guard. Production code must not set this.
+   */
+  fetchPage?: (url: string, opts?: { includeText?: boolean }) => Promise<ProbeResult>;
+}
+
+/**
+ * Crawl ONE site, breadth-first, staying on the start URL's origin, with a
+ * visited-URL set, per-page timeouts, and hard page/depth limits. Every page
+ * goes through probeUrl (SSRF guard: scheme allowlist, private-IP DNS checks,
+ * metadata blocklist, size cap, re-validated redirect hops). The start URL is
+ * validated fail-fast via assertPublicUrl before anything is fetched.
+ * No project, no database writes — the structured result is the product.
+ */
+export async function crawlBounded(
+  startUrl: string,
+  opts?: BoundedCrawlOptions
+): Promise<BoundedCrawlResult> {
+  const started = Date.now();
+  const maxPages = Math.min(Math.max(1, opts?.maxPages ?? 5), 20);
+  const maxDepth = Math.min(Math.max(0, opts?.maxDepth ?? 1), 3);
+  const pageTimeoutMs = Math.min(Math.max(2_000, opts?.timeoutMs ?? PROBE_TIMEOUT_MS), 30_000);
+  const respectRobots = opts?.respectRobots !== false;
+  const fetchPage = opts?.fetchPage ?? ((u: string) => probeUrl(u, { timeoutMs: pageTimeoutMs }));
+
+  // Fail-fast start validation: scheme/host/credentials/DNS guard.
+  const start = await assertPublicUrl(startUrl);
+  const origin = start.origin;
+
+  // Same robots convention as crawlSite: only the * group, fail-open when
+  // robots.txt is unreachable (our own caps still bound the crawl).
+  let rules: RobotsRules = { fetched: false, disallow: [], sitemaps: [] };
+  if (respectRobots) rules = await fetchRobots(origin);
+
+  const queue: Array<{ url: string; depth: number }> = [
+    { url: start.toString(), depth: 0 },
+  ];
+  const seen = new Set<string>(queue.map((q) => q.url));
+  const pages: BoundedCrawlPage[] = [];
+  const errors: Array<{ url: string; error: string }> = [];
+  let duplicatesSkipped = 0;
+  const isAsset = /\.(png|jpe?g|gif|svg|ico|css|js|mjs|woff2?|ttf|eot|pdf|zip|gz|mp4|webm|wasm|rss|xml|json)(\?|$)/i;
+
+  while (queue.length > 0 && pages.length < maxPages) {
+    const item = queue.shift()!;
+    const { url, depth } = item;
+
+    if (respectRobots && !robotsAllows(rules, new URL(url).pathname)) {
+      errors.push({ url, error: "robots.txt disallows this path" });
+      continue; // refused pages do not count toward the page budget
+    }
+
+    const page: BoundedCrawlPage = {
+      url,
+      finalUrl: null,
+      status: 0,
+      depth,
+      title: null,
+      links: [],
+      linksAll: 0,
+      ms: null,
+      error: null,
+    };
+    pages.push(page);
+
+    try {
+      const r = await fetchPage(url, { includeText: false });
+      page.finalUrl = r.finalUrl;
+      page.status = r.status;
+      page.title = r.title;
+      page.ms = r.ms;
+      page.linksAll = r.links.length;
+      page.links = r.links
+        .map((l) => normalizeUrl(l.href, r.finalUrl))
+        .filter((abs): abs is string => !!abs && new URL(abs).origin === origin && !isAsset.test(abs))
+        .filter((abs, i, arr) => arr.indexOf(abs) === i); // dedupe within page
+    } catch (err) {
+      const msg =
+        err instanceof BlockedUrlError
+          ? err.message
+          : err instanceof Error
+            ? err.message.slice(0, 300)
+            : "fetch failed";
+      page.error = msg;
+      errors.push({ url, error: msg });
+      continue; // error pages contribute no links
+    }
+
+    // Enqueue same-origin, robots-allowed, unvisited links within depth.
+    if (depth < maxDepth) {
+      for (const abs of page.links) {
+        if (seen.has(abs)) {
+          duplicatesSkipped++;
+          continue;
+        }
+        seen.add(abs);
+        if (respectRobots && !robotsAllows(rules, new URL(abs).pathname)) continue;
+        queue.push({ url: abs, depth: depth + 1 });
+      }
+    } else {
+      for (const abs of page.links) if (seen.has(abs)) duplicatesSkipped++;
+    }
+  }
+
+  return {
+    startUrl: start.toString(),
+    origin,
+    pages,
+    visited: pages.map((p) => p.url),
+    queued: queue.length,
+    duplicatesSkipped,
+    errors,
+    limits: { maxPages, maxDepth, pageTimeoutMs },
+    robots: { checked: respectRobots, disallowCount: rules.disallow.length },
+    elapsedMs: Date.now() - started,
   };
 }
