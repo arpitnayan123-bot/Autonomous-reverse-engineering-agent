@@ -104,6 +104,12 @@ async function main(): Promise<void> {
   await expectBlocked("http://127.0.0.1:3000/", "loopback");
   await expectBlocked("http://169.254.169.254/latest/meta-data/", "cloud metadata (link-local)");
   await expectBlocked("ftp://example.com/", "non-http(s) scheme");
+  // IPv4-embedded IPv6 spellings — URL parsing canonicalizes dotted mapped
+  // form to hex, so all of these must decode to a refused private address.
+  await expectBlocked("http://[::ffff:127.0.0.1]:3000/", "IPv4-mapped loopback (dotted)");
+  await expectBlocked("http://[::ffff:7f00:1]:3000/", "IPv4-mapped loopback (URL-canonical hex)");
+  await expectBlocked("http://[0:0:0:0:0:ffff:10.0.0.5]:3000/", "IPv4-mapped private (full form)");
+  await expectBlocked("http://[::10.0.0.5]:3000/", "deprecated IPv4-compatible private");
 
   // 7. ERROR REPORTING: unreachable domain yields a clear, honest failure.
   const badOut = await executeAgentTool(
