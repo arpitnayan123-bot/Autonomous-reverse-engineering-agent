@@ -20,11 +20,13 @@
  */
 import {
   parseToolAction,
+  parseToolActions,
   toolReceiptSuffix,
   freeChatRedirectNotice,
   callTurn,
   isTransientLlmError,
   formatInterruptedTurnContent,
+  finalizeTurnContent,
   runAgentLoop,
 } from "@/server/agent/agent";
 import {
@@ -33,6 +35,7 @@ import {
   applyPlanUpdate,
   runExploreUrlTool,
   toolDedupKey,
+  TOOL_REFUSAL_MARKER,
 } from "@/server/agent/tools";
 import { freeChatSystemPrompt, systemPrompt } from "@/server/agent/prompts";
 import { BlockedUrlError } from "@/server/platform/net";
@@ -752,6 +755,336 @@ async function main(): Promise<void> {
   await db.chatMessage.deleteMany({ where: { sessionId: { startsWith: "reg-f8-" } } });
   const f8Leftovers = await db.chatMessage.count({ where: { sessionId: { startsWith: "reg-f8-" } } });
   check("F9  regression run leaves no synthetic chat rows behind", f8Leftovers === 0, "");
+
+  // ---------------------------------------------------------------------
+  // G. Fabricated-execution integrity (the real calculator/Jest incident)
+  //
+  // Real-world failure this locks in (free chat, 2026-10-14): asked to build
+  // a Node.js calculator and run Jest, the model emitted ONE message with
+  // NINE tool fences (one update_plan, six fabricated "execute" calls, and
+  // two malformed tails like {"execute":{...}} without a "tool" key) plus a
+  // fully fabricated report — fake "ls -la", fake package.json, fake Jest
+  // output "Tests: 12 passed". The old parser took the LAST closed block,
+  // failed to see a valid action in it, returned null, and the ENTIRE
+  // message — fabrications included — became the persisted, streamed final
+  // answer. Zero tools ran; nothing was refused; nothing was labeled. The
+  // next turn the model then said "I cannot use the execute tool in this
+  // chat" — the contradiction the user reported.
+  // ---------------------------------------------------------------------
+
+  // A faithful reconstruction of the failing message (all fences closed, the
+  // two malformed no-tool-key tails last — exactly the poisoning shape).
+  const fabricatedMessage = [
+    "I'll create a Node.js calculator project with automated tests.",
+    "",
+    "```tool",
+    '{"tool":"update_plan","args":{"tasks":[{"title":"Create project structure","status":"in_progress"},{"title":"Run tests","status":"pending"}]}}',
+    "```",
+    "",
+    "First, create the structure:",
+    "",
+    "```tool",
+    '{"tool":"execute","args":{"command":"mkdir calculator-project && npm init -y"}}',
+    "```",
+    "",
+    "```tool",
+    '{"tool":"execute","args":{"command":"cat > calculator.js"}}',
+    "```",
+    "",
+    "```tool",
+    '{"tool":"execute","args":{"command":"npm install --save-dev jest"}}',
+    "```",
+    "",
+    "```tool",
+    '{"tool":"execute","args":{"command":"npx jest"}}',
+    "```",
+    "",
+    "Now the report:",
+    "",
+    "### Test Execution Results",
+    "```",
+    "Tests:       12 passed, 12 total",
+    "```",
+    "All tests passed successfully.",
+    "",
+    "```tool",
+    '{"execute":{"command":"cat package.json"}}',
+    "```",
+    "",
+    "```tool",
+    '{"update_plan":{"args":{"tasks":[{"title":"done","status":"completed"}]}}}',
+    "```",
+  ].join("\n");
+
+  section("G. Fabricated-execution integrity (calculator/Jest incident)");
+
+  const fabricatedParse = parseToolActions(fabricatedMessage);
+  check(
+    "G1  every valid intent is parsed (was: whole message degraded to final answer)",
+    fabricatedParse.actions.length === 5 &&
+      fabricatedParse.actions[0].tool === "update_plan" &&
+      fabricatedParse.actions.filter((a) => a.tool === "execute").length === 4 &&
+      fabricatedParse.malformedCount === 2 &&
+      fabricatedParse.hasToolFences,
+    `actions=${fabricatedParse.actions.map((a) => a.tool).join(",")} malformed=${fabricatedParse.malformedCount}`
+  );
+  const legacyParse = parseToolAction(fabricatedMessage);
+  check(
+    "G2  a malformed LAST block no longer poisons the valid ones (last VALID wins)",
+    legacyParse?.tool === "execute" && legacyParse.args.command === "npx jest",
+    JSON.stringify(legacyParse)
+  );
+
+  // Loop-level free-chat reproduction with a scripted model: turn 1 is the
+  // exact fabricated message, turn 2 an honest recovery answer.
+  function fakeLlm(
+    script: string[],
+    capturedMessages: Array<{ role: string; content: string }[]>
+  ): ResolvedLlm & { calls: () => number } {
+    let call = 0;
+    const fn = async (messages: { role: string; content: string }[]) => {
+      capturedMessages.push(messages.map((m) => ({ role: m.role, content: m.content })));
+      const text = script[Math.min(call, script.length - 1)];
+      call++;
+      return text;
+    };
+    return {
+      source: "platform" as const,
+      provider: "glm-platform" as const,
+      model: "glm-platform",
+      callLLM: fn,
+      calls: () => call,
+    } as unknown as ResolvedLlm & { calls: () => number };
+  }
+
+  const g2Captured: Array<{ role: string; content: string }[]> = [];
+  const g2RefusalEvents: string[] = [];
+  const g2 = await runAgentLoop({
+    sessionId: `reg-g2-${Date.now()}`,
+    target: null,
+    userId: "regression",
+    userMessage: "Create a calculator project and run Jest.",
+    history: [],
+    llmOverride: fakeLlm([fabricatedMessage, "The execute capability is unavailable here; nothing was created or run."], g2Captured),
+    events: {
+      onToolResult: (tool, result) => {
+        if (tool === "execute") g2RefusalEvents.push(result);
+      },
+    },
+  });
+  const g2Trace = g2.toolCalls;
+  check(
+    "G3  loop executes the plan, records EVERY refused call in the trace",
+    g2Trace[0]?.tool === "update_plan" && g2Trace[0].result.includes("Plan updated") &&
+      g2Trace.filter((t) => t.tool === "execute" && t.result.startsWith(TOOL_REFUSAL_MARKER)).length === 3,
+    g2Trace.map((t) => t.tool).join(",")
+  );
+  check(
+    "G4  refusals stream live via onToolResult and state the precise boundary",
+    g2RefusalEvents.length === 3 &&
+      g2RefusalEvents.every((r) => r.startsWith(TOOL_REFUSAL_MARKER)) &&
+      g2RefusalEvents[0].includes("unavailable in this chat"),
+    g2RefusalEvents[0] ?? "none"
+  );
+  const g2SecondCall = g2Captured[1] ?? [];
+  const g2Feedback = g2SecondCall.map((m) => m.content).join("\n");
+  check(
+    "G5  model gets explicit feedback: redirect notice + skipped/malformed counts + real plan result",
+    g2Feedback.includes("operates on an uploaded file target") &&
+      g2Feedback.includes("1 additional tool block(s)") &&
+      g2Feedback.includes("2 tool block(s) were malformed") &&
+      g2Feedback.includes("TOOL RESULT for update_plan"),
+    g2Feedback.slice(0, 120)
+  );
+  check(
+    "G6  fabricated success narrative NEVER becomes the final answer",
+    !g2.content.includes("12 passed") &&
+      !g2.content.includes("Tests:") &&
+      g2.content.startsWith("The execute capability is unavailable"),
+    g2.content.slice(0, 80)
+  );
+
+  const g3Receipt = toolReceiptSuffix(
+    JSON.stringify([
+      { tool: "explore_url", args: { url: "https://example.com" }, result: "# explore_url — OBSERVED fetch\n- status: 200" },
+      { tool: "execute", args: { command: "npx jest" }, result: `${TOOL_REFUSAL_MARKER} — "execute" is unavailable in this chat.` },
+    ])
+  );
+  check(
+    "G7  receipts label refused entries and never claim they executed",
+    g3Receipt.includes("[REFUSED — did not run]") &&
+      g3Receipt.includes("explore_url") &&
+      g3Receipt.split("execute(").length === 2 &&
+      g3Receipt.includes("real tool outcomes"),
+    g3Receipt.slice(0, 140)
+  );
+
+  const g8Note = finalizeTurnContent(
+    "Report with simulated block:\n```tool\n{\"execute\":{\"command\":\"ls\"}}\n```\nAll 12 tests passed.",
+    [
+      { tool: "explore_url", args: {}, result: "# explore_url — OBSERVED fetch" },
+      { tool: "execute", args: {}, result: `${TOOL_REFUSAL_MARKER} — refused` },
+    ],
+    ["update_plan", "explore_url"]
+  );
+  check(
+    "G8  integrity gate labels simulated output and lists only GENUINE executions",
+    g8Note.includes("Integrity note (system)") &&
+      g8Note.includes("fabricated") &&
+      g8Note.includes("genuinely executed during this turn: explore_url") &&
+      !g8Note.includes("genuinely executed during this turn: explore_url, execute") &&
+      g8Note.includes("Tools actually available here: update_plan, explore_url"),
+    g8Note.slice(-260)
+  );
+  const cleanFinal = "A clean answer with no tool claims.";
+  check(
+    "G9  clean answers pass the integrity gate untouched",
+    finalizeTurnContent(cleanFinal, [], ["update_plan"]) === cleanFinal,
+    ""
+  );
+
+  // Malformed-only message: bounded acceptance (one model call) + labeled.
+  const g5Captured: Array<{ role: string; content: string }[]> = [];
+  const g5Llm = fakeLlm(
+    ['I ran everything:\n```tool\n{"execute":{"command":"ls"}}\n```\nOutput:\n```\n12 passed\n```'],
+    g5Captured
+  );
+  const g5 = await runAgentLoop({
+    sessionId: `reg-g5-${Date.now()}`,
+    target: null,
+    userId: "regression",
+    userMessage: "run the tests",
+    history: [],
+    llmOverride: g5Llm,
+  });
+  check(
+    "G10 malformed-only fabrication is accepted ONCE, honestly labeled, no extra iterations",
+    g5Llm.calls() === 1 &&
+      g5.content.includes("12 passed") &&
+      g5.content.includes("Integrity note (system)") &&
+      g5.content.includes("genuinely executed during this turn: none"),
+    g5.content.slice(-160)
+  );
+
+  // Per-message cap: 6 valid blocks → 4 processed, 2 explicitly reported.
+  const g7Captured: Array<{ role: string; content: string }[]> = [];
+  const sixPlans = Array.from(
+    { length: 6 },
+    (_, i) =>
+      `step ${i}\n\`\`\`tool\n{"tool":"update_plan","args":{"tasks":[{"title":"unique step ${i}","status":"in_progress"},{"title":"other ${i}","status":"pending"}]}}\n\`\`\``
+  ).join("\n");
+  const g7Llm = fakeLlm([sixPlans, "done summarizing."], g7Captured);
+  const g7 = await runAgentLoop({
+    sessionId: `reg-g7-${Date.now()}`,
+    target: null,
+    userId: "regression",
+    userMessage: "plan",
+    history: [],
+    llmOverride: g7Llm,
+  });
+  const g7Feedback = (g7Captured[1] ?? []).map((m) => m.content).join("\n");
+  check(
+    "G11 per-message tool cap enforced with explicit skip feedback",
+    g7.toolCalls.length === 4 &&
+      g7Feedback.includes("2 additional tool block(s)") &&
+      g7.toolCalls.every((t) => t.result.includes("Plan updated")),
+    `traced=${g7.toolCalls.length}`
+  );
+
+  // Target chat: multiple valid blocks all execute through the registry.
+  // FK enforcement is ON: create a real user first, then the target row.
+  const g6TargetId = `reg-g6-${Date.now()}`;
+  const g6UserId = `reg-g6u-${Date.now()}`;
+  await db.user.create({
+    data: { id: g6UserId, email: `${g6UserId}@regression.invalid`, passwordHash: "regression-only" },
+  });
+  await db.target.create({
+    data: {
+      id: g6TargetId,
+      userId: g6UserId,
+      originalName: "sample.db",
+      storedPath: "/tmp/reg-g6-none",
+      sizeBytes: 1,
+      sha256: "cd".repeat(32),
+      detectedFormat: "sqlite",
+    },
+  });
+  const g6Captured: Array<{ role: string; content: string }[]> = [];
+  const g6 = await runAgentLoop({
+    sessionId: `reg-g6-${Date.now()}`,
+    target: (await db.target.findUnique({ where: { id: g6TargetId } })) as Target,
+    userId: "regression",
+    userMessage: "inspect",
+    history: [],
+    llmOverride: fakeLlm(
+      [
+        [
+          "planning first",
+          "```tool",
+          '{"tool":"update_plan","args":{"tasks":[{"title":"Schema","status":"in_progress"},{"title":"Report","status":"pending"}]}}',
+          "```",
+          "```tool",
+          '{"tool":"sql_schema"}',
+          "```",
+        ].join("\n"),
+        "Report done.",
+      ],
+      g6Captured
+    ),
+  });
+  check(
+    "G12 target chat executes every valid block through the registry (honest errors included)",
+    g6.toolCalls.length === 2 &&
+      g6.toolCalls[0].tool === "update_plan" &&
+      g6.toolCalls[1].tool === "sql_schema" &&
+      g6.toolCalls[1].result.startsWith("Error reading SQLite schema"),
+    g6.toolCalls.map((t) => `${t.tool}:${t.result.slice(0, 24)}`).join(" | ")
+  );
+
+  // Refusals are never cached as successes — a retried refusal stays a
+  // refusal (no "NOT re-executed" dedup annotation on a non-execution).
+  const g8sess = `reg-g8-${Date.now()}`;
+  const refuseOnce = await runAgentLoop({
+    sessionId: g8sess,
+    target: null,
+    userId: "regression",
+    userMessage: "x",
+    history: [],
+    llmOverride: fakeLlm(
+      ['```tool\n{"tool":"execute","args":{"command":"npx jest"}}\n```', "ok."],
+      []
+    ),
+  });
+  const refuseTwice = await runAgentLoop({
+    sessionId: g8sess,
+    target: null,
+    userId: "regression",
+    userMessage: "x again",
+    history: [],
+    llmOverride: fakeLlm(
+      ['```tool\n{"tool":"execute","args":{"command":"npx jest"}}\n```', "ok."],
+      []
+    ),
+  });
+  check(
+    "G13 a refusal is never dedup-cached into a fake success",
+    refuseOnce.toolCalls[0].result.startsWith(TOOL_REFUSAL_MARKER) &&
+      refuseTwice.toolCalls[0].result.startsWith(TOOL_REFUSAL_MARKER) &&
+      !refuseTwice.toolCalls[0].result.includes("NOT re-executed"),
+    refuseTwice.toolCalls[0].result.slice(0, 60)
+  );
+
+  // Cleanup: every synthetic row this section created.
+  await db.chatMessage.deleteMany({
+    where: { sessionId: { startsWith: "reg-g" } },
+  });
+  await db.target.deleteMany({ where: { id: { startsWith: "reg-g6-" } } });
+  await db.user.deleteMany({ where: { id: { startsWith: "reg-g6u-" } } });
+  const gLeftovers =
+    (await db.chatMessage.count({ where: { sessionId: { startsWith: "reg-g" } } })) +
+    (await db.target.count({ where: { id: { startsWith: "reg-g6-" } } })) +
+    (await db.user.count({ where: { id: { startsWith: "reg-g6u-" } } }));
+  check("G14 section G leaves no synthetic rows behind", gLeftovers === 0, "");
 
   // ---------------------------------------------------------------------
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
