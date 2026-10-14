@@ -26,6 +26,7 @@ import {
   Square,
   Timer,
   TimerOff,
+  Workflow,
   Wrench,
   X,
 } from "lucide-react";
@@ -88,11 +89,27 @@ interface TraceStep {
   startedAt?: number;
 }
 
+/** Live progress of one spawn_subagent run (streamed, not persisted — the
+ * final SUBAGENT RESULT survives in the turn's persisted tool trace). */
+interface SubagentProgress {
+  id: string;
+  task: string;
+  tools: string[];
+  maxIterations: number;
+  lines: string[];
+  status: "running" | "completed" | "failed" | "cancelled";
+  durationMs?: number;
+  iterations?: number;
+  toolsUsed?: number;
+}
+
 interface ChatEntry {
   id: string;
   role: "user" | "assistant";
   content: string;
   trace: TraceStep[];
+  /** spawn_subagent runs observed live during this turn (indented blocks). */
+  subagents?: SubagentProgress[];
   error?: string;
   createdAt?: string;
   /** Provider-reported tokens (assistant; null = provider did not report). */
@@ -148,6 +165,31 @@ function parsePartialToolBlock(raw: string): ToolIntent | null {
 /** Shallow intent equality — avoids re-rendering the preview on every delta. */
 function sameIntent(a: ToolIntent | null, b: ToolIntent | null): boolean {
   return a?.tool === b?.tool && JSON.stringify(a?.args ?? null) === JSON.stringify(b?.args ?? null);
+}
+
+/**
+ * Merge a streamed subagent fragment into the block's line buffer: deltas
+ * arrive in tiny chunks, so the active line accumulates until a newline
+ * closes it. The live buffer is bounded — the final SUBAGENT RESULT row
+ * persists in the tool trace.
+ */
+function appendSubagentLine(lines: string[], text: string): string[] {
+  if (!text) return lines;
+  const next = [...lines];
+  const last = next.length - 1;
+  const pieces = text.split("\n");
+  if (last >= 0 && !next[last].endsWith("\n")) {
+    next[last] = next[last] + pieces[0];
+  } else {
+    next.push(pieces[0]);
+  }
+  for (let i = 1; i < pieces.length; i++) next.push(pieces[i]);
+  return next.slice(-80);
+}
+
+/** True for tool rows streamed from INSIDE a subagent run ([subagent] prefix). */
+function isSubagentToolRow(tool: string): boolean {
+  return tool.startsWith("[subagent]");
 }
 
 interface ModelInfo {
@@ -521,6 +563,54 @@ export function ChatWorkspace({
               ...e.trace,
               { id: nextId(), tool: ev.tool, args: ev.args, pending: true, startedAt: Date.now() },
             ],
+          }));
+          break;
+        case "subagent_start":
+          // A nested agent loop began — open an indented progress block.
+          applyAssistant((e) => ({
+            ...e,
+            subagents: [
+              ...(e.subagents ?? []),
+              {
+                id: ev.id,
+                task: ev.task,
+                tools: ev.tools,
+                maxIterations: ev.maxIterations,
+                lines: [],
+                status: "running",
+              },
+            ],
+          }));
+          break;
+        case "subagent_delta":
+          // Subagent narration — append to its block's live buffer.
+          applyAssistant((e) => ({
+            ...e,
+            subagents: (e.subagents ?? []).map((s) =>
+              s.id === ev.id
+                ? {
+                    ...s,
+                    // Merge tiny streamed fragments into readable lines.
+                    lines: appendSubagentLine(s.lines, ev.text),
+                  }
+                : s
+            ),
+          }));
+          break;
+        case "subagent_end":
+          applyAssistant((e) => ({
+            ...e,
+            subagents: (e.subagents ?? []).map((s) =>
+              s.id === ev.id
+                ? {
+                    ...s,
+                    status: ev.status,
+                    durationMs: ev.durationMs,
+                    iterations: ev.iterations,
+                    toolsUsed: ev.toolsUsed,
+                  }
+                : s
+            ),
           }));
           break;
         case "tool_result":
@@ -1531,6 +1621,14 @@ function MessageRow({
             ))}
           </div>
         )}
+        {/* Live subagent runs (spawn_subagent) — indented delegation blocks */}
+        {(entry.subagents?.length ?? 0) > 0 && (
+          <div className="ml-3 flex flex-col gap-1.5 border-l-2 border-dashed border-emerald-500/25 pl-3">
+            {entry.subagents!.map((s) => (
+              <SubagentBlock key={s.id} sub={s} />
+            ))}
+          </div>
+        )}
         {/* Live preview while the model writes the next tool block */}
         {streaming && intent && <ToolIntentRow intent={intent} />}
         {entry.error && (() => {
@@ -1906,6 +2004,9 @@ function TraceRow({ step }: { step: TraceStep }) {
   // (or the live pending flag), never from what the model claimed.
   const outcome = classifyToolOutcome(step);
   const style = OUTCOME_STYLE[outcome];
+  // Tool rows streamed from inside a subagent run render indented under a
+  // dashed delegation rail — the [subagent] prefix stays visible (honesty).
+  const subRow = isSubagentToolRow(step.tool);
   // Live elapsed timer while the tool is running (Cursor-style "running 1.2s").
   const [elapsed, setElapsed] = React.useState<number | null>(null);
   React.useEffect(() => {
@@ -1924,7 +2025,8 @@ function TraceRow({ step }: { step: TraceStep }) {
         className={cn(
           "group flex w-full items-center gap-2 rounded-md border border-zinc-800/70 bg-zinc-900/40 px-2.5 py-1.5 text-left font-mono text-[11px] transition-colors hover:bg-zinc-900 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none",
           outcome === "running" ? "text-amber-300" : "text-zinc-400",
-          style.triggerClass
+          style.triggerClass,
+          subRow && "ml-4 border-l-2 border-l-emerald-500/30"
         )}
       >
         {style.icon}
@@ -1986,6 +2088,75 @@ function TraceRow({ step }: { step: TraceStep }) {
       </CollapsibleContent>
     </Collapsible>
   );
+}
+
+/**
+ * Live progress block for one spawn_subagent run: task header, streaming
+ * narration (indented mono lines), and an honest end state (completed /
+ * failed / cancelled with duration, iteration and tool counts). Rendered
+ * under a dashed rail so delegation reads as NESTED work, not main-line
+ * transcript. The final SUBAGENT RESULT row persists in the tool trace —
+ * this block is the live view of the nested loop while it runs.
+ */
+function SubagentBlock({ sub }: { sub: SubagentProgress }) {
+  const statusStyle =
+    sub.status === "running"
+      ? { label: "running", cls: "text-amber-300 border-amber-500/30 bg-amber-500/10", icon: <Loader2 className="size-3 animate-spin text-amber-400" aria-hidden /> }
+      : sub.status === "completed"
+        ? { label: "completed", cls: "text-emerald-300 border-emerald-500/30 bg-emerald-500/10", icon: <Check className="size-3 text-emerald-400" aria-hidden /> }
+        : sub.status === "failed"
+          ? { label: "failed", cls: "text-rose-300 border-rose-500/30 bg-rose-500/10", icon: <CircleAlert className="size-3 text-rose-400" aria-hidden /> }
+          : { label: "cancelled", cls: "text-zinc-300 border-zinc-600/40 bg-zinc-700/20", icon: <Ban className="size-3 text-zinc-400" aria-hidden /> };
+  return (
+    <div
+      className="rounded-md border border-zinc-800/60 bg-zinc-950/60 p-2"
+      role="status"
+      aria-label={`Subagent run: ${sub.task.slice(0, 80)}`}
+    >
+      <div className="flex items-start gap-2">
+        <Workflow className="mt-0.5 size-3.5 shrink-0 text-emerald-400/80" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span className="font-mono text-[10px] tracking-wide text-emerald-300/90">
+              subagent {shortSubagentId(sub.id)}
+            </span>
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded border px-1 py-px font-mono text-[9px] tracking-wider uppercase",
+                statusStyle.cls
+              )}
+            >
+              {statusStyle.icon}
+              {statusStyle.label}
+            </span>
+            <span className="font-mono text-[9px] text-zinc-600">
+              ≤{sub.maxIterations} iters · {sub.tools.length} tools
+            </span>
+            {sub.durationMs != null && (
+              <span className="font-mono text-[9px] text-zinc-600 tabular-nums">
+                {(sub.durationMs / 1000).toFixed(1)}s
+                {sub.toolsUsed != null ? ` · ${sub.toolsUsed} tool call(s)` : ""}
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-zinc-400">
+            {sub.task}
+          </p>
+          {sub.lines.length > 0 && (
+            <pre className="rea-scroll mt-1 max-h-32 overflow-auto rounded border border-zinc-800/50 bg-zinc-950/80 p-1.5 font-mono text-[10px] leading-relaxed whitespace-pre-wrap text-zinc-500">
+              {sub.lines.filter((l) => l.trim()).slice(-12).join("\n")}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** "sub-abcd12-3" → short, display-friendly id. */
+function shortSubagentId(id: string): string {
+  const parts = id.split("-");
+  return parts.length >= 3 ? `#${parts[2]}` : id;
 }
 
 /**

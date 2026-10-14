@@ -231,6 +231,26 @@ export type ChatStreamEvent =
   | { type: "delta"; text: string }
   | { type: "tool_call"; tool: string; args?: unknown }
   | { type: "tool_result"; tool: string; preview?: string }
+  // Subagent delegation (spawn_subagent): nested agent-loop runs stream
+  // their own lifecycle; tool activity arrives as "[subagent] <tool>"
+  // tool_call/tool_result events rendered indented by the UI.
+  | {
+      type: "subagent_start";
+      id: string;
+      task: string;
+      tools: string[];
+      maxIterations: number;
+    }
+  | { type: "subagent_delta"; id: string; text: string }
+  | {
+      type: "subagent_end";
+      id: string;
+      status: "completed" | "failed" | "cancelled";
+      durationMs: number;
+      iterations: number;
+      toolsUsed: number;
+      summary: string;
+    }
   | {
       type: "usage";
       tokensIn: number | null;

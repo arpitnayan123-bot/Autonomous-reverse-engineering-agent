@@ -528,6 +528,28 @@ export async function POST(req: Request) {
               onToolCall: (tool, args) => send({ type: "tool_call", tool, args }),
               onToolResult: (tool, result) =>
                 send({ type: "tool_result", tool, preview: result.slice(0, 1000) }),
+              // Subagent delegation (spawn_subagent): nested runs stream
+              // their own start/delta/end lifecycle plus [subagent]-prefixed
+              // tool events — the UI renders subagent progress indented.
+              onSubagentStart: (info) =>
+                send({
+                  type: "subagent_start",
+                  id: info.id,
+                  task: info.task,
+                  tools: info.tools,
+                  maxIterations: info.maxIterations,
+                }),
+              onSubagentDelta: (id, text) => send({ type: "subagent_delta", id, text }),
+              onSubagentEnd: (info) =>
+                send({
+                  type: "subagent_end",
+                  id: info.id,
+                  status: info.status,
+                  durationMs: info.durationMs,
+                  iterations: info.iterations,
+                  toolsUsed: info.toolsUsed,
+                  summary: info.summary,
+                }),
               shouldCancel: () => turn.stopped,
               cancellationReason: () => turn.reason,
             },
