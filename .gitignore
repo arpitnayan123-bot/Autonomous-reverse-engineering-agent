@@ -62,3 +62,6 @@ tool-results/
 # Sandbox runtime pid files (auto-written by the dev runner — never meaningful)
 dev.pid
 .zscripts/dev.pid
+
+# benchmark run outputs (raw captures, scored files, judge cache)
+benchmarks/results/
