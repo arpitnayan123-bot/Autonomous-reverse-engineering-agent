@@ -214,6 +214,22 @@ export interface SecurityData {
   sessions?: AuthSessionInfo[];
 }
 
+/** Where chat-workspace commands execute (Security tab → Command sandbox). */
+export type SandboxMode = "auto" | "process" | "docker";
+
+export interface PreferencesData {
+  sandboxMode: SandboxMode;
+  docker: {
+    /** A docker/podman daemon answered the availability probe. */
+    available: boolean;
+    /** Which runtime binary is usable ("docker" | "podman"), null when none. */
+    runtime: string | null;
+    /** Container image that would run commands (REA_SANDBOX_IMAGE aware). */
+    image: string;
+  };
+  modes: SandboxMode[];
+}
+
 export interface AuditEvent {
   id: string;
   action: string;

@@ -4,13 +4,17 @@ import * as React from "react";
 import {
   Activity,
   AlertTriangle,
+  Container,
+  Cpu,
+  Layers,
   Lock,
   MonitorSmartphone,
+  ShieldAlert,
   ShieldCheck,
   TerminalSquare,
 } from "lucide-react";
 
-import { apiGet, apiPost, type SecurityData } from "@/lib/api-client";
+import { apiGet, apiPatch, apiPost, type PreferencesData, type SecurityData, type SandboxMode } from "@/lib/api-client";
 import { EmptyState, SectionCard, timeAgo, toastError } from "@/components/rea/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -51,10 +55,61 @@ function deviceLabel(ua: string | null): string {
   return [browser, os].filter(Boolean).join(" · ") || "Unknown device";
 }
 
+const SANDBOX_MODE_META: Record<
+  SandboxMode,
+  { label: string; icon: React.ComponentType<{ className?: string }>; blurb: string }
+> = {
+  auto: {
+    label: "Auto",
+    icon: Layers,
+    blurb: "Docker container sandbox when a daemon is reachable, process jail otherwise.",
+  },
+  process: {
+    label: "Process",
+    icon: TerminalSquare,
+    blurb: "Always the process-level jail — no shell, allowlist, workspace cwd, hard timeout.",
+  },
+  docker: {
+    label: "Docker",
+    icon: Container,
+    blurb: "Always the container sandbox (no network, read-only rootfs, 512 MB, 1 CPU). Refused when Docker is unavailable.",
+  },
+};
+
 export function SecurityView() {
   const [data, setData] = React.useState<SecurityData | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [signingOutOthers, setSigningOutOthers] = React.useState(false);
+  const [prefs, setPrefs] = React.useState<PreferencesData | null>(null);
+  const [savingMode, setSavingMode] = React.useState<SandboxMode | null>(null);
+
+  const loadPrefs = React.useCallback(() => {
+    apiGet<PreferencesData>("/api/preferences")
+      .then(setPrefs)
+      .catch(() => setPrefs(null)); // the card degrades to an unavailable note
+  }, []);
+
+  const setSandboxMode = async (mode: SandboxMode) => {
+    if (!prefs || prefs.sandboxMode === mode || savingMode) return;
+    setSavingMode(mode);
+    try {
+      await apiPatch<{ ok: boolean; sandboxMode: SandboxMode }>("/api/preferences", { sandboxMode: mode });
+      setPrefs((prev) => (prev ? { ...prev, sandboxMode: mode } : prev));
+      toast({
+        title: `Sandbox mode set to ${SANDBOX_MODE_META[mode].label}`,
+        description:
+          mode === "docker"
+            ? "Workspace commands now require the container sandbox — they are refused honestly when no daemon is reachable."
+            : mode === "process"
+              ? "Workspace commands always run in the process-level jail from now on."
+              : "Workspace commands use the container sandbox when available and the process jail otherwise.",
+      });
+    } catch (err) {
+      toastError(err, "Could not save sandbox mode");
+    } finally {
+      setSavingMode(null);
+    }
+  };
 
   const signOutOthers = async () => {
     setSigningOutOthers(true);
@@ -90,10 +145,11 @@ export function SecurityView() {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    loadPrefs();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [loadPrefs]);
 
   if (loading && !data) {
     return (
@@ -148,6 +204,100 @@ export function SecurityView() {
             </div>
           ))}
         </div>
+      </SectionCard>
+
+      <SectionCard
+        title="Command sandbox"
+        description="Where chat-workspace commands execute — container isolation or the process-level jail"
+        icon={Cpu}
+      >
+        {!prefs ? (
+          <p className="text-xs text-zinc-500">
+            Sandbox preference unavailable — commands fall back to the platform default (auto).
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div
+              className="grid grid-cols-1 gap-2 sm:grid-cols-3"
+              role="radiogroup"
+              aria-label="Workspace command sandbox mode"
+            >
+              {prefs.modes.map((mode) => {
+                const meta = SANDBOX_MODE_META[mode];
+                const selected = prefs.sandboxMode === mode;
+                const Icon = meta.icon;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    disabled={savingMode !== null}
+                    onClick={() => void setSandboxMode(mode)}
+                    className={
+                      "flex flex-col items-start gap-1.5 rounded-lg border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 disabled:cursor-wait disabled:opacity-60 " +
+                      (selected
+                        ? "border-emerald-500/50 bg-emerald-500/10"
+                        : "border-zinc-800 bg-zinc-950/60 hover:border-zinc-700 hover:bg-zinc-900/60")
+                    }
+                  >
+                    <span className="flex w-full items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-sm font-medium text-zinc-100">
+                        <Icon className={"size-3.5 " + (selected ? "text-emerald-400" : "text-zinc-500")} aria-hidden />
+                        {meta.label}
+                      </span>
+                      {selected && (
+                        <Badge
+                          variant="outline"
+                          className="border-emerald-500/30 bg-emerald-500/10 font-mono text-[10px] uppercase tracking-widest text-emerald-400"
+                        >
+                          active
+                        </Badge>
+                      )}
+                    </span>
+                    <span className="text-[11px] leading-relaxed text-zinc-500">{meta.blurb}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-zinc-500">
+              <span className="flex items-center gap-1.5">
+                <span
+                  className={
+                    "inline-flex size-1.5 rounded-full " +
+                    (prefs.docker.available ? "animate-pulse bg-emerald-400" : "bg-zinc-600")
+                  }
+                  aria-hidden
+                />
+                {prefs.docker.available
+                  ? `Container runtime online (${prefs.docker.runtime})`
+                  : "No container runtime detected — Docker mode refuses commands"}
+              </span>
+              <span className="font-mono">
+                image: {prefs.docker.image}
+              </span>
+            </div>
+
+            {prefs.sandboxMode === "docker" && !prefs.docker.available && (
+              <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 text-[11px] leading-relaxed text-amber-400">
+                <ShieldAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                <span>
+                  Docker is selected but no daemon is reachable — every workspace command will be
+                  refused ("Docker sandbox requested but not available") until a runtime comes up or
+                  the mode is switched back to Auto / Process.
+                </span>
+              </div>
+            )}
+
+            <p className="text-[11px] leading-relaxed text-zinc-600">
+              The sandbox decides WHERE commands run — the command allowlist and chat guards apply
+              identically in every mode. Container runs mount the workspace at /workspace with no
+              network, a read-only rootfs, tmpfs /tmp, 512 MB memory and 1 CPU; the image must
+              contain the allowlisted binaries (see README → REA_SANDBOX_IMAGE).
+            </p>
+          </div>
+        )}
       </SectionCard>
 
       <SectionCard
