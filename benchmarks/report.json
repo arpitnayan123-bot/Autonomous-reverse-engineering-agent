@@ -1,0 +1,45 @@
+{
+  "runId": "2026-10-14_19-10-02-056Z",
+  "previousRunId": "2026-10-14_19-09-35-490Z",
+  "generatedAt": "2026-10-14T19:14:43.890Z",
+  "regressionDrop": 10,
+  "aggregates": {
+    "tasks": 1,
+    "scoredTasks": 1,
+    "avgScore": 75,
+    "avgByCategory": [
+      {
+        "category": "code",
+        "tasks": 1,
+        "scored": 1,
+        "avg": 75
+      }
+    ],
+    "totalTokens": 14187,
+    "totalCostUsd": 0.0097458,
+    "totalDurationMs": 12531,
+    "regressions": [],
+    "humanReview": []
+  },
+  "rows": [
+    {
+      "taskId": "code-reconstruction-001",
+      "category": "code",
+      "difficulty": "easy",
+      "scoringType": "rubric",
+      "score": 75,
+      "previousScore": null,
+      "delta": null,
+      "regression": false,
+      "tokensIn": 13416,
+      "tokensOut": 771,
+      "durationMs": 12531,
+      "costUsd": 0.0097458,
+      "costLabel": "$0.0097",
+      "status": "ok",
+      "error": null,
+      "toolCalls": 2,
+      "judgeError": null
+    }
+  ]
+}
