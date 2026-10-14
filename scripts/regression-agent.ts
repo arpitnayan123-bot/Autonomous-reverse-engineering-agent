@@ -22,6 +22,8 @@ import {
   parseToolAction,
   toolReceiptSuffix,
   freeChatRedirectNotice,
+  callTurn,
+  isTransientLlmError,
 } from "@/server/agent/agent";
 import {
   AGENT_TOOLS,
@@ -31,6 +33,8 @@ import {
 } from "@/server/agent/tools";
 import { freeChatSystemPrompt, systemPrompt } from "@/server/agent/prompts";
 import { BlockedUrlError } from "@/server/platform/net";
+import { consumeModelStream, TurnAbortedError } from "@/server/agent/platform-llm";
+import type { ResolvedLlm } from "@/server/agent/providers";
 import type { Target } from "@prisma/client";
 
 let failures = 0;
@@ -335,6 +339,183 @@ async function main(): Promise<void> {
     "C12 registry names all appear in the target-chat catalog (no prompt/registry drift)",
     AGENT_TOOLS.every((t) => targetPrompt.includes(`**${t.name}**`)),
     AGENT_TOOLS.map((t) => t.name).join(", ")
+  );
+
+  // ---------------------------------------------------------------------
+  section("D. Interrupted streams, failed calls, continuation");
+  // ---------------------------------------------------------------------
+
+  /** Fake async-iterable model stream: yields the given chunks, then either
+   * ends cleanly or STALLS (pending next() that never settles — the exact
+   * upstream failure shape that used to hang the turn forever). */
+  function fakeStream(chunks: unknown[], stall = false) {
+    let closedCalls = 0;
+    const iterable = {
+      [Symbol.asyncIterator]() {
+        let i = 0;
+        return {
+          next: async (): Promise<IteratorResult<unknown>> => {
+            if (i < chunks.length) return { done: false, value: chunks[i++] };
+            if (stall) await new Promise<never>(() => {}); // never resolves
+            return { done: true, value: undefined };
+          },
+          return: async (): Promise<IteratorResult<unknown>> => {
+            closedCalls++;
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    };
+    return { iterable, closedRef: () => closedCalls };
+  }
+
+  const frame = (text: string) => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`;
+
+  // D1 — a stalled stream must end with a retryable stall error, promptly,
+  // and the underlying iterator must be closed.
+  {
+    const { iterable, closedRef } = fakeStream([frame("Hel"), frame("lo")], true);
+    const t0 = Date.now();
+    let stallErr: Error | null = null;
+    try {
+      await consumeModelStream(iterable, () => {}, { idleTimeoutMs: 400 });
+    } catch (err) {
+      stallErr = err instanceof Error ? err : null;
+    }
+    const elapsed = Date.now() - t0;
+    check(
+      "D1  stalled stream → prompt retryable stall error (was: silent forever-hang)",
+      stallErr !== null &&
+        /stalled.*timed out/i.test(stallErr.message) &&
+        isTransientLlmError(stallErr) &&
+        elapsed < 3000 &&
+        elapsed >= 350 &&
+        closedRef() === 1,
+      `${stallErr?.message ?? "no error"} | elapsed=${elapsed}ms closed=${closedRef()}`
+    );
+  }
+
+  // D2 — abort during a stall must surface as TurnAbortedError (never retried).
+  {
+    const { iterable, closedRef } = fakeStream([frame("abc")], true);
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 150);
+    let abortedOk = false;
+    try {
+      await consumeModelStream(iterable, () => {}, { signal: ac.signal, idleTimeoutMs: 10_000 });
+    } catch (err) {
+      abortedOk = err instanceof TurnAbortedError;
+    }
+    check(
+      "D2  abort during stall → TurnAbortedError (cancellation is never retried)",
+      abortedOk && closedRef() === 1,
+      `abortedOk=${abortedOk} closed=${closedRef()}`
+    );
+  }
+
+  // D3 — clean stream: full text, per-chunk deltas, single close.
+  {
+    const { iterable, closedRef } = fakeStream([frame("Hel"), frame("lo"), "data: [DONE]\n\n"]);
+    const deltas: string[] = [];
+    const full = await consumeModelStream(iterable, (d) => deltas.push(d));
+    check(
+      "D3  clean stream completes with deltas and releases the iterator",
+      full === "Hello" && deltas.join("") === "Hello" && closedRef() === 1,
+      `full=${full} deltas=${deltas.length} closed=${closedRef()}`
+    );
+  }
+
+  // D4 — byte chunks (the SDK's raw SSE shape) parse identically.
+  {
+    const { iterable } = fakeStream([new TextEncoder().encode(frame("Byte")), "data: [DONE]\n\n"]);
+    const full = await consumeModelStream(iterable, () => {});
+    check("D4  Uint8Array SSE chunks parse", full === "Byte", `full=${full}`);
+  }
+
+  // D5 — callTurn: transient stream failure BEFORE deltas → retried, no
+  // single-shot call needed.
+  {
+    let streamAttempts = 0;
+    let singleShotCalls = 0;
+    const llm: ResolvedLlm = {
+      source: "platform",
+      provider: "glm-platform",
+      model: "glm-platform",
+      callLLM: async () => {
+        singleShotCalls++;
+        return "unused";
+      },
+      callLLMStream: async () => {
+        streamAttempts++;
+        if (streamAttempts === 1) throw new Error("fetch failed: ECONNRESET");
+        return "recovered answer";
+      },
+    };
+    const out = await callTurn(llm, [], 0);
+    check(
+      "D5  transient pre-delta stream failure is retried and recovers",
+      out === "recovered answer" && streamAttempts === 2 && singleShotCalls === 0,
+      `attempts=${streamAttempts} singleShot=${singleShotCalls}`
+    );
+  }
+
+  // D6 — callTurn: transient failure AFTER deltas → single-shot fallback
+  // (final text replaces the partial draft; no retry storm).
+  {
+    let streamAttempts = 0;
+    let singleShotCalls = 0;
+    const llm: ResolvedLlm = {
+      source: "platform",
+      provider: "glm-platform",
+      model: "glm-platform",
+      callLLM: async () => {
+        singleShotCalls++;
+        return "single-shot full answer";
+      },
+      callLLMStream: async (_m, onDelta) => {
+        streamAttempts++;
+        onDelta("partial ");
+        throw new Error("socket hang up");
+      },
+    };
+    const out = await callTurn(llm, [], 0);
+    check(
+      "D6  post-delta stream failure falls back to single-shot continuation",
+      out === "single-shot full answer" && streamAttempts === 1 && singleShotCalls === 1,
+      `out=${out.slice(0, 40)} attempts=${streamAttempts} singleShot=${singleShotCalls}`
+    );
+  }
+
+  // D7 — non-transient stream failure (auth): NO retry, straight to fallback.
+  {
+    let streamAttempts = 0;
+    let singleShotCalls = 0;
+    const llm: ResolvedLlm = {
+      source: "platform",
+      provider: "glm-platform",
+      model: "glm-platform",
+      callLLM: async () => {
+        singleShotCalls++;
+        return "fallback after auth error";
+      },
+      callLLMStream: async () => {
+        streamAttempts++;
+        throw new Error("Provider HTTP 401: invalid api key");
+      },
+    };
+    const out = await callTurn(llm, [], 0);
+    check(
+      "D7  non-transient failure skips retries (no blind loop)",
+      out === "fallback after auth error" && streamAttempts === 1 && singleShotCalls === 1,
+      `attempts=${streamAttempts} singleShot=${singleShotCalls}`
+    );
+  }
+
+  // D8 — the new stall error is classified transient (drives the retry).
+  check(
+    "D8  stall error classified transient for automatic recovery",
+    isTransientLlmError(new Error("Platform model stream stalled (no data for 45s) — connection timed out")),
+    ""
   );
 
   // ---------------------------------------------------------------------
