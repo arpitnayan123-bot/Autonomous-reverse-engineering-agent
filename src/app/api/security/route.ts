@@ -102,6 +102,12 @@ export async function GET() {
           "Uploaded artifacts are parsed, never executed. REA static-analysis providers run inert; no uploaded bytes are ever interpreted as code on the host.",
       },
       {
+        control: "Chat workspace sandbox",
+        status: "partial",
+        detail:
+          "Per-chat workspaces (storage/workspaces/chat-<sessionId>/) give chats REAL file write/read and command execution: isPathInside path jail, no-shell tokenizer, allowlisted binaries only, sed/awk/find/tar/git/env + eval flags (node -e) + absolute/.. paths blocked, 55s SIGKILL cap, scrubbed env, output caps. PARTIAL by design: the jail is process-level, not an OS namespace jail — code written INTO the workspace and run by an interpreter executes with server privileges (env carries no secrets, HOME is the workspace, single-tenant self-hosted deployment).",
+      },
+      {
         control: "Path traversal protection",
         status: "enforced",
         detail:
