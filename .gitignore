@@ -58,3 +58,7 @@ tool-results/
 /db/
 /storage/
 /db/.secrets.json
+
+# Sandbox runtime pid files (auto-written by the dev runner — never meaningful)
+dev.pid
+.zscripts/dev.pid
