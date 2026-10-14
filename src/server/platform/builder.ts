@@ -15,6 +15,15 @@ import { db } from "@/lib/db";
  * no pipes/interpolation), from an allowlist, with a hard timeout and output
  * cap, in a scrubbed environment, always with cwd = the project workspace.
  *
+ * Workspaces carry a built-in git history (see the "Git version control"
+ * section): creation runs `git init` + an initial empty commit, and every
+ * successful file write / file-changing command is auto-committed with a
+ * deterministic message. Git operations use the SAME sandbox guarantees as
+ * terminal commands — no shell, an allowlist of git subcommands, no
+ * user-configurable flags that could escape the workspace — and degrade
+ * gracefully when the git binary is missing (workspaces keep working;
+ * the git tools report the unavailability honestly).
+ *
  * Downloaded repository code is DATA: nothing is ever auto-executed.
  */
 
@@ -29,6 +38,7 @@ export function workspaceDir(projectId: string): string {
 export async function ensureWorkspace(projectId: string): Promise<string> {
   const dir = workspaceDir(projectId);
   await fs.mkdir(dir, { recursive: true });
+  await ensureGitRepository(projectId, dir);
   return dir;
 }
 
@@ -142,6 +152,14 @@ export interface WriteResult {
   path: string;
   bytes: number;
   created: boolean;
+  /**
+   * Auto-commit receipt (git-integrated workspaces). Present when a git
+   * commit was ATTEMPTED for this write: committed=true carries the short
+   * SHA; committed=false carries the honest failure reason. Absent when git
+   * is unavailable, the path is internal bookkeeping (.rea/), or the
+   * workspace has no repository — the write itself is unaffected either way.
+   */
+  git?: GitCommitInfo;
 }
 
 export interface WriteOptions {
@@ -205,7 +223,15 @@ export async function writeFile(
       },
     });
   }
-  return { path: relPath, bytes: incoming, created: !existed };
+  // Auto-commit the write into the workspace's built-in git history. This
+  // must NEVER fail the write: any git trouble degrades to a receipt note.
+  let git: GitCommitInfo | undefined;
+  try {
+    git = await gitCommitFileWrite(projectId, relPath, incoming);
+  } catch (err) {
+    git = { committed: false, note: `git commit skipped: ${err instanceof Error ? err.message : String(err)}`.slice(0, 300) };
+  }
+  return { path: relPath, bytes: incoming, created: !existed, ...(git !== undefined ? { git } : {}) };
 }
 
 export interface PatchResult {
@@ -476,7 +502,12 @@ export async function runCommand(
     CI: "1",
   };
 
-  return new Promise<CommandResult>((resolve) => {
+  // Git snapshot BEFORE the command — compared against the working tree
+  // after the run to detect (and commit) real file changes. null = git
+  // unavailable or no repository: bookkeeping silently skipped.
+  const gitBefore = await gitStatusSnapshot(projectId);
+
+  const result = await new Promise<CommandResult>((resolve) => {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -520,6 +551,368 @@ export async function runCommand(
       finish(127);
     });
   });
+
+  // Auto-commit a run that changed the working tree ("run: <command>").
+  // Blocked commands never executed — nothing to commit. Git bookkeeping
+  // must NEVER fail the command result: every failure degrades silently
+  // (the working tree simply stays uncommitted until the next snapshot).
+  if (!result.blocked && gitBefore !== null) {
+    try {
+      const after = await gitStatusSnapshot(projectId);
+      if (after !== null && after !== gitBefore) {
+        await withGitLock(projectId, async () => {
+          const dir = workspaceDir(projectId);
+          await gitSpawn(dir, ["add", "-A"], GIT_AUTO_TIMEOUT_MS);
+          await gitSpawn(dir, ["commit", "--no-verify", "-m", `run: ${command.slice(0, 500)}`], GIT_AUTO_TIMEOUT_MS);
+        });
+      }
+    } catch {
+      /* degrade gracefully — honest tree state returns on the next snapshot */
+    }
+  }
+  return result;
+}
+
+// --- Git version control -----------------------------------------------------
+//
+// Every workspace carries a built-in git repository:
+//   * creation (ensureWorkspace) runs `git init`, stamps the repo-local
+//     commit identity (REA Agent <agent@rea.local>) and records an initial
+//     EMPTY commit as the root of the history;
+//   * every successful file write is auto-committed ("write: <path> (N bytes)");
+//   * every executed command that changed the working tree is auto-committed
+//     ("run: <command>") — detected via `git status --porcelain` before/after;
+//   * .git/ lives INSIDE the workspace, so it counts toward the disk quota
+//     (workspaceDiskUsage walks it like any other directory).
+//
+// Sandbox guarantees (identical to terminal commands): no shell, cwd jailed
+// to the workspace, scrubbed environment (plus git-specific hardening), hard
+// timeout with SIGKILL, output caps. Arguments are validated BEFORE spawn:
+// only an allowlist of git subcommands, only per-subcommand allowlisted
+// flags — global options that could point git outside the workspace
+// (--git-dir, --work-tree, -c, -C, …) are refused. All git invocations are
+// constructed INTERNALLY from fixed templates plus validated revisions —
+// the model never supplies raw git argv.
+//
+// Degradation: if the git binary is missing, workspaces keep working and
+// git bookkeeping is skipped silently; the git tools return
+// GIT_UNAVAILABLE_ERROR verbatim.
+
+/** Commit identity stamped on every workspace commit (repo-local config). */
+export const GIT_COMMIT_IDENTITY = { name: "REA Agent", email: "agent@rea.local" } as const;
+
+/** Exact tool-facing error when the git binary is not installed. */
+export const GIT_UNAVAILABLE_ERROR = "Error: git is not available on this platform.";
+
+const GIT_BIN = "git";
+const GIT_TIMEOUT_MS = 20_000;
+const GIT_AUTO_TIMEOUT_MS = 30_000;
+const GIT_MAX_OUT = 200 * 1024;
+
+/** Subcommands a workspace git invocation may ever use. */
+export const GIT_SUBCOMMAND_ALLOWLIST = new Set([
+  "init", "add", "commit", "status", "diff", "log", "reset", "rev-parse",
+]);
+
+/** Global options that could point git OUTSIDE the workspace — never permitted. */
+const GIT_FORBIDDEN_FLAGS = [
+  "--git-dir", "--work-tree", "--exec-path", "--namespace", "--super-prefix", "--shallow-file",
+] as const;
+
+/**
+ * Per-subcommand flag allowlist — an argument starting with "-" is only
+ * accepted when it (or its "--flag=value" head) appears here. This is what
+ * makes user-influenced flag injection impossible: every argv element is
+ * either an allowlisted flag or a plain value (revision / path / message),
+ * and the plain values are constructed from validated input.
+ */
+const GIT_FLAG_ALLOWLIST: Record<string, Set<string>> = {
+  init: new Set([]),
+  add: new Set(["-A", "--"]),
+  commit: new Set(["--no-verify", "--allow-empty", "-m"]),
+  status: new Set(["--porcelain"]),
+  diff: new Set(["--no-color", "--no-ext-diff", "--stat", "--"]),
+  log: new Set(["--no-color", "--max-count", "--format", "--date"]),
+  reset: new Set(["--hard", "--mixed", "--soft", "--quiet", "-q"]),
+  "rev-parse": new Set(["--verify", "--short", "--quiet"]),
+};
+
+/** Validate a git argv BEFORE spawn. Refusals are precise and honest. */
+export function validateGitArgs(args: string[]): { ok: true } | { ok: false; error: string } {
+  if (args.length === 0) return { ok: false, error: "empty git argv" };
+  const sub = args[0];
+  if (!GIT_SUBCOMMAND_ALLOWLIST.has(sub)) {
+    return {
+      ok: false,
+      error: `git subcommand "${sub.slice(0, 60)}" is not allowlisted (allowed: ${[...GIT_SUBCOMMAND_ALLOWLIST].sort().join(", ")})`,
+    };
+  }
+  const flags = GIT_FLAG_ALLOWLIST[sub] ?? new Set<string>();
+  for (const a of args.slice(1)) {
+    if (!a.startsWith("-")) continue; // plain value: revision, path or message
+    if (GIT_FORBIDDEN_FLAGS.some((f) => a === f || a.startsWith(`${f}=`))) {
+      return { ok: false, error: `git flag "${a.slice(0, 60)}" is forbidden — it can point git outside the workspace` };
+    }
+    if (a.startsWith("-c") || a.startsWith("-C")) {
+      return { ok: false, error: `git flag "${a.slice(0, 60)}" is forbidden ("-c"/"-C" can execute arbitrary config or relocate the workspace)` };
+    }
+    const eq = a.indexOf("=");
+    const head = eq === -1 ? a : a.slice(0, eq);
+    if (!flags.has(a) && !flags.has(head)) {
+      return { ok: false, error: `git flag "${a.slice(0, 60)}" is not permitted for "${sub}"` };
+    }
+  }
+  return { ok: true };
+}
+
+/** Revisions accepted by the git tools: commit SHAs (7-40 hex) or HEAD/HEAD~N. */
+export const GIT_REV_HINT = 'a commit SHA (7-40 hex chars — see workspace_log) or a HEAD reference ("HEAD", "HEAD~N")';
+
+export function isValidGitRev(rev: string): boolean {
+  return /^HEAD(~[0-9]+)?$/i.test(rev) || /^[0-9a-f]{7,40}$/i.test(rev);
+}
+
+// --- availability probe (cached for the process lifetime) -------------------
+
+let gitAvailableCache: boolean | null = null;
+
+/** Test hook: force the availability probe (null = re-probe naturally). */
+export function setGitAvailabilityForTesting(v: boolean | null): void {
+  gitAvailableCache = v;
+}
+
+function probeGitBinary(): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v: boolean) => {
+      if (!settled) {
+        settled = true;
+        resolve(v);
+      }
+    };
+    try {
+      const child = spawn(GIT_BIN, ["--version"], { stdio: "ignore", shell: false });
+      const timer = setTimeout(() => {
+        try { child.kill("SIGKILL"); } catch { /* already dead */ }
+        done(false);
+      }, 5_000);
+      child.on("error", () => { clearTimeout(timer); done(false); });
+      child.on("close", (code) => { clearTimeout(timer); done(code === 0); });
+    } catch {
+      done(false);
+    }
+  });
+}
+
+/** Whether the git binary is usable (probed once, then cached). */
+export async function gitAvailable(): Promise<boolean> {
+  if (gitAvailableCache !== null) return gitAvailableCache;
+  gitAvailableCache = await probeGitBinary();
+  return gitAvailableCache;
+}
+
+// --- sandboxed git spawn ------------------------------------------------------
+
+export interface GitResult {
+  args: string[];
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  durationMs: number;
+}
+
+/** Scrubbed environment for git — same base as runCommand plus git hardening. */
+function gitEnv(cwd: string): Record<string, string> {
+  return {
+    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+    HOME: cwd, // a stray --global write would land inside the jail
+    TMPDIR: "/tmp",
+    LANG: "C.UTF-8",
+    NO_COLOR: "1",
+    CI: "1",
+    GIT_CONFIG_NOSYSTEM: "1", // ignore system-level git config
+    GIT_TERMINAL_PROMPT: "0", // never prompt for credentials
+    GIT_AUTHOR_NAME: GIT_COMMIT_IDENTITY.name,
+    GIT_AUTHOR_EMAIL: GIT_COMMIT_IDENTITY.email,
+    GIT_COMMITTER_NAME: GIT_COMMIT_IDENTITY.name,
+    GIT_COMMITTER_EMAIL: GIT_COMMIT_IDENTITY.email,
+  };
+}
+
+function gitSpawn(cwd: string, args: string[], timeoutMs: number, started = Date.now()): Promise<GitResult> {
+  return new Promise<GitResult>((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    const child = spawn(GIT_BIN, args, {
+      cwd,
+      env: gitEnv(cwd) as NodeJS.ProcessEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGKILL"); } catch { /* already dead */ }
+    }, Math.min(timeoutMs, 120_000));
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d: string) => { if (stdout.length < GIT_MAX_OUT) stdout += d; });
+    child.stderr.on("data", (d: string) => { if (stderr.length < GIT_MAX_OUT) stderr += d; });
+    const finish = (code: number) => {
+      clearTimeout(timer);
+      resolve({ args, exitCode: code, stdout: stdout.slice(0, GIT_MAX_OUT), stderr: stderr.slice(0, GIT_MAX_OUT), timedOut, durationMs: Date.now() - started });
+    };
+    child.on("close", (code) => finish(code ?? (timedOut ? 124 : 1)));
+    child.on("error", (err) => {
+      stderr += String(err);
+      finish(127);
+    });
+  });
+}
+
+/**
+ * Run one validated, sandboxed git operation in a workspace. The caller is
+ * responsible for the workspace existing (ensureWorkspace) — runGit only
+ * makes sure the directory is present. Refusals (validation, availability)
+ * return a result with a non-zero exit code and a precise stderr — they
+ * never throw.
+ */
+export async function runGit(projectId: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
+  const started = Date.now();
+  const refused = (exitCode: number, stderr: string): GitResult => ({
+    args, exitCode, stdout: "", stderr, timedOut: false, durationMs: Date.now() - started,
+  });
+  const check = validateGitArgs(args);
+  if (!check.ok) return refused(126, `Refused: ${check.error}`);
+  if (!(await gitAvailable())) return refused(127, GIT_UNAVAILABLE_ERROR.replace(/^Error: /, ""));
+  const dir = workspaceDir(projectId);
+  await fs.mkdir(dir, { recursive: true });
+  return gitSpawn(dir, args, timeoutMs, started);
+}
+
+// --- per-workspace git lock ---------------------------------------------------
+//
+// Subagents share a session workspace and may run concurrently; git's index
+// is single-writer. A tiny per-workspace promise-chain mutex serializes the
+// mutation sequences (init / add+commit) so interleaved auto-commits fail
+// with "index.lock" errors instead of corrupting bookkeeping.
+
+const gitLocks = new Map<string, Promise<unknown>>();
+
+async function withGitLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = gitLocks.get(key) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(fn);
+  gitLocks.set(key, run);
+  try {
+    return await run;
+  } finally {
+    if (gitLocks.get(key) === run) gitLocks.delete(key);
+  }
+}
+
+// --- repository bootstrap ------------------------------------------------------
+
+/** Repo-local commit identity (written as .git/config INI — no git subcommand needed). */
+async function writeGitIdentity(dir: string): Promise<void> {
+  const cfg = path.join(dir, ".git", "config");
+  try {
+    const content = await fs.readFile(cfg, "utf8");
+    if (/\[user\]/i.test(content)) return; // already stamped
+    await fs.appendFile(
+      cfg,
+      `\n[user]\n\tname = ${GIT_COMMIT_IDENTITY.name}\n\temail = ${GIT_COMMIT_IDENTITY.email}\n`,
+      "utf8"
+    );
+  } catch {
+    /* config unreadable — identity is still guaranteed via the GIT_AUTHOR / GIT_COMMITTER env vars */
+  }
+}
+
+/**
+ * Initialize the workspace git repository (idempotent, best-effort):
+ * `git init` → repo-local identity → initial EMPTY commit → housekeeping
+ * .gitignore (platform bookkeeping under .rea/ is not version-controlled
+ * material). Any failure degrades silently — the workspace keeps working
+ * without git.
+ */
+export async function ensureGitRepository(projectId: string, dir?: string): Promise<void> {
+  const d = dir ?? workspaceDir(projectId);
+  if (fsSync.existsSync(path.join(d, ".git"))) return; // fast path: one stat
+  if (!(await gitAvailable())) return;
+  await withGitLock(projectId, async () => {
+    if (fsSync.existsSync(path.join(d, ".git"))) return; // lost the race
+    const init = await gitSpawn(d, ["init"], GIT_TIMEOUT_MS);
+    if (init.exitCode !== 0) return;
+    await writeGitIdentity(d);
+    // The initial EMPTY commit — the root of the workspace history.
+    const empty = await gitSpawn(d, ["commit", "--no-verify", "--allow-empty", "-m", "init"], GIT_TIMEOUT_MS);
+    if (empty.exitCode !== 0) return;
+    const gitignore = ".rea/\n"; // verify-history bookkeeping stays out of VCS
+    const giPath = path.join(d, ".gitignore");
+    if (!fsSync.existsSync(giPath)) {
+      try {
+        await fs.writeFile(giPath, gitignore, "utf8");
+        await gitSpawn(d, ["add", ".gitignore"], GIT_TIMEOUT_MS);
+        await gitSpawn(d, ["commit", "--no-verify", "-m", `write: .gitignore (${Buffer.byteLength(gitignore, "utf8")} bytes)`], GIT_TIMEOUT_MS);
+      } catch {
+        /* .gitignore housekeeping is optional — history root already exists */
+      }
+    }
+  });
+}
+
+// --- auto-commit receipts -------------------------------------------------------
+
+export interface GitCommitInfo {
+  committed: boolean;
+  /** Short SHA of the new commit (committed=true). */
+  sha?: string;
+  /** Honest failure reason when the commit did not happen (committed=false). */
+  note?: string;
+}
+
+function gitFirstLine(s: string): string {
+  const line = s.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  return line.slice(0, 200);
+}
+
+/**
+ * Auto-commit a successful file write. Returns undefined when there is
+ * nothing git-flavored to report (git unavailable, no repository, or an
+ * internal bookkeeping path). Never throws; a failed commit becomes a
+ * receipt note — the write itself is already on disk and stays.
+ */
+async function gitCommitFileWrite(projectId: string, relPath: string, bytes: number): Promise<GitCommitInfo | undefined> {
+  if (relPath.startsWith(".rea/")) return undefined; // gitignored bookkeeping
+  if (!(await gitAvailable())) return undefined;
+  const dir = workspaceDir(projectId);
+  if (!fsSync.existsSync(path.join(dir, ".git"))) return undefined;
+  return withGitLock(projectId, async () => {
+    const add = await gitSpawn(dir, ["add", relPath], GIT_AUTO_TIMEOUT_MS);
+    if (add.exitCode !== 0) {
+      return { committed: false, note: `git add failed: ${gitFirstLine(add.stderr) || "unknown error"}` };
+    }
+    const commit = await gitSpawn(dir, ["commit", "--no-verify", "-m", `write: ${relPath} (${bytes} bytes)`], GIT_AUTO_TIMEOUT_MS);
+    if (commit.exitCode !== 0) {
+      return { committed: false, note: `git commit failed: ${gitFirstLine(commit.stderr) || "nothing to commit"}` };
+    }
+    const sha = await gitSpawn(dir, ["rev-parse", "--short", "HEAD"], GIT_TIMEOUT_MS);
+    return { committed: true, sha: sha.stdout.trim() || undefined };
+  });
+}
+
+/**
+ * Working-tree snapshot for change detection (`git status --porcelain`).
+ * null = git unavailable / no repository / status failed — no bookkeeping.
+ */
+async function gitStatusSnapshot(projectId: string): Promise<string | null> {
+  if (!(await gitAvailable())) return null;
+  const dir = workspaceDir(projectId);
+  if (!fsSync.existsSync(path.join(dir, ".git"))) return null;
+  const st = await gitSpawn(dir, ["status", "--porcelain"], GIT_TIMEOUT_MS);
+  if (st.exitCode !== 0) return null;
+  return st.stdout;
 }
 
 /** Quick workspace health probe: file count, manifest presence, entry doc. */

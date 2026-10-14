@@ -10,9 +10,15 @@ import { probeUrl, PROBE_TIMEOUT_MS } from "@/server/platform/explorer";
 import {
   CHAT_WORKSPACE_QUOTA_BYTES,
   chatCommandAllowlist,
+  ensureWorkspace,
+  GIT_REV_HINT,
+  GIT_UNAVAILABLE_ERROR,
+  gitAvailable,
+  isValidGitRev,
   listFiles as workspaceListFiles,
   readFile as workspaceReadFile,
   runCommand as workspaceRunCommand,
+  runGit,
   writeFile as workspaceWriteFile,
   workspaceDiskUsage,
 } from "@/server/platform/builder";
@@ -779,6 +785,9 @@ const WORKSPACE_TOOL_NAMES = [
   "workspace_read",
   "workspace_write",
   "workspace_run",
+  "workspace_diff",
+  "workspace_log",
+  "workspace_reset",
 ] as const;
 
 export type WorkspaceToolName = (typeof WORKSPACE_TOOL_NAMES)[number];
@@ -790,6 +799,23 @@ function workspaceErr(context: string, err: unknown): string {
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}\n…[truncated after ${max} chars]` : text;
+}
+
+/**
+ * Shared preflight for the git tools (workspace_diff / workspace_log /
+ * workspace_reset): make sure the workspace — and its built-in git
+ * repository — exists (fresh sessions included), then check binary
+ * availability. Returns the exact degradation error when git is missing,
+ * null when the operation may proceed.
+ */
+async function gitToolPreflight(key: string): Promise<string | null> {
+  try {
+    await ensureWorkspace(key); // mkdir + idempotent git init
+  } catch {
+    /* the runGit calls below still surface an honest failure */
+  }
+  if (!(await gitAvailable())) return GIT_UNAVAILABLE_ERROR;
+  return null;
 }
 
 /**
@@ -865,7 +891,15 @@ export async function runWorkspaceTool(
         } catch {
           /* usage reporting is best-effort */
         }
-        return `# workspace_write — OBSERVED write\n- path: ${r.path}\n- bytes written: ${r.bytes}\n- ${r.created ? "created new file" : "overwrote existing file"}${usageNote}\nThe file is now on disk in this session's workspace (verify with workspace_read or workspace_list).`;
+        // Git receipt: every write is auto-committed to the workspace's built-in
+        // history. Absent receipt = git unavailable / internal bookkeeping path.
+        const gitNote =
+          r.git === undefined
+            ? ""
+            : r.git.committed
+              ? `\n- git commit: ${r.git.sha ?? "(sha unavailable)"} — "write: ${r.path} (${r.bytes} bytes)"`
+              : `\n- git commit: not created — ${r.git.note ?? "unknown reason"}`;
+        return `# workspace_write — OBSERVED write\n- path: ${r.path}\n- bytes written: ${r.bytes}\n- ${r.created ? "created new file" : "overwrote existing file"}${usageNote}${gitNote}\nThe file is now on disk in this session's workspace (verify with workspace_read or workspace_list; history via workspace_log).`;
       } catch (err) {
         return workspaceErr(
           `write failed for "${rel}" (512 KB per-file cap, ${fmtBytes(CHAT_WORKSPACE_QUOTA_BYTES)} per-workspace quota; paths must stay inside the workspace)`,
@@ -968,6 +1002,97 @@ export async function runWorkspaceTool(
       return `${head}\n${body}\n\n## stdout\n${r.stdout.trim() ? truncate(r.stdout.trim(), 3500) : "(empty)"}\n\n## stderr\n${r.stderr.trim() ? truncate(r.stderr.trim(), 2500) : "(empty)"}`;
     }
 
+    case "workspace_diff": {
+      const pre = await gitToolPreflight(key);
+      if (pre) return pre;
+      const from = argStr(args, "from");
+      const to = argStr(args, "to");
+      if ((from === undefined) !== (to === undefined)) {
+        return "Error: provide BOTH 'from' and 'to' commit refs for a two-commit diff — or NEITHER to diff HEAD against the working tree.";
+      }
+      let gitArgs: string[];
+      let label: string;
+      if (from && to) {
+        if (!isValidGitRev(from)) return `Error: 'from' is not a valid revision — use ${GIT_REV_HINT}.`;
+        if (!isValidGitRev(to)) return `Error: 'to' is not a valid revision — use ${GIT_REV_HINT}.`;
+        gitArgs = ["diff", "--no-color", "--no-ext-diff", from, to];
+        label = `${from} ↔ ${to}`;
+      } else {
+        gitArgs = ["diff", "--no-color", "--no-ext-diff", "HEAD"];
+        label = "HEAD ↔ working tree";
+      }
+      const r = await runGit(key, gitArgs);
+      if (r.exitCode !== 0) {
+        return `Error: git diff failed (exit ${r.exitCode}): ${(r.stderr || "no output").slice(0, 300)}`;
+      }
+      const diff = r.stdout.trim();
+      return `# workspace_diff — OBSERVED diff (${label})\n\n${diff ? truncate(diff, 5500) : "(no differences)"}`;
+    }
+
+    case "workspace_log": {
+      const pre = await gitToolPreflight(key);
+      if (pre) return pre;
+      const n = clampInt(args?.["count"], 10, 1, 50);
+      const r = await runGit(key, [
+        "log",
+        "--no-color",
+        "--date=iso-strict",
+        `--max-count=${n}`,
+        "--format=%H%x1f%ad%x1f%s",
+      ]);
+      if (r.exitCode !== 0) {
+        return `Error: git log failed (exit ${r.exitCode}): ${(r.stderr || "no output").slice(0, 300)}`;
+      }
+      const rows = r.stdout
+        .split("\n")
+        .map((l) => l.split("\x1f"))
+        .filter((p) => p.length >= 3 && p[0])
+        .map(([sha, date, subject]) => ({ sha, date, subject }));
+      if (rows.length === 0) {
+        return "workspace_log: no commits yet — the history starts with the workspace's initial commit, then one commit per write and per file-changing run.";
+      }
+      const table = rows
+        .map(
+          (row) =>
+            `| ${row.sha.slice(0, 8)} | ${row.date} | ${row.subject.slice(0, 120).replace(/\|/g, "\\|")} |`
+        )
+        .join("\n");
+      return `# workspace_log — ${rows.length} commit(s), newest first\n\n| sha | timestamp | message |\n|---|---|---|\n${table}\n\nUse the SHAs with workspace_diff (compare two commits) or workspace_reset (restore a commit).`;
+    }
+
+    case "workspace_reset": {
+      const pre = await gitToolPreflight(key);
+      if (pre) return pre;
+      const target = argStr(args, "target");
+      if (!target) {
+        return `Error: 'target' is required — ${GIT_REV_HINT}. Get SHAs from workspace_log.`;
+      }
+      if (!isValidGitRev(target)) {
+        return `Error: 'target' "${target.slice(0, 40)}" is not a valid revision — use ${GIT_REV_HINT}.`;
+      }
+      const force = args?.["force"] === true;
+      const st = await runGit(key, ["status", "--porcelain"]);
+      if (st.exitCode !== 0) {
+        return `Error: git status failed (exit ${st.exitCode}): ${(st.stderr || "no output").slice(0, 300)}`;
+      }
+      const dirty = st.stdout.trim().length > 0;
+      if (dirty && !force) {
+        return `Error: workspace has uncommitted changes — reset refused. Pass {"force":true} to DISCARD them (unrecoverable), or just re-write the files after the reset. Uncommitted:\n${truncate(st.stdout.trim(), 800)}`;
+      }
+      const r = await runGit(key, ["reset", "--hard", target]);
+      if (r.exitCode !== 0) {
+        return `Error: git reset failed (exit ${r.exitCode}): ${(r.stderr || "no output").slice(0, 300)}`;
+      }
+      const head = await runGit(key, ["rev-parse", "--short", "HEAD"]);
+      return [
+        `# workspace_reset — OBSERVED reset`,
+        `- target: ${target}`,
+        `- HEAD now: ${head.stdout.trim() || "(sha unavailable)"}`,
+        `- tracked files were reverted to the target commit; UNTRACKED files are left in place (remove them with workspace_run "rm ..." if needed)`,
+        ...(dirty ? ["- previous uncommitted changes were DISCARDED (force:true)"] : []),
+      ].join("\n");
+    }
+
     default:
       return `Error: unknown workspace tool "${name}". Workspace tools: ${WORKSPACE_TOOL_NAMES.join(", ")}.`;
   }
@@ -1052,7 +1177,7 @@ const workspaceWriteTool: AgentTool = {
   name: "workspace_write",
   scope: "any",
   description:
-    "Create or overwrite a file in this chat's sandboxed workspace — the write is REAL (result reports the actual byte count written). 512 KB per-file cap and an 8 MB per-workspace disk quota (over-quota writes are refused with nothing written), workspace-relative paths only, parent directories created automatically. Write code/config/docs here, then execute it with workspace_run.",
+    "Create or overwrite a file in this chat's sandboxed workspace — the write is REAL (result reports the actual byte count written). 512 KB per-file cap and an 8 MB per-workspace disk quota (over-quota writes are refused with nothing written), workspace-relative paths only, parent directories created automatically. Every write is auto-committed to the workspace's built-in git history (\"write: <path> (<bytes> bytes)\") — inspect with workspace_log / workspace_diff, undo with workspace_reset. Write code/config/docs here, then execute it with workspace_run.",
   args: {
     type: "object",
     properties: {
@@ -1068,7 +1193,7 @@ const workspaceWriteTool: AgentTool = {
 const workspaceRunTool: AgentTool = {
   name: "workspace_run",
   scope: "any",
-  description: `Execute ONE allowlisted command inside this chat's sandboxed workspace (cwd = the workspace) and return the REAL exit code, stdout and stderr. No shell: pipes, redirection, \`*\` globs and \`\$VAR\` interpolation are NOT interpreted — pass plain arguments. Blocked: non-allowlisted binaries, sed/awk/find/tar/git/env, absolute paths, ".." traversal, inline-eval flags (node -e, python3 -c); commands are also refused while the workspace sits at its 8 MB disk quota. Allowed binaries: ${chatCommandAllowlist().join(", ")}. To run code, workspace_write it to a file first, then run it as a file. Each call is capped at ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s.`,
+  description: `Execute ONE allowlisted command inside this chat's sandboxed workspace (cwd = the workspace) and return the REAL exit code, stdout and stderr. No shell: pipes, redirection, \`*\` globs and \`\$VAR\` interpolation are NOT interpreted — pass plain arguments. Blocked: non-allowlisted binaries, sed/awk/find/tar/git/env, absolute paths, ".." traversal, inline-eval flags (node -e, python3 -c); commands are also refused while the workspace sits at its 8 MB disk quota. Allowed binaries: ${chatCommandAllowlist().join(", ")}. Runs that change files are auto-committed to the workspace's built-in git history ("run: <command>") — inspect with workspace_log/workspace_diff, undo with workspace_reset. To run code, workspace_write it to a file first, then run it as a file. Each call is capped at ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s.`,
   args: {
     type: "object",
     properties: {
@@ -1078,6 +1203,57 @@ const workspaceRunTool: AgentTool = {
     additionalProperties: false,
   },
   run: workspaceRun("workspace_run"),
+};
+
+const workspaceDiffTool: AgentTool = {
+  name: "workspace_diff",
+  scope: "any",
+  description:
+    'Show a REAL git diff from the workspace\'s built-in git history (every workspace_write and every file-changing workspace_run is auto-committed). No args: diff of HEAD against the current working tree — usually "(no differences)" because writes commit immediately. With from+to: diff between two commits. Revisions are commit SHAs from workspace_log or HEAD/"HEAD~N" forms.',
+  args: {
+    type: "object",
+    properties: {
+      from: { type: "string", description: 'First commit ref — SHA from workspace_log, or "HEAD"/"HEAD~N". Required together with "to".' },
+      to: { type: "string", description: 'Second commit ref — SHA from workspace_log, or "HEAD"/"HEAD~N". Required together with "from".' },
+    },
+    additionalProperties: false,
+  },
+  run: workspaceRun("workspace_diff"),
+};
+
+const workspaceLogTool: AgentTool = {
+  name: "workspace_log",
+  scope: "any",
+  description:
+    'Show the last N commits (default 10, max 50) of the workspace\'s built-in git history as a table of SHA, timestamp and message. Writes appear as "write: <path> (<bytes> bytes)", file-changing runs as "run: <command>". Use the SHAs with workspace_diff and workspace_reset.',
+  args: {
+    type: "object",
+    properties: {
+      count: { type: "number", description: "How many commits to show (1-50, default 10)." },
+    },
+    additionalProperties: false,
+  },
+  run: workspaceRun("workspace_log"),
+};
+
+const workspaceResetTool: AgentTool = {
+  name: "workspace_reset",
+  scope: "any",
+  // Stateful by design — resetting the same target twice must actually run
+  // again (the workspace may have changed in between), never a cached result.
+  dedup: false,
+  description:
+    'Reset the workspace\'s tracked files to a given commit — a SHA from workspace_log or a HEAD reference ("HEAD", "HEAD~N"). REFUSED while the working tree has uncommitted changes unless force:true; force DISCARDS those changes (unrecoverable). Untracked files survive a reset — delete them with workspace_run "rm ..." if needed.',
+  args: {
+    type: "object",
+    properties: {
+      target: { type: "string", description: 'Commit SHA from workspace_log, or a HEAD reference like "HEAD~2".' },
+      force: { type: "boolean", description: "Discard uncommitted changes (destructive). Default false — the reset is refused while the tree is dirty." },
+    },
+    required: ["target"],
+    additionalProperties: false,
+  },
+  run: workspaceRun("workspace_reset"),
 };
 
 // ---------------------------------------------------------------------------
@@ -1391,6 +1567,9 @@ export const AGENT_TOOLS: AgentTool[] = [
   workspaceReadTool,
   workspaceWriteTool,
   workspaceRunTool,
+  workspaceDiffTool,
+  workspaceLogTool,
+  workspaceResetTool,
   workspaceVerifyTool,
   spawnSubagentTool,
 ];
