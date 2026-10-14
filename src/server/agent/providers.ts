@@ -30,6 +30,15 @@ export interface ProviderDef {
   docsHint: string;
   keyPrefix: string;
   models: ProviderModel[];
+  /**
+   * Per-provider native tool-calling capability (OpenAI function-calling
+   * protocol / Anthropic tool_use). Only providers with a REAL native
+   * implementation in this module declare true — gemini has none yet and
+   * honestly stays false. When false (or when the resolved LLM exposes no
+   * callLLMTools), the agent loop transparently uses the text ```tool block
+   * protocol instead. Never a simulated capability.
+   */
+  supportsNativeTools: boolean;
 }
 
 export const PROVIDERS: ProviderDef[] = [
@@ -39,6 +48,7 @@ export const PROVIDERS: ProviderDef[] = [
     vendor: "openai.com",
     docsHint: "Keys start with sk-… (platform.openai.com)",
     keyPrefix: "sk-",
+    supportsNativeTools: true,
     models: [
       { id: "gpt-4o-mini", label: "GPT-4o mini", note: "fast + cheap" },
       { id: "gpt-4o", label: "GPT-4o" },
@@ -53,6 +63,7 @@ export const PROVIDERS: ProviderDef[] = [
     vendor: "anthropic.com",
     docsHint: "Keys start with sk-ant-… (console.anthropic.com)",
     keyPrefix: "sk-ant-",
+    supportsNativeTools: true,
     models: [
       { id: "claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
       { id: "claude-3-5-haiku-20241022", label: "Claude 3.5 Haiku", note: "fast" },
@@ -65,6 +76,9 @@ export const PROVIDERS: ProviderDef[] = [
     vendor: "ai.google.dev",
     docsHint: "Keys start with AIza… (aistudio.google.com)",
     keyPrefix: "AIza",
+    // Honest capability boundary: no native tool-calling implementation in
+    // this module yet — Gemini BYOK runs the proven text ```tool protocol.
+    supportsNativeTools: false,
     models: [
       { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", note: "fast" },
       { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
@@ -77,6 +91,7 @@ export const PROVIDERS: ProviderDef[] = [
     vendor: "platform.deepseek.com",
     docsHint: "OpenAI-compatible endpoint",
     keyPrefix: "sk-",
+    supportsNativeTools: true,
     models: [
       { id: "deepseek-chat", label: "DeepSeek V3 (chat)" },
       { id: "deepseek-reasoner", label: "DeepSeek R1 (reasoner)", note: "reasoning" },
@@ -88,6 +103,7 @@ export const PROVIDERS: ProviderDef[] = [
     vendor: "platform.moonshot.cn",
     docsHint: "OpenAI-compatible endpoint",
     keyPrefix: "sk-",
+    supportsNativeTools: true,
     models: [
       { id: "moonshot-v1-8k", label: "Moonshot v1 8K" },
       { id: "moonshot-v1-32k", label: "Moonshot v1 32K" },
@@ -100,6 +116,7 @@ export const PROVIDERS: ProviderDef[] = [
     vendor: "open.bigmodel.cn / api.z.ai",
     docsHint: "OpenAI-compatible endpoint",
     keyPrefix: "",
+    supportsNativeTools: true,
     models: [
       { id: "glm-4.6", label: "GLM-4.6" },
       { id: "glm-4.5", label: "GLM-4.5" },
@@ -119,8 +136,47 @@ const REQUEST_TIMEOUT_MS = 120_000;
 // ---------------------------------------------------------------------------
 
 export interface LlmMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool";
   content: string;
+  /**
+   * assistant-only (native tool path): the tool calls the model requested in
+   * this message. Serialized per provider (OpenAI tool_calls / Anthropic
+   * tool_use blocks). The text protocol path never sets it.
+   */
+  toolCalls?: LlmToolCall[];
+  /** tool-only: the id of the originating tool call this result answers. */
+  toolCallId?: string;
+}
+
+/** OpenAI function-calling tool schema — the wire format for native calls. */
+export interface ToolSchema {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+/** One provider-emitted tool call, normalized across providers. */
+export interface LlmToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  /**
+   * Set ONLY when the provider's serialized arguments failed JSON parsing:
+   * `arguments` is then {} and the call must NOT execute — the loop answers
+   * it with an honest "malformed arguments, nothing executed" tool result.
+   * The raw (truncated) fragment is preserved here for the record.
+   */
+  malformedArguments?: string;
+}
+
+/** Result of a native tool-calling LLM turn. */
+export interface LlmToolsResult {
+  /** Visible text the model produced alongside (or instead of) tool calls. */
+  content: string;
+  toolCalls: LlmToolCall[];
 }
 
 /** Token usage as reported by a provider (all fields optional — honest unknowns). */
@@ -621,6 +677,369 @@ async function geminiStream(
   return full;
 }
 
+// ---------------------------------------------------------------------------
+// Native tool calling — OpenAI function-calling protocol + Anthropic tool_use
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a provider's serialized tool-call arguments string into a normalized
+ * LlmToolCall argument payload. Empty/null arguments are a VALID no-arg call
+ * (most engine tools take no arguments); anything else must parse to a JSON
+ * object — arrays, scalars and unparsable fragments set malformedArguments
+ * (with the raw excerpt preserved for the record) so the loop can answer the
+ * call honestly without executing anything.
+ */
+export function coerceToolCallArguments(raw: string): {
+  args: Record<string, unknown>;
+  malformedArguments?: string;
+} {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === "null") return { args: {} };
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { args: parsed as Record<string, unknown> };
+    }
+    return { args: {}, malformedArguments: trimmed.slice(0, 200) };
+  } catch {
+    return { args: {}, malformedArguments: trimmed.slice(0, 200) };
+  }
+}
+
+/** Shared finalization of accumulated per-call fragments into LlmToolCalls. */
+function finalizeToolCallSlots(
+  slots: Array<{ id: string; name: string; args: string }>
+): LlmToolCall[] {
+  return slots.map((slot, i) => {
+    const { args, malformedArguments } = coerceToolCallArguments(slot.args);
+    return {
+      id: slot.id || `call_${i}`,
+      name: slot.name.trim(),
+      arguments: args,
+      ...(malformedArguments ? { malformedArguments } : {}),
+    };
+  });
+}
+
+/**
+ * Serialize the loop transcript for an OpenAI-compatible endpoint on the
+ * native path. The loop's system prompt (first assistant message) becomes a
+ * real `system` role; assistant tool-call requests become `tool_calls`
+ * arrays; tool results become `role:"tool"` messages tied by tool_call_id —
+ * the exact shape the function-calling protocol requires.
+ */
+export function openAiNativeMessages(
+  messages: LlmMessage[]
+): Array<Record<string, unknown>> {
+  return messages.map((m, i) => {
+    if (i === 0 && m.role === "assistant") {
+      return { role: "system", content: unmarkSystem(m.content) };
+    }
+    if (m.role === "tool") {
+      return { role: "tool", tool_call_id: m.toolCallId ?? "", content: m.content };
+    }
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      return {
+        role: "assistant",
+        content: m.content || null,
+        tool_calls: m.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: "function",
+          function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+        })),
+      };
+    }
+    return { role: m.role, content: m.content };
+  });
+}
+
+/**
+ * OpenAI-compatible native tool-calling turn (openai, deepseek, kimi, glm).
+ * Streams like the text path (visible content flows through `onDelta` for
+ * the live-typing effect) while accumulating streamed tool_calls fragments
+ * per index; argument fragments are concatenated and JSON-parsed at the end
+ * (unparsable fragments are reported via malformedArguments — never guessed).
+ * Exported for the native-tools regression suite (tested against a local
+ * SSE fixture server — no external network).
+ */
+export async function openAiCompatibleTools(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  messages: LlmMessage[],
+  tools: ToolSchema[],
+  opts: CallOpts,
+  onDelta: DeltaSink
+): Promise<LlmToolsResult> {
+  const body: Record<string, unknown> = {
+    model,
+    messages: openAiNativeMessages(messages),
+    max_tokens: opts.maxTokens ?? 4096,
+    stream: true,
+  };
+  // Omit the field entirely when no schemas are offered (synthesis turn) —
+  // an empty tools array is rejected by stricter compatible endpoints.
+  if (tools.length) body.tools = tools;
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      scrubSecrets(`Provider HTTP ${res.status}: ${text.slice(0, 300)}`)
+    );
+  }
+  let content = "";
+  const pending = new Map<number, { id: string; name: string; args: string }>();
+  await readProviderSse(res, (data) => {
+    if (data === "[DONE]") return;
+    try {
+      const json = JSON.parse(data) as {
+        choices?: Array<{
+          delta?: {
+            content?: string;
+            tool_calls?: Array<{
+              index?: number;
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          };
+        }>;
+        usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
+      };
+      const delta = json?.choices?.[0]?.delta;
+      if (typeof delta?.content === "string" && delta.content) {
+        content += delta.content;
+        onDelta(delta.content);
+      }
+      for (const tc of delta?.tool_calls ?? []) {
+        const idx = typeof tc.index === "number" ? tc.index : pending.size;
+        const slot = pending.get(idx) ?? { id: "", name: "", args: "" };
+        if (typeof tc.id === "string" && tc.id) slot.id = tc.id;
+        // `name` arrives whole on the first fragment in the standard protocol;
+        // assignment (not concatenation) keeps re-sent names from doubling.
+        if (typeof tc.function?.name === "string" && tc.function.name) {
+          slot.name = tc.function.name;
+        }
+        if (typeof tc.function?.arguments === "string") {
+          slot.args += tc.function.arguments;
+        }
+        pending.set(idx, slot);
+      }
+      if (json?.usage && typeof json.usage === "object") {
+        opts.onUsage?.({
+          promptTokens:
+            typeof json.usage.prompt_tokens === "number" ? json.usage.prompt_tokens : undefined,
+          completionTokens:
+            typeof json.usage.completion_tokens === "number"
+              ? json.usage.completion_tokens
+              : undefined,
+        });
+      }
+    } catch {
+      /* ignore malformed frame */
+    }
+  });
+  const slots = [...pending.entries()].sort((a, b) => a[0] - b[0]).map(([, s]) => s);
+  const toolCalls = finalizeToolCallSlots(slots);
+  if (!content.trim() && toolCalls.length === 0) {
+    throw new Error("Provider returned an empty completion");
+  }
+  return { content, toolCalls };
+}
+
+type AnthropicBlock = Record<string, unknown>;
+
+/**
+ * Serialize the loop transcript for the Anthropic Messages API on the native
+ * path: assistant tool-call requests become text+tool_use content blocks and
+ * tool results become tool_result blocks inside a user message (consecutive
+ * tool results merge into ONE user turn, matching the protocol and the
+ * "report all results in a single turn" execution rule).
+ */
+export function anthropicNativeMessages(
+  messages: LlmMessage[]
+): Array<{ role: "user" | "assistant"; content: string | AnthropicBlock[] }> {
+  const out: Array<{ role: "user" | "assistant"; content: string | AnthropicBlock[] }> = [];
+  const pushToolResult = (block: AnthropicBlock) => {
+    const last = out[out.length - 1];
+    if (
+      last &&
+      last.role === "user" &&
+      Array.isArray(last.content) &&
+      (last.content[0] as AnthropicBlock | undefined)?.type === "tool_result"
+    ) {
+      last.content.push(block);
+    } else {
+      out.push({ role: "user", content: [block] });
+    }
+  };
+  for (const m of messages) {
+    if (m.role === "tool") {
+      pushToolResult({ type: "tool_result", tool_use_id: m.toolCallId ?? "", content: m.content });
+      continue;
+    }
+    if (m.role === "assistant" && m.toolCalls?.length) {
+      const blocks: AnthropicBlock[] = [];
+      if (m.content.trim()) blocks.push({ type: "text", text: m.content });
+      for (const tc of m.toolCalls) {
+        blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.arguments });
+      }
+      out.push({ role: "assistant", content: blocks });
+      continue;
+    }
+    out.push({ role: m.role === "assistant" ? "assistant" : "user", content: m.content });
+  }
+  return out;
+}
+
+/** Anthropic native tool-calling turn (Messages API, tool_use blocks). */
+export async function anthropicTools(
+  apiKey: string,
+  model: string,
+  messages: LlmMessage[],
+  tools: ToolSchema[],
+  opts: CallOpts,
+  onDelta: DeltaSink
+): Promise<LlmToolsResult> {
+  const system = messages.find((m) => m.role === "assistant" && isSystemLike(m))?.content;
+  const rest = messages.filter((m) => !(m.role === "assistant" && isSystemLike(m)));
+  const body: Record<string, unknown> = {
+    model,
+    max_tokens: opts.maxTokens ?? 4096,
+    ...(system ? { system: unmarkSystem(system) } : {}),
+    messages: anthropicNativeMessages(rest),
+    ...(tools.length
+      ? {
+          tools: tools.map((t) => ({
+            name: t.function.name,
+            description: t.function.description,
+            input_schema: t.function.parameters,
+          })),
+        }
+      : {}),
+    stream: true,
+  };
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify(body),
+    signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      scrubSecrets(`Anthropic HTTP ${res.status}: ${text.slice(0, 300)}`)
+    );
+  }
+  let content = "";
+  const blocks = new Map<number, { id: string; name: string; args: string }>();
+  let streamUsage: TokenUsage = {};
+  await readProviderSse(res, (data) => {
+    try {
+      const json = JSON.parse(data) as {
+        type?: string;
+        index?: number;
+        content_block?: { type?: string; id?: string; name?: string; input?: unknown };
+        delta?: { type?: string; text?: string; partial_json?: string };
+        message?: { usage?: { input_tokens?: unknown; output_tokens?: unknown } };
+        usage?: { output_tokens?: unknown };
+      };
+      if (json?.type === "content_block_start" && json.content_block?.type === "tool_use") {
+        blocks.set(json.index ?? blocks.size, {
+          id: json.content_block.id ?? "",
+          name: json.content_block.name ?? "",
+          args: typeof json.content_block.input === "string" ? json.content_block.input : "",
+        });
+      }
+      if (
+        json?.type === "content_block_delta" &&
+        json.delta?.type === "text_delta" &&
+        typeof json.delta.text === "string" &&
+        json.delta.text
+      ) {
+        content += json.delta.text;
+        onDelta(json.delta.text);
+      }
+      if (
+        json?.type === "content_block_delta" &&
+        json.delta?.type === "input_json_delta" &&
+        typeof json.delta.partial_json === "string"
+      ) {
+        const slot = blocks.get(json.index ?? 0);
+        if (slot) slot.args += json.delta.partial_json;
+      }
+      if (json?.type === "message_start") {
+        const mu = json.message?.usage;
+        if (mu && typeof mu === "object") {
+          if (typeof mu.input_tokens === "number") streamUsage.promptTokens = mu.input_tokens;
+          if (typeof mu.output_tokens === "number") streamUsage.completionTokens = mu.output_tokens;
+        }
+      }
+      if (json?.type === "message_delta") {
+        const du = json.usage;
+        if (du && typeof du === "object" && typeof du.output_tokens === "number") {
+          streamUsage.completionTokens = du.output_tokens;
+        }
+      }
+    } catch {
+      /* ignore malformed frame */
+    }
+  });
+  if (streamUsage.promptTokens !== undefined || streamUsage.completionTokens !== undefined) {
+    opts.onUsage?.(streamUsage);
+  }
+  const slots = [...blocks.entries()].sort((a, b) => a[0] - b[0]).map(([, s]) => s);
+  const toolCalls = finalizeToolCallSlots(slots);
+  if (!content.trim() && toolCalls.length === 0) {
+    throw new Error("Anthropic returned an empty completion");
+  }
+  return { content, toolCalls };
+}
+
+/**
+ * Native tool-calling completion against a concrete provider + key. Providers
+ * without a native implementation (gemini — and anything unknown) throw an
+ * honest capability error; the agent loop consults supportsNativeTools before
+ * ever reaching this, so the throw is a defensive contract check, not a path.
+ */
+export async function providerChatTools(
+  provider: ProviderId,
+  apiKey: string,
+  model: string,
+  messages: LlmMessage[],
+  tools: ToolSchema[],
+  onDelta: DeltaSink,
+  opts: CallOpts = {}
+): Promise<LlmToolsResult> {
+  switch (provider) {
+    case "openai":
+      return openAiCompatibleTools("https://api.openai.com/v1", apiKey, model, messages, tools, opts, onDelta);
+    case "deepseek":
+      return openAiCompatibleTools("https://api.deepseek.com", apiKey, model, messages, tools, opts, onDelta);
+    case "kimi":
+      return openAiCompatibleTools("https://api.moonshot.cn/v1", apiKey, model, messages, tools, opts, onDelta);
+    case "glm":
+      return openAiCompatibleTools("https://api.z.ai/api/paas/v4", apiKey, model, messages, tools, opts, onDelta);
+    case "anthropic":
+      return anthropicTools(apiKey, model, messages, tools, opts, onDelta);
+    default:
+      throw new Error(
+        `Provider ${provider} does not support native tool calling — the text tool-block protocol is used instead`
+      );
+  }
+}
+
 /** Single completion against a concrete provider + key. */
 export async function providerChatComplete(
   provider: ProviderId,
@@ -723,6 +1142,26 @@ export interface ResolvedLlm {
     onDelta: DeltaSink,
     opts?: CallOpts
   ) => Promise<string>;
+  /**
+   * Native tool-calling capability flag. Present and true ONLY when this
+   * resolved LLM has a REAL callLLMTools implementation below — the agent
+   * loop checks the flag (and the method's presence) to choose the native
+   * function-calling protocol; anything else falls back to the text
+   * ```tool block protocol. The platform GLM fallback never sets it.
+   */
+  supportsNativeTools?: boolean;
+  /**
+   * Native tool-calling turn: sends the tool schemas through the provider's
+   * function-calling interface and returns the model's normalized toolCalls
+   * (arguments JSON-parsed; unparsable arguments flagged — never guessed).
+   * Present only alongside supportsNativeTools: true.
+   */
+  callLLMTools?: (
+    messages: LlmMessage[],
+    tools: ToolSchema[],
+    onDelta: DeltaSink,
+    opts?: CallOpts
+  ) => Promise<LlmToolsResult>;
 }
 
 export async function resolveLlmForUser(userId: string): Promise<ResolvedLlm> {
@@ -744,6 +1183,9 @@ export async function resolveLlmForUser(userId: string): Promise<ResolvedLlm> {
     const provider = record.provider as ProviderId;
     const model = record.model;
     if (!def) throw new Error(`Unknown provider ${record.provider}`);
+    // Native tool calling is advertised ONLY for providers with a real
+    // implementation — the flag is the single switch the agent loop reads.
+    const native = def.supportsNativeTools === true;
     return {
       source: "byok",
       provider,
@@ -751,6 +1193,13 @@ export async function resolveLlmForUser(userId: string): Promise<ResolvedLlm> {
       callLLM: (messages, opts) => providerChatComplete(provider, apiKey, model, messages, opts),
       callLLMStream: (messages, onDelta, opts) =>
         providerChatStream(provider, apiKey, model, messages, onDelta, opts),
+      ...(native
+        ? {
+            supportsNativeTools: true,
+            callLLMTools: (messages: LlmMessage[], tools: ToolSchema[], onDelta: DeltaSink, opts?: CallOpts) =>
+              providerChatTools(provider, apiKey, model, messages, tools, onDelta, opts),
+          }
+        : {}),
     };
   }
   // Platform fallback (z-ai SDK, GLM) — no user key required.
