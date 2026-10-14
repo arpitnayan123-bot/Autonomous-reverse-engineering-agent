@@ -17,6 +17,7 @@ import {
   workspaceDiskUsage,
 } from "@/server/platform/builder";
 import { BlockedUrlError } from "@/server/platform/net";
+import { platformWebSearch } from "@/server/platform/research";
 import type { Target } from "@prisma/client";
 
 /**
@@ -893,12 +894,117 @@ export async function runWorkspaceTool(
       return `${head}\n\n## stdout\n${r.stdout.trim() ? truncate(r.stdout.trim(), 4000) : "(empty)"}\n\n## stderr\n${r.stderr.trim() ? truncate(r.stderr.trim(), 2500) : "(empty)"}`;
     }
 
+    case "workspace_verify": {
+      const command = argStr(args, "command");
+      if (!command) {
+        return `Error: 'command' is required, e.g. {"command":"node test.js"} or {"command":"npm test"}. It runs under the SAME sandbox rules as workspace_run.`;
+      }
+      const name = (argStr(args, "name") ?? command).slice(0, 100);
+      const history = await loadVerifyHistory(key);
+      const previousAny = [...history].reverse().find((r) => r.command === command);
+
+      const r = await workspaceRunCommand(key, command, WORKSPACE_RUN_TIMEOUT_MS, { chatMode: true });
+      const verdict: VerificationRecord["verdict"] = r.blocked
+        ? "COULD_NOT_RUN"
+        : r.timedOut
+          ? "TIMED_OUT"
+          : r.exitCode === 0
+            ? "PASSED"
+            : "FAILED";
+      const record: VerificationRecord = {
+        ts: new Date().toISOString(),
+        name,
+        command: command.slice(0, 200),
+        exitCode: r.blocked ? null : r.exitCode,
+        verdict,
+        durationMs: r.durationMs,
+      };
+      let recordNote = "verification record NOT persisted";
+      try {
+        await saveVerifyHistory(key, [...history, record]);
+        recordNote = `recorded as run #${history.length + 1} in ${VERIFY_HISTORY_FILE} (regression detection compares against earlier runs of the same command)`;
+      } catch {
+        /* persistence failed (quota/path) — the verdict below is still REAL */
+      }
+
+      if (r.blocked) {
+        return `Error: verification command NOT executed — ${r.stderr.slice(0, 400)}\n\nVerdict: COULD NOT RUN (recorded). No pass/fail claim is possible for a command the sandbox refused — never report this as a passing or failing test.`;
+      }
+
+      const notes: string[] = [];
+      if (previousAny) {
+        if (previousAny.verdict === "PASSED" && verdict === "FAILED") {
+          notes.push(`REGRESSION: this command PASSED at ${previousAny.ts} (exit 0) and FAILS now (exit ${r.exitCode}).`);
+        }
+        if (previousAny.verdict === "FAILED" && verdict === "PASSED") {
+          notes.push(`FIX VERIFIED: this command FAILED at ${previousAny.ts} and passes now (exit 0).`);
+        }
+      }
+
+      // Honest classification identical to workspace_run: "Error:"-prefixed
+      // results classify as FAILED in the UI; only a real exit 0 is a pass.
+      const head =
+        verdict === "PASSED"
+          ? `# workspace_verify — PASSED (executed)`
+          : verdict === "FAILED"
+            ? `Error: workspace_verify — FAILED (executed)`
+            : `Error: workspace_verify — TIMED OUT (killed: exceeded the ${WORKSPACE_RUN_TIMEOUT_MS / 1000}s cap)`;
+      const body = [
+        `- verification: ${name}`,
+        `- command: ${command}`,
+        `- exit code: ${r.exitCode}`,
+        `- duration: ${r.durationMs}ms`,
+        `- ${recordNote}`,
+        ...(notes.length ? ["", ...notes.map((n) => `⚠️ ${n}`)] : []),
+      ].join("\n");
+      return `${head}\n${body}\n\n## stdout\n${r.stdout.trim() ? truncate(r.stdout.trim(), 3500) : "(empty)"}\n\n## stderr\n${r.stderr.trim() ? truncate(r.stderr.trim(), 2500) : "(empty)"}`;
+    }
+
     default:
       return `Error: unknown workspace tool "${name}". Workspace tools: ${WORKSPACE_TOOL_NAMES.join(", ")}.`;
   }
 }
 
-function workspaceRun(name: WorkspaceToolName) {
+// ---------------------------------------------------------------------------
+// workspace_verify — the chat-side Verification Agent: run a REAL test command,
+// record an honest verdict, detect regressions against earlier runs.
+// ---------------------------------------------------------------------------
+
+const VERIFY_HISTORY_FILE = ".rea/verifications.json";
+const VERIFY_HISTORY_MAX = 50;
+
+export interface VerificationRecord {
+  ts: string;
+  name: string;
+  command: string;
+  /** null = the command never ran (sandbox refusal) — no pass/fail exists. */
+  exitCode: number | null;
+  verdict: "PASSED" | "FAILED" | "TIMED_OUT" | "COULD_NOT_RUN";
+  durationMs: number;
+}
+
+async function loadVerifyHistory(key: string): Promise<VerificationRecord[]> {
+  try {
+    const raw = await workspaceReadFile(key, VERIFY_HISTORY_FILE);
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (r): r is VerificationRecord =>
+        Boolean(r) && typeof r === "object" && "verdict" in (r as Record<string, unknown>)
+    );
+  } catch {
+    return []; // no history yet (or unreadable) — an empty record is honest
+  }
+}
+
+async function saveVerifyHistory(key: string, records: VerificationRecord[]): Promise<void> {
+  await workspaceWriteFile(key, VERIFY_HISTORY_FILE, JSON.stringify(records.slice(-VERIFY_HISTORY_MAX), null, 2), {
+    audit: false,
+    quotaBytes: CHAT_WORKSPACE_QUOTA_BYTES,
+  });
+}
+
+function workspaceRun(name: WorkspaceToolName | "workspace_verify") {
   return async (args: Record<string, unknown>, ctx: AgentToolContext) =>
     runWorkspaceTool(name, args ?? {}, { sessionId: ctx.sessionId ?? "" });
 }
@@ -967,6 +1073,159 @@ const workspaceRunTool: AgentTool = {
 };
 
 // ---------------------------------------------------------------------------
+// web_research — the chat-side Research Agent: a REAL platform web search plus
+// SSRF-guarded page retrieval, with every source honestly labeled.
+// ---------------------------------------------------------------------------
+
+const RESEARCH_MAX_SEED_URLS = 5;
+const RESEARCH_MAX_FETCHED_PAGES = 5;
+
+interface ResearchSourceRow {
+  url: string;
+  title: string;
+  status: "RETRIEVED" | "SEARCH-ONLY" | "INACCESSIBLE";
+  httpStatus?: number;
+  detail: string;
+}
+
+function renderResearchRow(s: ResearchSourceRow, i: number): string {
+  return `${i + 1}. [${s.status}] **${s.title}** — ${s.url}${s.httpStatus !== undefined ? ` (HTTP ${s.httpStatus})` : ""}\n   ${s.detail}`;
+}
+
+/**
+ * Multi-source research for the chat agent: search the real web, fetch the
+ * top pages through the SAME SSRF-guarded Explorer as explore_url, and return
+ * an evidence block whose integrity rules make fabricated citations visible:
+ * only RETRIEVED rows were actually fetched; SEARCH-ONLY rows are unverified
+ * snippets; INACCESSIBLE rows carry the real failure reason. Nothing here is
+ * ever simulated — a search failure degrades to an honest Error.
+ */
+export async function runWebResearchTool(args: Record<string, unknown>): Promise<string> {
+  const query = argStr(args, "query");
+  if (!query) {
+    return `Error: 'query' is required, e.g. {"query":"WebAssembly binary format specification"}.`;
+  }
+  if (query.length > 500) return "Error: 'query' exceeds 500 characters.";
+  const seedUrls = Array.isArray(args?.["urls"])
+    ? (args["urls"] as unknown[]).filter((u): u is string => typeof u === "string").slice(0, RESEARCH_MAX_SEED_URLS)
+    : [];
+  const rawFetch = typeof args?.["fetch_pages"] === "number" ? (args["fetch_pages"] as number) : 3;
+  const fetchCount = Math.min(Math.max(Math.round(rawFetch), 1), RESEARCH_MAX_FETCHED_PAGES);
+
+  // 1. Real platform web search (z-ai SDK). Failure is honest, never padded.
+  let searchResults: Array<{ name: string; url: string; snippet: string }> = [];
+  let searchError: string | null = null;
+  try {
+    searchResults = await platformWebSearch(query, 8);
+  } catch (err) {
+    searchError = err instanceof Error ? err.message : String(err);
+  }
+  if (!searchResults.length && !seedUrls.length) {
+    return searchError
+      ? `Error: web search unavailable (${searchError.slice(0, 200)}) and no seed URLs were provided. NO sources were retrieved — nothing can be cited. Try explore_url for a specific page.`
+      : `Error: the web search returned no results for "${query.slice(0, 120)}" and no seed URLs were provided. NO sources were retrieved — nothing can be cited.`;
+  }
+
+  // 2. Pages to FETCH now: seed URLs first, then top search hits (deduped),
+  //    capped at fetch_pages. Everything else stays SEARCH-ONLY.
+  const fetchList: string[] = [];
+  for (const u of [...seedUrls, ...searchResults.map((r) => r.url)]) {
+    if (fetchList.length >= fetchCount) break;
+    if (!fetchList.includes(u)) fetchList.push(u);
+  }
+  const fetchSet = new Set(fetchList);
+
+  // 3. Fetch in parallel through the SSRF-guarded Explorer. Every failure is
+  //    recorded as INACCESSIBLE with the real reason (SSRF refusal, DNS,
+  //    timeout, HTTP error status) — never dropped, never guessed.
+  const probed = await Promise.all(
+    [...fetchSet].map(async (url): Promise<ResearchSourceRow> => {
+      try {
+        const r = await probeUrl(url, { includeText: true, timeoutMs: PROBE_TIMEOUT_MS });
+        const ok = r.status >= 200 && r.status < 400;
+        return {
+          url: r.finalUrl,
+          title: (r.title || "(no title)").slice(0, 120),
+          status: ok ? "RETRIEVED" : "INACCESSIBLE",
+          httpStatus: r.status,
+          detail: (r.textExcerpt || `HTTP ${r.status} ${r.contentType || ""}`.trim()).slice(0, 350),
+        };
+      } catch (err) {
+        const reason =
+          err instanceof BlockedUrlError
+            ? `refused by the SSRF guard: ${err.message}`
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        return { url, title: "(unreachable)", status: "INACCESSIBLE", detail: reason.slice(0, 220) };
+      }
+    })
+  );
+
+  const searchRows: ResearchSourceRow[] = searchResults
+    .filter((r) => !fetchSet.has(r.url))
+    .slice(0, 8)
+    .map((r) => ({ url: r.url, title: r.name.slice(0, 120), status: "SEARCH-ONLY" as const, detail: r.snippet.slice(0, 300) }));
+
+  const lines: string[] = [
+    "# web_research — OBSERVED sources",
+    `- query: ${query}`,
+    `- search: ${searchError ? `UNAVAILABLE (${searchError.slice(0, 120)})` : `${searchResults.length} result(s)`}`,
+    `- fetched now: ${probed.length} page(s) through the SSRF-guarded Explorer`,
+    "",
+    "## Pages retrieved THIS call (content actually fetched — safe to cite as verified)",
+    ...(probed.length ? probed.map(renderResearchRow) : ["(none)"]),
+    "",
+    "## Search results NOT fetched (snippet-only — UNVERIFIED, do not cite as verified)",
+    ...(searchRows.length ? searchRows.map(renderResearchRow) : ["(none)"]),
+    "",
+    "## Integrity rules for your report",
+    "- Cite a source as verified ONLY if it appears under \"retrieved THIS call\" — and quote or paraphrase only what its row shows.",
+    "- SEARCH-ONLY rows are unverified snippets: label them as such, or fetch the page with explore_url first.",
+    "- Report INACCESSIBLE rows as inaccessible (with the given reason) — never guess their content.",
+    "- NEVER cite a URL that does not appear in this result. Fabricated citations are a report-integrity violation.",
+  ];
+  return lines.join("\n");
+}
+
+const webResearchTool: AgentTool = {
+  name: "web_research",
+  scope: "any",
+  description:
+    "Run a REAL platform web search and fetch the top pages through the SSRF-guarded Explorer for research questions that need sources. Returns an evidence block marking every source as RETRIEVED (content fetched now — safe to cite as verified), SEARCH-ONLY (unverified snippet) or INACCESSIBLE (real failure reason). Optional seed URLs are probed too. Cite ONLY sources this tool returned; your report must distinguish verified facts from unverified snippets and inaccessible sources.",
+  args: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "The research question or search query, e.g. \"ECMAScript module resolution spec\"." },
+      fetch_pages: { type: "number", description: "How many top pages to actually fetch (1-5, default 3)." },
+      urls: { type: "array", items: { type: "string" }, description: "Optional specific http(s) URLs to probe (max 5) alongside the search." },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  },
+  async run(args) {
+    return runWebResearchTool(args ?? {});
+  },
+};
+
+const workspaceVerifyTool: AgentTool = {
+  name: "workspace_verify",
+  scope: "any",
+  dedup: false,
+  description: `Run a REAL verification command (a test suite) inside this chat's sandboxed workspace — same rules as workspace_run (allowlisted binaries, no shell, 55s cap) — and record an honest verdict: PASSED (executed, exit 0), FAILED (executed, non-zero), TIMED OUT, or COULD NOT RUN (sandbox refusal — never claim a result). Every run is persisted to ${VERIFY_HISTORY_FILE}; rerunning the same command detects REGRESSIONS (passed before, fails now) and FIX VERIFIED transitions (failed before, passes now). A fix counts as verified ONLY after a real passing rerun through this tool.`,
+  args: {
+    type: "object",
+    properties: {
+      command: { type: "string", description: 'One verification command with plain arguments, e.g. "node test.js" or "npm test".' },
+      name: { type: "string", description: "Optional short label for this verification, e.g. \"calculator tests\"." },
+    },
+    required: ["command"],
+    additionalProperties: false,
+  },
+  run: workspaceRun("workspace_verify"),
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -981,10 +1240,12 @@ export const AGENT_TOOLS: AgentTool[] = [
   sqlSchemaTool,
   sqlQueryTool,
   exploreUrlTool,
+  webResearchTool,
   workspaceListTool,
   workspaceReadTool,
   workspaceWriteTool,
   workspaceRunTool,
+  workspaceVerifyTool,
 ];
 
 /**
@@ -1008,7 +1269,8 @@ export async function runFreeChatTool(
 ): Promise<string> {
   if (name === "update_plan") return applyPlanUpdate(args ?? {});
   if (name === "explore_url") return runExploreUrlTool(args ?? {});
-  if ((WORKSPACE_TOOL_NAMES as readonly string[]).includes(name)) {
+  if (name === "web_research") return runWebResearchTool(args ?? {});
+  if ((WORKSPACE_TOOL_NAMES as readonly string[]).includes(name) || name === "workspace_verify") {
     return runWorkspaceTool(name, args ?? {}, session);
   }
   return `Error: "${name}" cannot be routed in a free chat. Available here: ${FREE_CHAT_TOOL_NAMES.join(", ")}.`;
