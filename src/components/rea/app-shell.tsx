@@ -742,6 +742,12 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
       <SystemDialog
         open={dialog === "system"}
         onOpenChange={(open) => setDialog(open ? "system" : "none")}
+        targetId={
+          useReaStore.getState().inspectorTargetId ??
+          activeSession?.targetId ??
+          useReaStore.getState().draftTargetId ??
+          null
+        }
       />
       <ShortcutsDialog
         open={shortcutsOpen}

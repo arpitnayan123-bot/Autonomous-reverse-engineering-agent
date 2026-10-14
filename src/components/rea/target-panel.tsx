@@ -44,6 +44,7 @@ import {
   timeAgo,
   toastError,
 } from "@/components/rea/shared";
+import { MemoryView } from "@/components/rea/memory-view";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -81,6 +82,7 @@ const PANEL_TABS = [
   { value: "findings", label: "Findings" },
   { value: "evidence", label: "Evidence" },
   { value: "docs", label: "Docs" },
+  { value: "memory", label: "Memory" },
 ] as const;
 
 function isRunActive(status: string | null | undefined): boolean {
@@ -398,6 +400,11 @@ export function TargetPanel({
               generating={generatingDocs}
               onGenerate={() => void generateDocs()}
             />
+          </div>
+        </TabsContent>
+        <TabsContent value="memory" className="mt-0 min-h-0 outline-none">
+          <div className="rea-scroll max-h-[calc(100dvh-11rem)] overflow-y-auto p-3 pr-2">
+            <MemoryView targetId={target.id} className="space-y-3" showHeader={false} />
           </div>
         </TabsContent>
       </Tabs>
