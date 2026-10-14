@@ -89,11 +89,22 @@ export interface WriteResult {
   created: boolean;
 }
 
+export interface WriteOptions {
+  maxBytes?: number;
+  /**
+   * Persist a BuildArtifact audit row (default true). CHAT workspace tools
+   * pass false: the chat tool trace (persisted on the ChatMessage row) is
+   * the receipt of record there, and chat workspaces have no Project row to
+   * satisfy the BuildArtifact.projectId foreign key.
+   */
+  audit?: boolean;
+}
+
 export async function writeFile(
   projectId: string,
   relPath: string,
   content: string,
-  opts?: { maxBytes?: number }
+  opts?: WriteOptions
 ): Promise<WriteResult> {
   const maxBytes = opts?.maxBytes ?? 512 * 1024;
   if (Buffer.byteLength(content, "utf8") > maxBytes) {
@@ -104,16 +115,18 @@ export async function writeFile(
   const existed = fsSync.existsSync(abs);
   await fs.mkdir(path.dirname(abs), { recursive: true });
   await fs.writeFile(abs, content, "utf8");
-  // Persist as a build artifact for auditability.
-  await db.buildArtifact.create({
-    data: {
-      projectId,
-      path: relPath,
-      content: content.slice(0, 20_000),
-      kind: "file",
-      sizeBytes: Buffer.byteLength(content, "utf8"),
-    },
-  });
+  if (opts?.audit !== false) {
+    // Persist as a build artifact for auditability.
+    await db.buildArtifact.create({
+      data: {
+        projectId,
+        path: relPath,
+        content: content.slice(0, 20_000),
+        kind: "file",
+        sizeBytes: Buffer.byteLength(content, "utf8"),
+      },
+    });
+  }
   return { path: relPath, bytes: Buffer.byteLength(content, "utf8"), created: !existed };
 }
 
@@ -236,10 +249,54 @@ export interface CommandResult {
   blocked?: string;
 }
 
+export interface CommandOptions {
+  /**
+   * CHAT workspace mode — the stricter guard set for model-driven commands.
+   * The project-workspace posture (allowlist, no shell, cwd jail) is kept and
+   * additionally blocks binaries whose script/transport features can reach
+   * outside the workspace (sed/awk/find/tar/git/env), interpreter eval flags
+   * (node -e / python3 -c …), absolute-path arguments and `..` traversal
+   * arguments. See the chat security posture: the boundary is PROCESS-level
+   * (no OS namespace jail) — interpreters running workspace-resident files
+   * execute with server privileges; that class is documented, not hidden.
+   */
+  chatMode?: boolean;
+}
+
+/** Binaries never permitted in chat workspaces (script/transport escape vectors). */
+const CHAT_BLOCKED_BINS = new Set(["sed", "awk", "find", "tar", "git", "env"]);
+
+/** Eval-style flags = arbitrary code smuggled through command args. */
+const CHAT_EVAL_FLAGS: Record<string, Set<string>> = {
+  node: new Set(["-e", "--eval", "-p", "--print"]),
+  bun: new Set(["-e", "--eval", "-p", "--print"]),
+  python3: new Set(["-c", "--command"]),
+  npx: new Set(["-c", "--call"]),
+  npm: new Set(["--exec"]),
+};
+
+/** The effective chat-mode allowlist (base allowlist minus blocked bins). */
+export function chatCommandAllowlist(): string[] {
+  return [...COMMAND_ALLOWLIST].filter((b) => !CHAT_BLOCKED_BINS.has(b)).sort();
+}
+
+function blockedResult(command: string, reason: string, hint: string): CommandResult {
+  return {
+    command,
+    exitCode: 126,
+    stdout: "",
+    stderr: `${reason} ${hint}`,
+    timedOut: false,
+    durationMs: 0,
+    blocked: reason,
+  };
+}
+
 export async function runCommand(
   projectId: string,
   command: string,
-  timeoutMs = 30_000
+  timeoutMs = 30_000,
+  opts?: CommandOptions
 ): Promise<CommandResult> {
   const started = Date.now();
   const argv = tokenize(command);
@@ -264,6 +321,47 @@ export async function runCommand(
   // rm safety: restrict to the workspace (cwd is the workspace; forbid absolute targets).
   if (bin === "rm" && argv.some((a) => a.startsWith("/"))) {
     return { ...blocked, blocked: "rm with absolute path rejected", stderr: "rm may only target workspace-relative paths" };
+  }
+
+  // Chat-mode guards: the model drives these commands, so every argument is
+  // treated as untrusted input. Each rejection is an HONEST result string —
+  // the command did not run, and the reason is precise (never fabricated).
+  if (opts?.chatMode) {
+    const chatHint = `Permitted in the chat workspace sandbox: ${chatCommandAllowlist().join(" ")}. Paths must be workspace-relative; no eval flags.`;
+    if (CHAT_BLOCKED_BINS.has(bin)) {
+      return blockedResult(
+        command,
+        `Command "${bin}" is not permitted in the chat workspace sandbox (its script/transport features can read or write outside the workspace).`,
+        chatHint
+      );
+    }
+    const evalFlags = CHAT_EVAL_FLAGS[bin];
+    if (evalFlags) {
+      const smuggled = argv.slice(1).find((a) => evalFlags.has(a));
+      if (smuggled !== undefined) {
+        return blockedResult(
+          command,
+          `"${bin} ${smuggled}" (inline code evaluation) is not permitted in the chat workspace — write the code to a file with workspace_write first, then run it as a file.`,
+          chatHint
+        );
+      }
+    }
+    for (const a of argv.slice(1)) {
+      if (a.startsWith("/")) {
+        return blockedResult(
+          command,
+          `Argument "${a}" is an absolute path — chat workspace commands may only reference paths inside the workspace.`,
+          chatHint
+        );
+      }
+      if (a.split("/").includes("..") || a.split("\\").includes("..")) {
+        return blockedResult(
+          command,
+          `Argument "${a}" escapes the workspace (".." traversal is not permitted in chat workspace commands).`,
+          chatHint
+        );
+      }
+    }
   }
 
   const cwd = await ensureWorkspace(projectId);
