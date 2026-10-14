@@ -8,20 +8,40 @@ datasource db {
 }
 
 model User {
-  id           String        @id @default(cuid())
-  email        String        @unique
+  id           String           @id @default(cuid())
+  email        String           @unique
   name         String?
   passwordHash String
-  role         String        @default("analyst")
-  isDemo       Boolean       @default(false)
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  role         String           @default("analyst")
+  isDemo       Boolean          @default(false)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
   targets      Target[]
   chatSessions ChatSession[]
   providerKey  ProviderKey?
   authSessions AuthSession[]
   projects     Project[]
   connectors   Connector[]
+  preference   UserPreference?
+}
+
+/**
+ * Per-user platform preferences (one row per user, created lazily on first
+ * write). Typed columns instead of JSON because the SQLite provider has no
+ * JSON column type. `sandboxMode` selects how chat-workspace commands run:
+ *   auto    — Docker container sandbox when a daemon is reachable, else the
+ *             process-level jail (platform default)
+ *   process — always the process-level jail (pre-Docker behavior)
+ *   docker  — always the container sandbox; refused honestly when Docker is
+ *             unavailable (the command is NOT executed)
+ */
+model UserPreference {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sandboxMode String   @default("auto") // "auto" | "process" | "docker"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 /**
