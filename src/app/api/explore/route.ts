@@ -2,21 +2,29 @@ import { NextResponse } from "next/server";
 import { clientIp, rateLimit } from "@/lib/security";
 import { getSessionUser } from "@/lib/auth";
 import { unauthorized, badRequest } from "@/server/platform/api-helpers";
-import { probeUrl } from "@/server/platform/explorer";
+import { probeUrl, crawlBounded } from "@/server/platform/explorer";
 import { BlockedUrlError } from "@/server/platform/net";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
- * POST /api/explore — single-page URL probe over the shared SSRF-guarded
- * extraction pipeline (probeUrl). No project required, no database writes.
- * Returns the observed facts: requested/final URL, status, timing,
- * content-type, sha256, title, description, headings, links, technologies
- * and a bounded text excerpt. Refused URLs (SSRF guard) return 400 with the
- * honest reason; network/DNS failures return 502 with the real message.
+ * POST /api/explore — Explorer over the shared SSRF-guarded pipeline, no
+ * project required, no database writes. Two modes:
  *
- * Body: { url: string, includeText?: boolean }
+ *   mode="page"  (default) — single-page probe (probeUrl): requested/final
+ *     URL, status, timing, content-type, sha256, title, description,
+ *     headings, links, technologies and a bounded text excerpt.
+ *   mode="crawl" — bounded same-domain recursive crawl (crawlBounded):
+ *     configurable maxPages (1–20) / maxDepth (0–3), visited-URL set,
+ *     per-page timeouts, robots.txt respected; returns visited URLs, page
+ *     titles, links, per-page errors and the effective crawl limits.
+ *
+ * Refused URLs (SSRF guard) return 400 with the honest reason; timeouts 504;
+ * network/DNS failures 502 with the real message.
+ *
+ * Body: { url: string, mode?: "page" | "crawl", maxPages?: number,
+ *         maxDepth?: number, includeText?: boolean }
  */
 export async function POST(req: Request) {
   try {
@@ -32,10 +40,24 @@ export async function POST(req: Request) {
       );
     }
 
-    const body = (await req.json().catch(() => ({}))) as { url?: string; includeText?: boolean };
+    const body = (await req.json().catch(() => ({}))) as {
+      url?: string;
+      mode?: string;
+      maxPages?: number;
+      maxDepth?: number;
+      includeText?: boolean;
+    };
     const url = typeof body.url === "string" ? body.url.trim() : "";
     if (!url) return badRequest("url is required");
     if (url.length > 2000) return badRequest("url too long (max 2000 chars)");
+
+    if (body.mode === "crawl") {
+      const result = await crawlBounded(url, {
+        maxPages: Number.isFinite(body.maxPages) ? Number(body.maxPages) : undefined,
+        maxDepth: Number.isFinite(body.maxDepth) ? Number(body.maxDepth) : undefined,
+      });
+      return NextResponse.json({ ok: true, result });
+    }
 
     const result = await probeUrl(url, { includeText: body.includeText !== false });
     return NextResponse.json({ ok: true, result });
