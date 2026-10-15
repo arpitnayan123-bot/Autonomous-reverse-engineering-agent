@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import {
   Binary,
   Download,
@@ -14,6 +15,8 @@ import {
   Pin,
   PinOff,
   Plus,
+  Radar,
+  ShieldCheck,
   Upload,
 } from "lucide-react";
 
@@ -53,15 +56,14 @@ export function CommandPalette({
 }: {
   actions: CommandPaletteActions;
 }) {
+  const router = useRouter();
   const {
     paletteOpen,
     setPaletteOpen,
     sessions,
     targets,
     activeSessionId,
-    setDialog,
     newFreeChat,
-    openSession,
     newTargetChat,
     openInspector,
     toggleSidebar,
@@ -95,7 +97,17 @@ export function CommandPalette({
 
         {/* ---------------- Actions ---------------- */}
         <CommandGroup heading="Actions" className={GROUP_HEADING_CLS}>
-          <Item icon={Plus} label="New free chat" hint="⌘⇧O" onSelect={() => run(newFreeChat)} />
+          <Item
+            icon={Plus}
+            label="New free chat"
+            hint="⌘⇧O"
+            onSelect={() =>
+              run(() => {
+                newFreeChat();
+                router.push("/chat");
+              })
+            }
+          />
           <Item
             icon={Upload}
             label="Upload a file to investigate"
@@ -158,7 +170,11 @@ export function CommandPalette({
           <>
             <CommandGroup heading="Recent chats" className={GROUP_HEADING_CLS}>
               {sessions.slice(0, 8).map((s) => (
-                <ChatItem key={s.id} session={s} onSelect={() => run(() => openSession(s.id))} />
+                <ChatItem
+                  key={s.id}
+                  session={s}
+                  onSelect={() => run(() => router.push(`/chat/${s.id}`))}
+                />
               ))}
             </CommandGroup>
             <CommandSeparator className="bg-zinc-800/70" />
@@ -172,8 +188,13 @@ export function CommandPalette({
               <FileItem
                 key={t.id}
                 target={t}
-                onChat={() => run(() => newTargetChat(t.id))}
-                onInspect={() => run(() => openInspector(t.id))}
+                onChat={() =>
+                  run(() => {
+                    newTargetChat(t.id);
+                    router.push("/chat");
+                  })
+                }
+                onInspect={() => run(() => router.push(`/targets/${t.id}`))}
               />
             ))}
           </CommandGroup>
@@ -181,17 +202,48 @@ export function CommandPalette({
 
         <CommandSeparator className="bg-zinc-800/70" />
 
+        {/* ---------------- Workspace ---------------- */}
+        <CommandGroup heading="Workspace" className={GROUP_HEADING_CLS}>
+          <Item
+            icon={MessagesSquare}
+            label="Chat workspace"
+            hint="/chat"
+            onSelect={() => run(() => router.push("/chat"))}
+          />
+          <Item
+            icon={Radar}
+            label="Projects — universal platform"
+            hint="/projects"
+            onSelect={() => run(() => router.push("/projects"))}
+          />
+          <Item
+            icon={Binary}
+            label="Targets — files & evidence"
+            hint="/targets"
+            onSelect={() => run(() => router.push("/targets"))}
+          />
+          <Item
+            icon={ShieldCheck}
+            label="Operations console"
+            hint="/admin"
+            onSelect={() => run(() => router.push("/admin"))}
+          />
+        </CommandGroup>
+
+        <CommandSeparator className="bg-zinc-800/70" />
+
         {/* ---------------- Settings ---------------- */}
         <CommandGroup heading="Settings" className={GROUP_HEADING_CLS}>
           <Item
             icon={KeyRound}
-            label="API key & model…"
-            onSelect={() => run(() => setDialog("settings"))}
+            label="Settings — providers & security"
+            hint="/settings"
+            onSelect={() => run(() => router.push("/settings"))}
           />
           <Item
             icon={MonitorDot}
             label="Engine & security…"
-            onSelect={() => run(() => setDialog("system"))}
+            onSelect={() => run(() => router.push("/settings?tab=engine"))}
           />
           <Item
             icon={Keyboard}
