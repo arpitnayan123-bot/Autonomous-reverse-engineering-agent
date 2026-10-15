@@ -1,0 +1,154 @@
+{
+  "name": "rea-vscode",
+  "displayName": "REA Platform",
+  "description": "Connect Visual Studio Code to your self-hosted REA platform: browse projects, targets and chats, analyze the current file, and ask @rea in Copilot Chat.",
+  "version": "0.1.0",
+  "publisher": "arpit-nayan",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "rea",
+    "security",
+    "analysis",
+    "chatbot",
+    "reverse engineering"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "REA",
+      "properties": {
+        "rea.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "markdownDescription": "Base URL of the self-hosted REA instance to connect to, e.g. `https://rea.example.com`. The extension authenticates against this URL and stores the session token in VS Code secret storage."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "rea-explorer",
+          "title": "REA",
+          "icon": "media/rea.svg"
+        }
+      ]
+    },
+    "views": {
+      "rea-explorer": [
+        {
+          "id": "rea.explorer",
+          "name": "Explorer",
+          "contextualTitle": "REA"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "rea.explorer",
+        "contents": "Connect VS Code to your self-hosted REA platform to browse projects, targets and investigation chats.\n[Sign in to REA](command:rea.login)\nOr [check the connection](command:rea.reconnect) if you already have a session.\nSet the instance URL via the `rea.baseUrl` setting."
+      }
+    ],
+    "commands": [
+      {
+        "command": "rea.login",
+        "title": "Sign In",
+        "category": "REA"
+      },
+      {
+        "command": "rea.logout",
+        "title": "Sign Out",
+        "category": "REA"
+      },
+      {
+        "command": "rea.reconnect",
+        "title": "Reconnect",
+        "category": "REA"
+      },
+      {
+        "command": "rea.refresh",
+        "title": "Refresh Explorer",
+        "category": "REA",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "rea.newChat",
+        "title": "New Chat",
+        "category": "REA"
+      },
+      {
+        "command": "rea.analyzeCurrentFile",
+        "title": "Analyze Current File",
+        "category": "REA"
+      },
+      {
+        "command": "rea.openChat",
+        "title": "Open Chat",
+        "category": "REA"
+      },
+      {
+        "command": "rea.analyzeTarget",
+        "title": "Analyze Target",
+        "category": "REA"
+      },
+      {
+        "command": "rea.setActiveProject",
+        "title": "Set as Active Project",
+        "category": "REA"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "rea.refresh",
+          "when": "view == rea.explorer",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "rea.setActiveProject",
+          "when": "view == rea.explorer && viewItem == reaProject",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "rea.openChat",
+          "when": "false"
+        },
+        {
+          "command": "rea.analyzeTarget",
+          "when": "false"
+        },
+        {
+          "command": "rea.setActiveProject",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package --allow-missing-repository",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.15",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "^3.1.0",
+    "typescript": "^5.5.4"
+  }
+}
