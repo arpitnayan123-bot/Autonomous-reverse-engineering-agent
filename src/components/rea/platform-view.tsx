@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import {
   Globe, Github, FileArchive, Plus, Radar, RefreshCw,
   Boxes, Plug, ChevronRight, Loader2,
@@ -30,15 +31,23 @@ import { PlatformConnectors } from "@/components/rea/platform-connectors";
  * Lives inside the REA shell as a sibling of the chat workspace.
  */
 
-type MainView =
-  | { kind: "welcome" }
-  | { kind: "project"; projectId: string }
-  | { kind: "connectors" };
-
-export function PlatformView() {
+export function PlatformView({ projectId }: { projectId?: string } = {}) {
+  const router = useRouter();
   const [projects, setProjects] = React.useState<ProjectSummary[] | null>(null);
-  const [view, setView] = React.useState<MainView>({ kind: "welcome" });
+  /**
+   * Multi-route refactor: the selected project lives in the URL
+   * (/projects/[projectId]); only the connectors pane stays component-local
+   * (reachable from any project page via /projects#connectors).
+   */
+  const [showConnectors, setShowConnectors] = React.useState(false);
   const [createOpen, setCreateOpen] = React.useState(false);
+
+  // Deep link: /projects#connectors opens the connector registry directly.
+  React.useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hash === "#connectors") {
+      setShowConnectors(true);
+    }
+  }, []);
 
   const refresh = React.useCallback(async () => {
     try {
@@ -56,7 +65,7 @@ export function PlatformView() {
     void refresh();
   }, [refresh]);
 
-  const openProject = (projectId: string) => setView({ kind: "project", projectId });
+  const openProject = (id: string) => router.push(`/projects/${id}`);
 
   return (
     <div className="flex h-full min-h-0 w-full">
@@ -108,9 +117,9 @@ export function PlatformView() {
                   <button
                     type="button"
                     onClick={() => openProject(p.id)}
-                    aria-current={view.kind === "project" && view.projectId === p.id}
+                    aria-current={projectId === p.id}
                     className={`group w-full rounded-lg px-2.5 py-2 text-left transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none ${
-                      view.kind === "project" && view.projectId === p.id
+                      projectId === p.id
                         ? "bg-emerald-500/10 ring-1 ring-emerald-500/30"
                         : "hover:bg-zinc-900"
                     }`}
@@ -143,9 +152,9 @@ export function PlatformView() {
         <div className="shrink-0 border-t border-zinc-800/80 p-2">
           <button
             type="button"
-            onClick={() => setView({ kind: "connectors" })}
+            onClick={() => (projectId ? router.push("/projects#connectors") : setShowConnectors(true))}
             className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none ${
-              view.kind === "connectors"
+              showConnectors && !projectId
                 ? "bg-emerald-500/10 text-emerald-200 ring-1 ring-emerald-500/30"
                 : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
             }`}
@@ -159,29 +168,33 @@ export function PlatformView() {
 
       {/* ============================ Main panel ============================ */}
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-        {view.kind === "welcome" && (
-          <PlatformWelcome onCreate={() => setCreateOpen(true)} projectCount={projects?.length ?? 0} />
-        )}
-        {view.kind === "project" && (
+        {projectId ? (
           <PlatformProject
-            key={view.projectId}
-            projectId={view.projectId}
+            key={projectId}
+            projectId={projectId}
             onDeleted={() => {
-              setView({ kind: "welcome" });
+              router.push("/projects");
               void refresh();
             }}
           />
+        ) : showConnectors ? (
+          <PlatformConnectors />
+        ) : (
+          <PlatformWelcome onCreate={() => setCreateOpen(true)} projectCount={projects?.length ?? 0} />
         )}
-        {view.kind === "connectors" && <PlatformConnectors />}
 
         {/* Mobile project switcher (rail hidden <md) */}
         <div className="absolute top-2 right-2 left-2 z-30 flex items-center gap-2 md:hidden">
           <Select
-            value={view.kind === "project" ? view.projectId : view.kind}
+            value={projectId ?? (showConnectors ? "connectors" : "welcome")}
             onValueChange={(v) => {
-              if (v === "welcome") setView({ kind: "welcome" });
-              else if (v === "connectors") setView({ kind: "connectors" });
-              else openProject(v);
+              if (v === "welcome") {
+                setShowConnectors(false);
+                if (projectId) router.push("/projects");
+              } else if (v === "connectors") {
+                if (projectId) router.push("/projects#connectors");
+                else setShowConnectors(true);
+              } else openProject(v);
             }}
           >
             <SelectTrigger size="sm" className="h-8 border-zinc-800 bg-zinc-900/90 font-mono text-[11px] text-zinc-300 backdrop-blur" aria-label="Switch platform view">

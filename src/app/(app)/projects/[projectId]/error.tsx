@@ -1,0 +1,13 @@
+"use client";
+
+import { RouteError } from "@/components/rea/route-chrome";
+
+export default function ProjectDetailError({
+  error,
+  reset,
+}: {
+  error: Error & { digest?: string };
+  reset: () => void;
+}) {
+  return <RouteError error={error} reset={reset} label="This project could not load" />;
+}
