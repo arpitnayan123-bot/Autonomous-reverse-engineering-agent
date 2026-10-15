@@ -168,6 +168,8 @@ export interface Capabilities {
   };
   tools: { name: string; title: string; description?: string }[];
   hostTools: { name: string; available: boolean }[];
+  /** Language-server availability per language (LSP-backed code intelligence). */
+  lsp?: { language: string; server: string; available: boolean; extensions: string[] }[];
   providers: { native: false; reason: string };
 }
 

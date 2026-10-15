@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Info, PlugZap, Puzzle, Search, Wrench } from "lucide-react";
+import { Code2, Info, PlugZap, Puzzle, Search, Wrench } from "lucide-react";
 
 import { apiGet, type Capabilities as CapabilitiesData } from "@/lib/api-client";
 import { useReaStore } from "@/store/rea-store";
@@ -71,6 +71,7 @@ export function CapabilitiesView() {
         (t.description ?? "").toLowerCase().includes(q)
       : true
   );
+  const lspLanguages = capabilities.lsp ?? [];
 
   return (
     <div className="space-y-6">
@@ -132,6 +133,42 @@ export function CapabilitiesView() {
                 </Badge>
               ))}
             </div>
+          </SectionCard>
+        </TiltCard>
+
+        <TiltCard maxTilt={3} className="h-full lg:col-span-2">
+          <SectionCard
+            title="Code intelligence (LSP)"
+            description="Language servers the workspace agent can drive for diagnostics, definitions, references and hovers — chosen by file extension"
+            icon={Code2}
+            className="h-full"
+          >
+            {lspLanguages.length === 0 ? (
+              <p className="text-xs text-zinc-500">LSP availability could not be probed.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {lspLanguages.map((lang) => (
+                  <Badge
+                    key={lang.language}
+                    variant="outline"
+                    className={
+                      lang.available
+                        ? "gap-1 border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                        : "gap-1 border-zinc-700 bg-zinc-800/60 text-zinc-500"
+                    }
+                  >
+                    <span className={"size-1.5 rounded-full " + (lang.available ? "bg-emerald-400" : "bg-zinc-600")} aria-hidden />
+                    {lang.language}
+                    <span className="font-mono text-[10px] opacity-75">{lang.server}</span>
+                    <span className="text-[10px]">{lang.available ? "ready" : "not installed"}</span>
+                  </Badge>
+                ))}
+              </div>
+            )}
+            <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+              Servers spawn lazily per workspace, one per language, and shut down after 10 minutes idle. The agent&apos;s
+              lsp_* tools report exactly which server answered — and refuse honestly when none is installed.
+            </p>
           </SectionCard>
         </TiltCard>
       </div>

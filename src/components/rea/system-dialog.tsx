@@ -28,7 +28,7 @@ export function SystemDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-hidden border-zinc-800 bg-zinc-950 sm:max-w-2xl">
+      <DialogContent className="grid-rows-[auto_minmax(0,1fr)] max-h-[85vh] overflow-hidden border-zinc-800 bg-zinc-950 sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="text-sm text-zinc-100">System</DialogTitle>
           <DialogDescription className="text-xs text-zinc-500">

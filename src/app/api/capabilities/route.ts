@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { NextResponse } from "next/server";
 import { rea, reaEngineInfo } from "@/server/engine/rea-bridge";
 import { getSessionUser } from "@/lib/auth";
+import { lspCapabilityReport } from "@/server/platform/lsp";
 
 export const runtime = "nodejs";
 
@@ -62,11 +63,17 @@ export async function GET() {
       available: probeHostTool(name),
     }));
 
+    // Language-server availability per language — so the UI can honestly
+    // show which languages have LSP-backed code intelligence. Detection is
+    // cached (which/where probe), so this stays cheap.
+    const lsp = await lspCapabilityReport().catch(() => []);
+
     return NextResponse.json({
       ok: true,
       engine,
       tools,
       hostTools,
+      lsp,
       providers: {
         native: false,
         reason:
