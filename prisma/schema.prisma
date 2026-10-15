@@ -435,3 +435,92 @@ model Connector {
 
   @@index([userId])
 }
+
+// ---------------------------------------------------------------------------
+// Capability 4: Verification & Public Leaderboard
+// ---------------------------------------------------------------------------
+model LeaderboardEntry {
+  id           String   @id @default(cuid())
+  agent        String // agent name, e.g. "REA v0.3" or external system
+  url          String? // link to methodology / artifact
+  benchmark    String // "rea-bench" | "decompilebench" | ...
+  category     String // binary|web|code|mixed|overall
+  score        Float // 0-100
+  trials       Int      @default(1)
+  submittedBy  String // userId or "system"
+  methodology  String? // how the score was measured; REQUIRED for external claims
+  provenance   String   @default("OBSERVED") // OBSERVED|DERIVED|INFERRED|UNKNOWN
+  measuredAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  @@index([benchmark, category, score])
+  @@index([agent])
+}
+
+// ---------------------------------------------------------------------------
+// Capability 5: Community Skills Marketplace
+// ---------------------------------------------------------------------------
+model Skill {
+  id          String   @id @default(cuid())
+  slug        String   @unique // kebab-case, immutable identity
+  name        String
+  version     String // semver
+  author      String // userId or "rea-system"
+  description String
+  manifest    String // JSON: rea-skill manifest v1 (entry, permissions, prompts)
+  checksum    String // sha256 of canonical manifest — integrity anchor
+  signature   String? // optional platform signature (untrusted skills stay sandboxed)
+  status      String   @default("published") // published|disabled
+  installs    Int      @default(0)
+  ratingSum   Int      @default(0)
+  ratingCount Int      @default(0)
+  bundled     Boolean  @default(false) // shipped with the platform
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  installsRel SkillInstall[]
+  ratings     SkillRating[]
+}
+
+model SkillInstall {
+  id        String   @id @default(cuid())
+  skillId   String
+  skill     Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@unique([skillId, userId])
+  @@index([userId])
+}
+
+model SkillRating {
+  id        String   @id @default(cuid())
+  skillId   String
+  skill     Skill    @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  userId    String
+  score     Int // 1-5
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@unique([skillId, userId])
+  @@index([skillId])
+}
+
+// ---------------------------------------------------------------------------
+// Capability 2: Specialized RE models — registry & fallback chain
+// ---------------------------------------------------------------------------
+model AgentModel {
+  id         String   @id @default(cuid())
+  name       String // display name
+  task       String // function-name-recovery|struct-reconstruction|decompile-cleanup|malware-triage|binary-similarity|general
+  baseModel  String // e.g. "Qwen2.5-Coder-7B-Instruct"
+  adapter    String // "openai-compatible" | "local-transformers" | "platform-llm"
+  endpoint   String? // inference URL when adapter != platform-llm
+  status     String   @default("unavailable") // available|unavailable|fallback
+  metrics    String? // JSON: benchmark results for this model
+  priority   Int      @default(100) // lower = preferred for the task
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([task, priority])
+}
