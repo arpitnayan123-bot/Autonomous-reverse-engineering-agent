@@ -14,7 +14,7 @@
  *     with the verbatim enable instructions;
  *   - execution (docker): the runner spawns the runtime with the sandbox
  *     posture (--network none --read-only --tmpfs /tmp, profile memory/cpus,
- *     work dir bound rw at /rea) and collects declared artifacts;
+ *     work dir bound rw at /area) and collects declared artifacts;
  *   - execution (local): the staged binary runs with argv-array semantics
  *     (no shell) and its stdout/artifacts flow into the normalized result;
  *   - refusal before spawn: an input path outside platform storage is
@@ -94,7 +94,7 @@ describe("RE tool registry", () => {
     const specs = buildRegistry();
     expect(specs.length).toBeGreaterThanOrEqual(6);
     for (const s of specs) {
-      expect(s.image).toMatch(/^rea\//);
+      expect(s.image).toMatch(/^area\//);
       expect(s.entrypoint.length).toBeGreaterThan(0);
       for (const op of ["decompile", "disassemble", "functions", "info", "symbolic"] as const) {
         expect(typeof s.operations[op]).toBe("function");
@@ -120,7 +120,7 @@ describe("availability resolution", () => {
     const ghidra = buildRegistry().find((s) => s.id === "ghidra")!;
     const a = await getAvailability(ghidra);
     expect(a.mode).toBe("docker");
-    expect(a.detail).toContain("rea/ghidra:11");
+    expect(a.detail).toContain("area/ghidra:11");
   });
 
   test("without a runtime, a staged local binary yields local mode; an absent tool is honestly unavailable with enable instructions", async () => {
@@ -132,7 +132,7 @@ describe("availability resolution", () => {
     const ghidra = buildRegistry().find((s) => s.id === "ghidra")!;
     const aNone = await getAvailability(ghidra);
     expect(aNone.mode).toBe("unavailable");
-    expect(aNone.detail).toContain("docker build -t rea/ghidra:11 docker/ghidra");
+    expect(aNone.detail).toContain("docker build -t area/ghidra:11 docker/ghidra");
   });
 });
 
@@ -152,7 +152,7 @@ describe("execution", () => {
     expect(argvStr).toContain("--read-only");
     expect(argvStr).toContain("--memory");
     expect(argvStr).toContain("2g");
-    expect(argvStr).toContain("rea/ghidra:11");
+    expect(argvStr).toContain("area/ghidra:11");
     expect(res.artifacts.some((a) => a.name === "out/decompiled.c")).toBe(true);
     expect(res.artifacts[0].preview).toContain("decompiled pseudo C");
   });

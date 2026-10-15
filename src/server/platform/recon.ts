@@ -4,7 +4,7 @@ import { Parser, Language } from "web-tree-sitter";
 import { upsertGraph, type NodeRef, type EdgeRef } from "./graph";
 
 /**
- * REA Reverse Engineer — multi-language source parser.
+ * AREA Reverse Engineer — multi-language source parser.
  *
  * Parses source files with tree-sitter (WASM grammars — no code evaluation,
  * hostile input is inert data) and extracts an architecture map: functions,

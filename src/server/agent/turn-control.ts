@@ -32,7 +32,7 @@ export const TURN_SAFETY_DEADLINE_MS = 10 * 60_000;
  * singleton in every module instance; behavior in production (single
  * instance anyway) is unchanged.
  */
-const GLOBAL_TURNS_KEY = Symbol.for("rea.activeTurns");
+const GLOBAL_TURNS_KEY = Symbol.for("area.activeTurns");
 
 const globalScope = globalThis as unknown as { [GLOBAL_TURNS_KEY]?: Map<string, TurnControl> };
 

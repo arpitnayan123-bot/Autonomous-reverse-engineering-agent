@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { NextResponse } from "next/server";
-import { rea, reaEngineInfo } from "@/server/engine/rea-bridge";
+import { area, areaEngineInfo } from "@/server/engine/area-bridge";
 import { getSessionUser } from "@/lib/auth";
 import { lspCapabilityReport } from "@/server/platform/lsp";
 import { listRegistryWithAvailability } from "@/server/retools/runner";
@@ -38,8 +38,8 @@ export async function GET() {
       );
     }
 
-    const engine = await reaEngineInfo();
-    const toolDefs = await rea.listTools().catch(() => []);
+    const engine = await areaEngineInfo();
+    const toolDefs = await area.listTools().catch(() => []);
     const tools: CapabilityTool[] = toolDefs
       .slice(0, 200)
       .map((t) => {
@@ -50,7 +50,7 @@ export async function GET() {
         const kind =
           annotations && typeof annotations.kind === "string"
             ? annotations.kind
-            : "rea";
+            : "area";
         return {
           name: t.name,
           title: t.title || t.name,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Deterministic fixture + task.toml generator for the REA benchmark suite.
+ * Deterministic fixture + task.toml generator for the AREA benchmark suite.
  *
  * Every fixture below is crafted (not random) so that:
  *  - the encoded/hidden values the rubrics check are computed HERE from the
@@ -308,7 +308,7 @@ function wordsBE(words: number[]): Buffer {
 function reconTargetFile(notes: string): Buffer {
   return enc(
     [
-      "# REA benchmark recon target",
+      "# AREA benchmark recon target",
       "url = https://example.com",
       "scope = public fetch only (no brute force, no login attempts)",
       ...notes.split("\n").map((n) => `notes = ${n}`),

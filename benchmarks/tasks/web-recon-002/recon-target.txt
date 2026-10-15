@@ -1,4 +1,4 @@
-# REA benchmark recon target
+# AREA benchmark recon target
 url = https://example.com
 scope = public fetch only (no brute force, no login attempts)
 notes = enumerate all outbound links

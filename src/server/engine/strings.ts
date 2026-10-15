@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 /**
- * Platform-local string extraction (independent of the REA engine).
+ * Platform-local string extraction (independent of the AREA engine).
  *
  * Extracts printable string runs from a buffer:
  *  - ASCII runs: bytes 0x20..0x7E plus tab (0x09)

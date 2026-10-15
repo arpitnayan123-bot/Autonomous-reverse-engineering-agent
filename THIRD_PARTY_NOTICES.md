@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This file attributes third-party software integrated into REA as dependencies. REA's own
+This file attributes third-party software integrated into AREA as dependencies. AREA's own
 code is original; the projects below are used as published npm packages under their own
 licenses. Where a project's license requires the inclusion of its notice text, it is
 reproduced below.
@@ -14,7 +14,7 @@ be consumed at the user's option through the connector system with the user's ow
 ## cheerio
 
 - Project: https://github.com/cheeriojs/cheerio
-- npm: `cheerio` (used by the REA Explorer crawler for HTML/DOM extraction)
+- npm: `cheerio` (used by the AREA Explorer crawler for HTML/DOM extraction)
 - License: MIT
 - Changes: none (used as published)
 
@@ -45,7 +45,7 @@ SOFTWARE.
 ## web-tree-sitter
 
 - Project: https://github.com/tree-sitter/tree-sitter (official WASM binding)
-- npm: `web-tree-sitter` (used by the REA Reverse Engineer parser for multi-language ASTs)
+- npm: `web-tree-sitter` (used by the AREA Reverse Engineer parser for multi-language ASTs)
 - License: MIT
 - Changes: none (used as published)
 
@@ -82,7 +82,7 @@ SOFTWARE.
 ## diff
 
 - Project: https://github.com/kpdecker/jsdiff
-- npm: `diff` (used by the REA Verifier for reference-vs-reconstruction comparison)
+- npm: `diff` (used by the AREA Verifier for reference-vs-reconstruction comparison)
 - License: BSD-3-Clause
 - Changes: none (used as published)
 
@@ -118,7 +118,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 - Project: https://github.com/microsoft/playwright
 - npm: `playwright-core` (browser automation when a Chromium binary is installed;
-  REA never downloads browsers implicitly)
+  AREA never downloads browsers implicitly)
 - License: Apache-2.0
 - Changes: none (used as published)
 - Apache-2.0 notice is available at
@@ -158,7 +158,7 @@ SOFTWARE.
 ## rea-agents (existing dependency, reaffirmed)
 
 - Project: https://github.com/morluto/rea
-- npm: `rea-agents` (the REA analysis engine — 170-tool MCP server)
+- npm: `rea-agents` (the AREA analysis engine — 170-tool MCP server)
 - License: MIT
 - Changes: none (used as published via its MCP stdio interface)
 
@@ -169,12 +169,12 @@ SOFTWARE.
 | Project | License | Reason for non-incorporation |
 |---|---|---|
 | firecrawl/firecrawl | AGPL-3.0 | Copyleft incompatible with source integration; hosted API available as an optional connector |
-| semgrep/semgrep | LGPL-2.1 | OCaml/Python runtime not embeddable in REA's Node runtime |
+| semgrep/semgrep | LGPL-2.1 | OCaml/Python runtime not embeddable in AREA's Node runtime |
 | OpenHands (All-Hands-AI) | MIT | Python runtime; architecture reference only |
-| browser-use | MIT | Python runtime; REA's agent loop covers the need |
-| getzep/graphiti | Apache-2.0 | Python + external graph DB; REA implements equivalent on SQLite |
-| langchain-ai/langgraph, langchain | MIT | Python; concept reference for REA's orchestration DAG |
+| browser-use | MIT | Python runtime; AREA's agent loop covers the need |
+| getzep/graphiti | Apache-2.0 | Python + external graph DB; AREA implements equivalent on SQLite |
+| langchain-ai/langgraph, langchain | MIT | Python; concept reference for AREA's orchestration DAG |
 | apify/crawlee | Apache-2.0 | Excellent but heavy; lean crawler sufficient (P2 revisit) |
 
-These projects inspired REA's implementations where noted in `docs/ecosystem-audit.md`;
-nothing in REA misrepresents their work as its own.
+These projects inspired AREA's implementations where noted in `docs/ecosystem-audit.md`;
+nothing in AREA misrepresents their work as its own.

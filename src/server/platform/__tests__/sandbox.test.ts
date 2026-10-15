@@ -12,7 +12,7 @@
  *     workspace bind-mounted rw at /workspace, -w /workspace), the command
  *     is appended as an exec-form argv array (no shell either side), the
  *     scrubbed env rides in as -e pairs with host workspace paths translated
- *     to /workspace, and the image honors REA_SANDBOX_IMAGE;
+ *     to /workspace, and the image honors AREA_SANDBOX_IMAGE;
  *   - fallback: "auto" without a runtime runs the process jail (sandbox:
  *     "process") and "process" always does;
  *   - refusals: "docker" without a daemon is refused with the exact honest
@@ -114,8 +114,8 @@ async function cleanWorkspace(): Promise<void> {
 
 afterEach(() => {
   restoreRuntime();
-  if (savedImage === undefined) delete process.env.REA_SANDBOX_IMAGE;
-  else process.env.REA_SANDBOX_IMAGE = savedImage;
+  if (savedImage === undefined) delete process.env.AREA_SANDBOX_IMAGE;
+  else process.env.AREA_SANDBOX_IMAGE = savedImage;
   savedImage = undefined;
 });
 
@@ -156,8 +156,8 @@ describe("docker sandbox", () => {
 
   test("container run with a mock docker CLI: exact sandbox argv, env translation, honest result", async () => {
     useMockDocker();
-    savedImage = process.env.REA_SANDBOX_IMAGE;
-    process.env.REA_SANDBOX_IMAGE = "rea-test-image:9";
+    savedImage = process.env.AREA_SANDBOX_IMAGE;
+    process.env.AREA_SANDBOX_IMAGE = "area-test-image:9";
     await ensureWorkspace(key);
 
     const r = await runCommand(key, "node script.js", 30_000, { sandbox: "auto" });
@@ -189,10 +189,10 @@ describe("docker sandbox", () => {
     expect(envValues).toContain("NO_COLOR=1");
     expect(envValues).toContain("CI=1");
     expect(lines).toContain("HOME=/workspace");
-    // The image honors REA_SANDBOX_IMAGE, and the command follows it as a
+    // The image honors AREA_SANDBOX_IMAGE, and the command follows it as a
     // plain argv array — never wrapped in a shell (no sh -c anywhere).
-    expect(lines).toContain("rea-test-image:9");
-    const imageIdx = lines.indexOf("rea-test-image:9");
+    expect(lines).toContain("area-test-image:9");
+    const imageIdx = lines.indexOf("area-test-image:9");
     expect(lines.slice(imageIdx + 1)).toEqual(["node", "script.js"]);
     expect(lines).not.toContain("sh");
     expect(lines).not.toContain("-c");
@@ -201,7 +201,7 @@ describe("docker sandbox", () => {
     // returned receipt, not the log — the log stays run #1's).
     fsSync.rmSync(MOCK_LOG, { force: true });
     const c = await runInContainer(workspaceDir(key), "node other.js", 30_000, { HOME: workspaceDir(key) });
-    expect(c.image).toBe("rea-test-image:9");
+    expect(c.image).toBe("area-test-image:9");
     expect(c.exitCode).toBe(0);
     expect(c.stdout).toContain("container-ran");
     expect(c.argv[c.argv.length - 2]).toBe("node");
@@ -301,8 +301,8 @@ describe("docker sandbox", () => {
     expect(c.refused).toContain("bind-mount path validation failed");
     expect(mockLogLines().length).toBe(logBefore);
 
-    // Image default: node:20-alpine unless REA_SANDBOX_IMAGE overrides.
-    delete process.env.REA_SANDBOX_IMAGE;
+    // Image default: node:20-alpine unless AREA_SANDBOX_IMAGE overrides.
+    delete process.env.AREA_SANDBOX_IMAGE;
     expect(sandboxImage()).toBe(DEFAULT_SANDBOX_IMAGE);
     expect(DEFAULT_SANDBOX_IMAGE).toBe("node:20-alpine");
   });

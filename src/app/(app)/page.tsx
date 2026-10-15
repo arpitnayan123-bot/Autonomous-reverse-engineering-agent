@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ChatRoute } from "@/components/rea/chat-route";
+import { ChatRoute } from "@/components/area/chat-route";
 
 /**
  * / — the landing page. Renders the current home view: the chat-first
@@ -7,10 +7,10 @@ import { ChatRoute } from "@/components/rea/chat-route";
  */
 export const metadata: Metadata = {
   title: {
-    absolute: "REA Platform — Reverse Engineer Anything",
+    absolute: "AREA — Autonomous reverse engineering agent",
   },
   description:
-    "Browser-based AI reverse-engineering platform. Upload a binary, artifact, database or app — the REA engine investigates it with evidence-backed rigor.",
+    "AREA is an autonomous reverse engineering agent: upload a binary, artifact, database or app — the engine investigates it with 170 real tools and evidence-backed rigor.",
 };
 
 export default function LandingPage() {

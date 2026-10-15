@@ -418,7 +418,7 @@ describe("extractToolExecutionSummary / buildCompactedStateMessage", () => {
         {
           role: "assistant",
           content: toolReceiptSuffix(
-            JSON.stringify([{ tool: "rea_tool", args: {}, result: `${TOOL_REFUSAL_MARKER} — nope` }])
+            JSON.stringify([{ tool: "area_tool", args: {}, result: `${TOOL_REFUSAL_MARKER} — nope` }])
           ),
         },
       ])
@@ -510,7 +510,7 @@ describe("runAgentLoop compaction — native path", () => {
             result: "HTTP 200 — 1.2 KB text/html, 3 scripts",
           },
           {
-            tool: "rea_tool",
+            tool: "area_tool",
             args: { tool: "strings" },
             result: `${TOOL_REFUSAL_MARKER} — not allowlisted`,
           },

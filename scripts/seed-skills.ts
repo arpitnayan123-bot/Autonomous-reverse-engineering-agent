@@ -2,7 +2,7 @@
 /**
  * Seed the community skills marketplace with the three BUNDLED skills
  * (Capability C5): the manifests are pure JSON (no code), authored by
- * "rea-system", and every permission names a REAL agent registry tool
+ * "area-system", and every permission names a REAL agent registry tool
  * (verified against AGENT_TOOLS at publish time by the marketplace's
  * allowlist intersection — unknown names would simply never execute).
  *
@@ -32,7 +32,7 @@ const ANALYZE_DOTNET_MALWARE: SkillManifest = {
   entry: {
     opening:
       "Starting .NET malware triage: I will identify the runtime and metadata, sweep strings for IOCs, correlate prior findings, and deliver an evidence-backed verdict.",
-    system: `You are a malware analyst triaging a .NET assembly uploaded to REA. Work ONLY through your allowed tools; never invent output. Follow this playbook in order and keep a running list of observations with their evidence source.
+    system: `You are a malware analyst triaging a .NET assembly uploaded to AREA. Work ONLY through your allowed tools; never invent output. Follow this playbook in order and keep a running list of observations with their evidence source.
 
 1. IDENTIFY. Call target_info first — confirm the detected format and check prior analysis runs. Then read_hex offset 0 length 256: confirm the MZ/PE header. For a managed assembly the PE optional header carries a CLR Runtime Descriptor (directory 14) pointing at a stub whose first bytes are the BSJB metadata signature; if you cannot find managed indicators, say honestly that the file may be native or packed and triage accordingly.
 
@@ -40,7 +40,7 @@ const ANALYZE_DOTNET_MALWARE: SkillManifest = {
 
 3. BEHAVIORAL STRINGS. In the same sweep hunt for indicators, each recorded with its offset: process execution (cmd.exe, /c, powershell, CreateProcess), network (http://, https://, sockets, DNS), persistence (Run keys, scheduled tasks, startup folders), crypto/obfuscation (FromBase64String, AES, RijndaelManaged, XOR-looking repeated keys), anti-analysis (IsDebuggerPresent, sandbox/usernames), and credential targets (browser paths, mail, FTP).
 
-4. CORRELATE. Call list_findings to pull what prior REA runs recorded for this target and get_evidence for stored evidence — reconcile rather than repeat: flag agreements and contradictions explicitly.
+4. CORRELATE. Call list_findings to pull what prior AREA runs recorded for this target and get_evidence for stored evidence — reconcile rather than repeat: flag agreements and contradictions explicitly.
 
 5. RESEARCH. For distinctive strings (mutexes, campaign names, distinct packer names) use web_research to check public writeups; report what pages you actually fetched and never attribute a family from a hash alone without corroboration.
 
@@ -63,7 +63,7 @@ const REVERSE_WASM_MODULE: SkillManifest = {
   entry: {
     opening:
       "Starting WASM module analysis: I will verify the binary header, map its sections, inventory imports/exports and functions with the RE toolchain, and report structure plus suspicious patterns.",
-    system: `You are a reverse engineer analyzing a WebAssembly module in REA. Use only your allowed tools; every claim must come from tool output. Work the playbook in order.
+    system: `You are a reverse engineer analyzing a WebAssembly module in AREA. Use only your allowed tools; every claim must come from tool output. Work the playbook in order.
 
 1. CHECK THE INSTRUMENTS. Call re_tools first: it lists the classical RE toolchain (Ghidra, rizin, pycdc, angr) with LIVE availability and the exact enable command for anything missing. Pick the instrument that supports WebAssembly and be honest when none is installed — a structural report from the raw bytes is still possible.
 
@@ -94,7 +94,7 @@ const DECOMPILE_AND_REBUILD: SkillManifest = {
   entry: {
     opening:
       "Starting decompile-and-rebuild: I will decompile the input with the right tool, reconstruct the sources in a fresh workspace, attempt to compile the result, and report unresolved gaps.",
-    system: `You are reconstructing source from a binary in REA. You have a REAL sandboxed workspace: files you write are committed to a git history you can inspect with workspace_log and workspace_diff. Be honest at every step about what is reconstructed versus guessed.
+    system: `You are reconstructing source from a binary in AREA. You have a REAL sandboxed workspace: files you write are committed to a git history you can inspect with workspace_log and workspace_diff. Be honest at every step about what is reconstructed versus guessed.
 
 1. PICK THE INSTRUMENT. Call re_tools to see the toolchain and live availability. Choose: pycdc for Python bytecode (.pyc), Ghidra for native binaries, rizin as a lighter disassembly fallback. If nothing is available, report the exact enable commands and stop — never fabricate a decompilation.
 
@@ -159,7 +159,7 @@ async function main(): Promise<void> {
 
     const result = await publishSkill({
       manifestJson: manifest,
-      author: "rea-system",
+      author: "area-system",
       bundled: true,
     });
     if (!result.ok) {

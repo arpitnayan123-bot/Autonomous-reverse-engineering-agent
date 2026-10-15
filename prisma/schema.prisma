@@ -93,7 +93,7 @@ model AnalysisRun {
   status       String     @default("queued")
   progress     Int        @default(0)
   currentStep  String?
-  engine       String     @default("rea")
+  engine       String     @default("area")
   engineTools  String?
   goal         String?
   result       String?
@@ -441,9 +441,9 @@ model Connector {
 // ---------------------------------------------------------------------------
 model LeaderboardEntry {
   id           String   @id @default(cuid())
-  agent        String // agent name, e.g. "REA v0.3" or external system
+  agent        String // agent name, e.g. "AREA v0.3" or external system
   url          String? // link to methodology / artifact
-  benchmark    String // "rea-bench" | "decompilebench" | ...
+  benchmark    String // "area-bench" | "decompilebench" | ...
   category     String // binary|web|code|mixed|overall
   score        Float // 0-100
   trials       Int      @default(1)
@@ -465,9 +465,9 @@ model Skill {
   slug        String   @unique // kebab-case, immutable identity
   name        String
   version     String // semver
-  author      String // userId or "rea-system"
+  author      String // userId or "area-system"
   description String
-  manifest    String // JSON: rea-skill manifest v1 (entry, permissions, prompts)
+  manifest    String // JSON: area-skill manifest v1 (entry, permissions, prompts)
   checksum    String // sha256 of canonical manifest — integrity anchor
   signature   String? // optional platform signature (untrusted skills stay sandboxed)
   status      String   @default("published") // published|disabled

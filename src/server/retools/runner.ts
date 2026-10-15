@@ -270,17 +270,17 @@ export async function runReTool(toolId: string, opts: ReToolRunOptions): Promise
     }
   }
 
-  // Work dir: input copied in (container sees a stable /rea/input), outputs collected out.
+  // Work dir: input copied in (container sees a stable /area/input), outputs collected out.
   const workDir = newWorkDir(toolId);
   await fs.mkdir(path.join(workDir, "out"), { recursive: true });
-  const inContainerInput = "/rea/input";
-  const inContainerOut = "/rea";
+  const inContainerInput = "/area/input";
+  const inContainerOut = "/area";
   const localOut = workDir;
 
   const buildOpts = {
     inputPath: mode === "docker" ? inContainerInput : input,
     outPath: mode === "docker" ? inContainerOut : localOut,
-    projectName: "ReaProject",
+    projectName: "AreaProject",
   };
   const toolArgv = spec.operations[opts.operation](buildOpts);
 
@@ -294,7 +294,7 @@ export async function runReTool(toolId: string, opts: ReToolRunOptions): Promise
     argv = [
       "run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp",
       "--memory", spec.profile.memory, "--cpus", spec.profile.cpus,
-      "-v", `${workDir}:/rea:rw`, "-w", "/rea",
+      "-v", `${workDir}:/area:rw`, "-w", "/area",
       spec.image, ...spec.entrypoint, ...toolArgv,
     ];
     // docker/podman itself needs full PATH; container env is the image's own.

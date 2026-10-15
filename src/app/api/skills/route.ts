@@ -11,7 +11,7 @@ export const runtime = "nodejs";
  * GET  /api/skills          → list published skills (PUBLIC read: metadata,
  *                             checksum, rating aggregates, install counts).
  * POST /api/skills          → publish a skill (auth required). Body:
- *                             { manifest: <rea-skill manifest v1 object> }
+ *                             { manifest: <area-skill manifest v1 object> }
  *                             The manifest is validated, canonicalized and
  *                             checksummed; republishing a slug requires a
  *                             strictly greater semver.
@@ -72,7 +72,7 @@ export async function POST(req: Request) {
     }
     if (typeof body?.manifest !== "object" || body.manifest === null) {
       return NextResponse.json(
-        { ok: false, error: "Field 'manifest' is required (a rea-skill manifest v1 object)" },
+        { ok: false, error: "Field 'manifest' is required (a area-skill manifest v1 object)" },
         { status: 400 }
       );
     }

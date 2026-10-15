@@ -178,7 +178,7 @@ export async function safeFetch(
         signal: controller.signal,
         headers: {
           // Polite, honest client identification.
-          "user-agent": "REA-Platform/1.0 (+reverse-engineering research crawler)",
+          "user-agent": "AREA-Platform/1.0 (+reverse-engineering research crawler)",
           "accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
           "accept-language": "en;q=0.9",
           ...opts?.headers,

@@ -25,7 +25,7 @@ export function detectBrowser(): BrowserStatus {
   let status: BrowserStatus = {
     available: false,
     detail:
-      "no Chromium runtime found — install with `bunx playwright-core install chromium` (or set REA_BROWSER_PATH). HTTP-level checks still work.",
+      "no Chromium runtime found — install with `bunx playwright-core install chromium` (or set AREA_BROWSER_PATH). HTTP-level checks still work.",
   };
   const candidates: string[] = [];
   const home = process.env.HOME ?? "/root";
@@ -52,7 +52,8 @@ export function detectBrowser(): BrowserStatus {
   } catch {
     /* cache unreadable */
   }
-  if (process.env.REA_BROWSER_PATH) candidates.push(process.env.REA_BROWSER_PATH);
+  if (process.env.AREA_BROWSER_PATH) candidates.push(process.env.AREA_BROWSER_PATH);
+  else if (process.env.REA_BROWSER_PATH) candidates.push(process.env.REA_BROWSER_PATH); // legacy REA_* env kept working
   candidates.push("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome");
 
   for (const c of candidates) {

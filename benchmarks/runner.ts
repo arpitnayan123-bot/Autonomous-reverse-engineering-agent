@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * REA benchmark runner — executes benchmark tasks against the running agent.
+ * AREA benchmark runner — executes benchmark tasks against the running agent.
  *
  * Flow per suite run:
  *   1. Resolve the Next.js server: --server URL / REABENCH_SERVER_URL env,
@@ -36,9 +36,9 @@ const RESULTS_DIR = path.join(PROJECT_ROOT, "benchmarks", "results");
 const RUNS_DIR = path.join(RESULTS_DIR, "_runs");
 
 /** Fixed benchmark account — registered once, logged in on every later run. */
-const BENCH_EMAIL = "rea-bench@example.com";
-const BENCH_PASSWORD = "rea-bench-2024!";
-const BENCH_NAME = "REA Benchmark";
+const BENCH_EMAIL = "area-bench@example.com";
+const BENCH_PASSWORD = "area-bench-2024!";
+const BENCH_NAME = "AREA Benchmark";
 
 /** Default server probed before spawning a fresh one. */
 const DEFAULT_SERVER = "http://127.0.0.1:3000";

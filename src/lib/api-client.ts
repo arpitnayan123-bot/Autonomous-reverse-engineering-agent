@@ -1,5 +1,5 @@
 /**
- * REA Platform — typed API client.
+ * AREA Platform — typed API client.
  * Every endpoint returns `{ ok: true, ...payload }` or `{ ok: false, error }`.
  * Helpers unwrap the envelope and throw `Error(error)` on failure so callers
  * can surface failures with toasts.
@@ -9,7 +9,7 @@
 // Shared types
 // ---------------------------------------------------------------------------
 
-export interface ReaUser {
+export interface AreaUser {
   id: string;
   email: string;
   name: string;
@@ -226,7 +226,7 @@ export interface PreferencesData {
     available: boolean;
     /** Which runtime binary is usable ("docker" | "podman"), null when none. */
     runtime: string | null;
-    /** Container image that would run commands (REA_SANDBOX_IMAGE aware). */
+    /** Container image that would run commands (AREA_SANDBOX_IMAGE aware). */
     image: string;
   };
   modes: SandboxMode[];
@@ -376,7 +376,7 @@ interface Envelope {
  * signing secret). */
 export function notifySessionExpired(): void {
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("rea:session-expired"));
+    window.dispatchEvent(new CustomEvent("area:session-expired"));
   }
 }
 

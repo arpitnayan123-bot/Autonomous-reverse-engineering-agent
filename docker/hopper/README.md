@@ -1,6 +1,6 @@
-# rea/hopper:latest — operator-supplied licensed image
+# area/hopper:latest — operator-supplied licensed image
 
-**REA never distributes Hopper Disassembler.** Hopper is proprietary software
+**AREA never distributes Hopper Disassembler.** Hopper is proprietary software
 (Cryptic Apps SARL); redistributing it from this repository or its images
 would violate its license. The `hopper` entry in
 `src/server/retools/registry.ts` is therefore a **license-required
@@ -30,7 +30,7 @@ docker/hopper/installer/
 Build:
 
 ```sh
-docker build -t rea/hopper:latest docker/hopper
+docker build -t area/hopper:latest docker/hopper
 ```
 
 ## Scripting requirement (why this is a placeholder in the registry)

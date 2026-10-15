@@ -421,7 +421,7 @@ export class LspClient {
           rootUri,
           rootPath: this.workspacePath,
           workspaceFolders: [{ uri: rootUri, name: path.basename(this.workspacePath) }],
-          clientInfo: { name: "REA", version: "1.0.0" },
+          clientInfo: { name: "AREA", version: "1.0.0" },
           initializationOptions: {},
           capabilities: {
             workspace: { configuration: false, workspaceFolders: false },

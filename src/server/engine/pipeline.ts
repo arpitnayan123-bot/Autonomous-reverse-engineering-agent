@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { db } from "@/lib/db";
 import { detectFormat } from "@/lib/formats";
-import { rea, type McpToolDef } from "@/server/engine/rea-bridge";
+import { area, type McpToolDef } from "@/server/engine/area-bridge";
 import {
   extractStrings,
   resolveStoragePath,
@@ -13,9 +13,9 @@ import {
 } from "@/server/engine/strings";
 
 /**
- * REA analysis pipeline.
+ * AREA analysis pipeline.
  *
- * Drives the REAL REA engine (via the MCP bridge) per detected format,
+ * Drives the REAL AREA engine (via the MCP bridge) per detected format,
  * records Evidence/Finding rows for every observation, and maintains
  * run progress for live UI polling.
  *
@@ -27,17 +27,17 @@ import {
  *  - `inspect_evm_interface` takes `{path, encoding}` and needs no session.
  *  - `inspect_plist` requires an open session despite accepting `path`.
  *  - v6.4.0 has NO sqlite/wasm tools → platform-local fallbacks/limitations.
- *  - We open/close the session manually (rather than rea.withTarget) because
+ *  - We open/close the session manually (rather than area.withTarget) because
  *    a pipeline runs MANY tools per session; withTarget would reopen the
  *    binary for every single call. (withTarget itself is now re-entrancy
- *    safe — the chat agent's rea_tool uses it.)
+ *    safe — the chat agent's area_tool uses it.)
  */
 
 const ENGINE_VERSION = "rea-6.4.0";
 const FINDINGS_CAP_PER_TOOL = 500;
 const SQLITE_TABLES_MAX = 12;
 
-interface ReaOutcome {
+interface AreaOutcome {
   structured: unknown;
   text: string;
   isError: boolean;
@@ -156,13 +156,13 @@ async function executeRun(runId: string, targetId: string): Promise<void> {
     const buf = await fs.readFile(absPath);
 
     const detection = detectFormat(buf, target.originalName);
-    const toolDefs: McpToolDef[] = await rea
+    const toolDefs: McpToolDef[] = await area
       .listTools()
       .catch(() => [] as McpToolDef[]);
     const toolSet = new Set(toolDefs.map((t) => t.name));
     if (toolSet.size === 0) {
       limitations.push(
-        "REA engine tool catalog unavailable — platform-local analysis only."
+        "AREA engine tool catalog unavailable — platform-local analysis only."
       );
     }
 
@@ -212,7 +212,7 @@ async function executeRun(runId: string, targetId: string): Promise<void> {
       }
     );
 
-    await step(runId, 40, "REA engine analysis");
+    await step(runId, 40, "AREA engine analysis");
     switch (detection.format) {
       case "zip":
       case "apk":
@@ -294,7 +294,7 @@ async function executeRun(runId: string, targetId: string): Promise<void> {
       default:
         // text / json / unknown / script / solidity / pcap / pdf / png …
         limitations.push(
-          `Format '${detection.format}' has no dedicated REA tool plan; platform strings/hex analysis only.`
+          `Format '${detection.format}' has no dedicated AREA tool plan; platform strings/hex analysis only.`
         );
         break;
     }
@@ -303,7 +303,7 @@ async function executeRun(runId: string, targetId: string): Promise<void> {
     const findingsCount = await db.finding.count({ where: { runId } });
     const evidenceCount = await db.evidence.count({ where: { runId } });
     const durationMs = Date.now() - startedAt;
-    const summary = `${detection.label} — ${toolsUsed.length} REA tool call${toolsUsed.length === 1 ? "" : "s"}, ${findingsCount} finding${findingsCount === 1 ? "" : "s"}, ${evidenceCount} evidence record${evidenceCount === 1 ? "" : "s"}${limitations.length > 0 ? `; ${limitations.length} limitation${limitations.length === 1 ? "" : "s"}` : ""}`;
+    const summary = `${detection.label} — ${toolsUsed.length} AREA tool call${toolsUsed.length === 1 ? "" : "s"}, ${findingsCount} finding${findingsCount === 1 ? "" : "s"}, ${evidenceCount} evidence record${evidenceCount === 1 ? "" : "s"}${limitations.length > 0 ? `; ${limitations.length} limitation${limitations.length === 1 ? "" : "s"}` : ""}`;
 
     await db.analysisRun.update({
       where: { id: runId },
@@ -358,7 +358,7 @@ async function closeSession(
   toolsUsed: string[]
 ): Promise<void> {
   try {
-    const outcome = await rea.callTool("close_binary", {}, 15_000);
+    const outcome = await area.callTool("close_binary", {}, 15_000);
     await recordReaEvidence(
       "close_binary",
       outcome,
@@ -378,7 +378,7 @@ async function openSession(
   limitations: string[]
 ): Promise<boolean> {
   try {
-    const open = await rea.callTool("open_binary", { path: absPath }, 60_000);
+    const open = await area.callTool("open_binary", { path: absPath }, 60_000);
     await recordReaEvidence("open_binary", open, runId, "", toolsUsed);
     return !open.isError;
   } catch (err) {
@@ -400,16 +400,16 @@ async function runContainerFlow(
   limitations: string[]
 ): Promise<void> {
   if (!toolSet.has("inspect_artifact")) {
-    limitations.push("REA inspect_artifact is not in the engine catalog.");
+    limitations.push("AREA inspect_artifact is not in the engine catalog.");
     return;
   }
   if (!(await openSession(runId, absPath, toolsUsed, limitations))) {
-    limitations.push("REA could not open the artifact (open_binary failed).");
+    limitations.push("AREA could not open the artifact (open_binary failed).");
     await closeSession(runId, toolsUsed);
     return;
   }
   try {
-    const ins = await rea.callTool("inspect_artifact", {});
+    const ins = await area.callTool("inspect_artifact", {});
     await recordReaEvidence("inspect_artifact", ins, runId, subjectName, toolsUsed);
     await storeToolFindings("inspect_artifact", ins, runId);
     if (ins.isError) {
@@ -417,10 +417,10 @@ async function runContainerFlow(
       return;
     }
     if (!toolSet.has("extract_artifact")) {
-      limitations.push("REA extract_artifact is not in the engine catalog.");
+      limitations.push("AREA extract_artifact is not in the engine catalog.");
       return;
     }
-    const ext = await rea.callTool("extract_artifact", {});
+    const ext = await area.callTool("extract_artifact", {});
     await recordReaEvidence("extract_artifact", ext, runId, subjectName, toolsUsed);
     await storeToolFindings("extract_artifact", ext, runId);
     if (ext.isError) {
@@ -452,7 +452,7 @@ async function runContainerFlow(
       return;
     }
     await step(runId, 60, "Analyzing JavaScript application");
-    const js = await rea.callTool("analyze_javascript_application", {
+    const js = await area.callTool("analyze_javascript_application", {
       input_path: appRoot,
     });
     await recordReaEvidence(
@@ -483,16 +483,16 @@ async function runAsarFlow(
   limitations: string[]
 ): Promise<void> {
   if (!toolSet.has("inspect_artifact")) {
-    limitations.push("REA inspect_artifact is not in the engine catalog.");
+    limitations.push("AREA inspect_artifact is not in the engine catalog.");
     return;
   }
   if (!(await openSession(runId, absPath, toolsUsed, limitations))) {
-    limitations.push("REA could not open the ASAR archive.");
+    limitations.push("AREA could not open the ASAR archive.");
     await closeSession(runId, toolsUsed);
     return;
   }
   try {
-    const ins = await rea.callTool("inspect_artifact", {});
+    const ins = await area.callTool("inspect_artifact", {});
     await recordReaEvidence("inspect_artifact", ins, runId, subjectName, toolsUsed);
     await storeToolFindings("inspect_artifact", ins, runId);
     if (ins.isError) {
@@ -505,7 +505,7 @@ async function runAsarFlow(
   }
 }
 
-/** sqlite: REA catalog check first, then platform-local read-only inspector. */
+/** sqlite: AREA catalog check first, then platform-local read-only inspector. */
 async function runSqliteFlow(
   runId: string,
   subjectName: string,
@@ -514,26 +514,26 @@ async function runSqliteFlow(
   toolsUsed: string[],
   limitations: string[]
 ): Promise<void> {
-  const reaSqlite = toolDefs.find((t) => /sqlite/i.test(t.name));
-  if (reaSqlite) {
+  const areaSqlite = toolDefs.find((t) => /sqlite/i.test(t.name));
+  if (areaSqlite) {
     try {
-      const res = await rea.callTool(reaSqlite.name, { path: absPath });
-      await recordReaEvidence(reaSqlite.name, res, runId, subjectName, toolsUsed);
-      await storeToolFindings(reaSqlite.name, res, runId);
+      const res = await area.callTool(areaSqlite.name, { path: absPath });
+      await recordReaEvidence(areaSqlite.name, res, runId, subjectName, toolsUsed);
+      await storeToolFindings(areaSqlite.name, res, runId);
       if (res.isError) {
         limitations.push(
-          `REA SQLite tool '${reaSqlite.name}' failed: ${firstLine(res.text)}`
+          `AREA SQLite tool '${areaSqlite.name}' failed: ${firstLine(res.text)}`
         );
       }
     } catch (err) {
       limitations.push(
-        `REA SQLite tool '${reaSqlite.name}' threw: ${err instanceof Error ? err.message : String(err)}`
+        `AREA SQLite tool '${areaSqlite.name}' threw: ${err instanceof Error ? err.message : String(err)}`
       );
     }
     return;
   }
   limitations.push(
-    "No REA SQLite tool exists in the engine catalog (v6.4.0); used the platform-local read-only SQLite inspector."
+    "No AREA SQLite tool exists in the engine catalog (v6.4.0); used the platform-local read-only SQLite inspector."
   );
   const outcome = await inspectSqliteLocal(absPath);
   await recordPlatformEvidence(
@@ -575,10 +575,10 @@ async function runEvmFlow(
   limitations: string[]
 ): Promise<void> {
   if (!toolSet.has("inspect_evm_interface")) {
-    limitations.push("REA inspect_evm_interface is not in the engine catalog.");
+    limitations.push("AREA inspect_evm_interface is not in the engine catalog.");
     return;
   }
-  const hexAttempt = await rea.callTool("inspect_evm_interface", {
+  const hexAttempt = await area.callTool("inspect_evm_interface", {
     path: absPath,
     encoding: "hex",
   });
@@ -596,7 +596,7 @@ async function runEvmFlow(
   limitations.push(
     `inspect_evm_interface (encoding=hex) failed: ${firstLine(hexAttempt.text)}; retrying with encoding=raw.`
   );
-  const rawAttempt = await rea.callTool("inspect_evm_interface", {
+  const rawAttempt = await area.callTool("inspect_evm_interface", {
     path: absPath,
     encoding: "raw",
   });
@@ -627,27 +627,27 @@ async function runWasmFlow(
   const wasmTool = toolDefs.find((t) => /wasm/i.test(t.name));
   if (wasmTool) {
     try {
-      const res = await rea.callTool(wasmTool.name, { path: absPath });
+      const res = await area.callTool(wasmTool.name, { path: absPath });
       await recordReaEvidence(wasmTool.name, res, runId, "", toolsUsed);
       await storeToolFindings(wasmTool.name, res, runId);
       if (res.isError) {
         limitations.push(
-          `REA wasm tool '${wasmTool.name}' failed: ${firstLine(res.text)}`
+          `AREA wasm tool '${wasmTool.name}' failed: ${firstLine(res.text)}`
         );
       }
     } catch (err) {
       limitations.push(
-        `REA wasm tool '${wasmTool.name}' threw: ${err instanceof Error ? err.message : String(err)}`
+        `AREA wasm tool '${wasmTool.name}' threw: ${err instanceof Error ? err.message : String(err)}`
       );
     }
     return;
   }
   limitations.push(
-    "No WASM inspection tool exists in the REA engine catalog (wabt unavailable on host); strings/hex analysis only."
+    "No WASM inspection tool exists in the AREA engine catalog (wabt unavailable on host); strings/hex analysis only."
   );
   await recordPlatformEvidence(runId, "platform.limitation", "unknown", "", {
     limitation:
-      "WASM deep inspection unavailable: REA engine v6.4.0 advertises no wasm tool and the wabt toolkit is not installed on this host.",
+      "WASM deep inspection unavailable: AREA engine v6.4.0 advertises no wasm tool and the wabt toolkit is not installed on this host.",
   });
 }
 
@@ -661,16 +661,16 @@ async function runPlistFlow(
   limitations: string[]
 ): Promise<void> {
   if (!toolSet.has("inspect_plist")) {
-    limitations.push("REA inspect_plist is not in the engine catalog.");
+    limitations.push("AREA inspect_plist is not in the engine catalog.");
     return;
   }
   if (!(await openSession(runId, absPath, toolsUsed, limitations))) {
-    limitations.push("REA could not open the plist file.");
+    limitations.push("AREA could not open the plist file.");
     await closeSession(runId, toolsUsed);
     return;
   }
   try {
-    const res = await rea.callTool("inspect_plist", { path: absPath });
+    const res = await area.callTool("inspect_plist", { path: absPath });
     await recordReaEvidence("inspect_plist", res, runId, subjectName, toolsUsed);
     await storeToolFindings("inspect_plist", res, runId);
     if (res.isError) {
@@ -692,11 +692,11 @@ async function runNativeFlow(
 ): Promise<void> {
   if (!toolSet.has("inspect_binary_layout")) {
     limitations.push(
-      "REA inspect_binary_layout is not in the engine catalog; strings/hex analysis only."
+      "AREA inspect_binary_layout is not in the engine catalog; strings/hex analysis only."
     );
     return;
   }
-  const layout = await rea.callTool("inspect_binary_layout", { path: absPath });
+  const layout = await area.callTool("inspect_binary_layout", { path: absPath });
   await recordReaEvidence(
     "inspect_binary_layout",
     layout,
@@ -716,24 +716,24 @@ async function runNativeFlow(
 // Evidence recording
 // ---------------------------------------------------------------------------
 
-/** Record Evidence for one REA tool call and track it in toolsUsed. */
+/** Record Evidence for one AREA tool call and track it in toolsUsed. */
 async function recordReaEvidence(
   operation: string,
-  outcome: ReaOutcome,
+  outcome: AreaOutcome,
   runId: string,
   subjectName: string,
   toolsUsed: string[]
 ): Promise<void> {
   if (!toolsUsed.includes(operation)) toolsUsed.push(operation);
-  await insertEvidence(runId, operation, outcome, subjectName, "rea");
+  await insertEvidence(runId, operation, outcome, subjectName, "area");
 }
 
 async function insertEvidence(
   runId: string,
   operation: string,
-  outcome: ReaOutcome,
+  outcome: AreaOutcome,
   subjectName: string,
-  source: "rea" | "platform"
+  source: "area" | "platform"
 ): Promise<void> {
   try {
     const evidenceId =
@@ -753,8 +753,8 @@ async function insertEvidence(
         predicateType:
           typeof predicate === "string"
             ? predicate
-            : source === "rea"
-              ? "rea.analysis"
+            : source === "area"
+              ? "area.analysis"
               : "platform.analysis",
         operation,
         subjectName: subjectName || null,
@@ -766,7 +766,7 @@ async function insertEvidence(
         authority:
           typeof authority === "string"
             ? authority
-            : source === "rea"
+            : source === "area"
               ? "external-service"
               : "platform-local",
         payload: JSON.stringify({
@@ -822,7 +822,7 @@ function findEvidenceId(node: unknown, depth = 0): string | null {
 /** Store a 'report' finding per tool call + structured findings (capped). */
 async function storeToolFindings(
   toolName: string,
-  outcome: ReaOutcome,
+  outcome: AreaOutcome,
   runId: string
 ): Promise<void> {
   try {
@@ -875,7 +875,7 @@ async function storeToolFindings(
 }
 
 /**
- * Heuristically walk REA structured Evidence and derive Finding rows.
+ * Heuristically walk AREA structured Evidence and derive Finding rows.
  * Generic: any object with an identifying string + size/bytes qualifies as an
  * artifact entry; JS app graph nodes become js_module rows; tool-specific
  * summaries get dedicated finding types.

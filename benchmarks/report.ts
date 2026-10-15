@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * REA benchmark report — aggregates scored results into summary artifacts.
+ * AREA benchmark report — aggregates scored results into summary artifacts.
  *
  * Reads the LATEST run (and the run before it, for regression detection)
  * from benchmarks/results/ and writes:
@@ -248,7 +248,7 @@ function renderHtml(runId: string, previousRunId: string | null, rows: ReportRow
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>REA Benchmark Report — ${esc(runId)}</title>
+<title>AREA Benchmark Report — ${esc(runId)}</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -294,7 +294,7 @@ function renderHtml(runId: string, previousRunId: string | null, rows: ReportRow
 </head>
 <body>
 <div class="wrap">
-  <h1>REA Benchmark Report</h1>
+  <h1>AREA Benchmark Report</h1>
   <div class="meta">run <span class="mono">${esc(runId)}</span>${
     previousRunId ? ` &nbsp;·&nbsp; previous <span class="mono">${esc(previousRunId)}</span>` : " &nbsp;·&nbsp; first recorded run"
   }</div>
@@ -325,7 +325,7 @@ ${bodyRows}
   <h2>Regressions (drop &gt; ${REGRESSION_DROP} points)</h2>
   ${regressionSection}
 
-  <footer>Generated ${esc(new Date().toISOString())} · REA benchmark suite · scores are LLM-judged estimates, not guarantees.</footer>
+  <footer>Generated ${esc(new Date().toISOString())} · AREA benchmark suite · scores are LLM-judged estimates, not guarantees.</footer>
 </div>
 </body>
 </html>`;

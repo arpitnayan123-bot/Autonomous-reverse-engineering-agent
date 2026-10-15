@@ -46,7 +46,7 @@ export type ModelStatus = (typeof MODEL_STATUSES)[number];
 export const MODEL_STATUSES_SET: ReadonlySet<string> = new Set(MODEL_STATUSES);
 
 /** Display name of the seeded built-in fallback row for each task. */
-export const SEEDED_MODEL_NAME = "platform-llm (REA built-in)";
+export const SEEDED_MODEL_NAME = "platform-llm (AREA built-in)";
 
 /** baseModel label for the platform fallback (GLM via z-ai-web-dev-sdk). */
 const PLATFORM_BASE_MODEL = "glm (platform)";

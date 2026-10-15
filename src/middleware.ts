@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 /**
  * Auth redirection for the workspace routes.
  *
- * Middleware can only check cookie PRESENCE (the signed `rea_session` cookie
+ * Middleware can only check cookie PRESENCE (the signed `area_session` cookie
  * the platform issues on login) — the cookie's validity is verified
  * per-request by the API/server via the AuthSession table. Its job here is
  * to bounce obviously-unauthenticated deep links to the landing page with
@@ -12,7 +12,7 @@ import { NextResponse, type NextRequest } from "next/server";
 const PROTECTED_PREFIXES = ["/chat", "/projects", "/targets", "/settings", "/admin"];
 
 export function middleware(req: NextRequest) {
-  if (req.cookies.has("rea_session")) {
+  if (req.cookies.has("area_session")) {
     return NextResponse.next();
   }
 

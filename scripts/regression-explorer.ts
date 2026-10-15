@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * REA Explorer regression — proves the Explorer EXECUTES real web analysis
+ * AREA Explorer regression — proves the Explorer EXECUTES real web analysis
  * (registry routing + real network fetch + real extraction) instead of
  * returning conceptual guidance, and that its safety restrictions hold.
  *
@@ -48,7 +48,7 @@ async function expectBlocked(url: string, label: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  console.log("REA Explorer regression — live example.com + iana.org + safety guards\n");
+  console.log("AREA Explorer regression — live example.com + iana.org + safety guards\n");
 
   // 1. Registration: the chat agent registry exposes the Explorer.
   check("registry contains explore_url", AGENT_TOOLS.some((t) => t.name === "explore_url"));
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
   // 7. ERROR REPORTING: unreachable domain yields a clear, honest failure.
   const badOut = await executeAgentTool(
     "explore_url",
-    { url: "https://rea-regression-nonexistent.invalid" },
+    { url: "https://area-regression-nonexistent.invalid" },
     stubCtx
   );
   check(

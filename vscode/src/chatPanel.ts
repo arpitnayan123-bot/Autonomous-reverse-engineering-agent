@@ -1,10 +1,10 @@
 import * as vscode from "vscode";
 import { parseToolCalls } from "./api";
-import type { ReaApiClient } from "./api";
-import type { ReaMessage } from "./types";
+import type { AreaApiClient } from "./api";
+import type { AreaMessage } from "./types";
 
 export interface ChatPanelDeps {
-  api: ReaApiClient;
+  api: AreaApiClient;
   /** Called after a turn completes so the tree can refresh counters. */
   onSessionMutated(): void;
   isConnected(): boolean;
@@ -23,7 +23,7 @@ export interface ChatPanelSpec {
 const panels = new Map<string, ChatPanel>();
 
 /**
- * Open (or reveal) a streaming chat panel for a REA session. The panel talks
+ * Open (or reveal) a streaming chat panel for a AREA session. The panel talks
  * to the platform through the shared API client: history comes from
  * `GET /api/chat?sessionId=`, new turns stream over the SSE chat endpoint.
  */
@@ -56,8 +56,8 @@ export class ChatPanel implements vscode.Disposable {
   ) {
     this.sessionId = spec.sessionId;
     this.panel = vscode.window.createWebviewPanel(
-      "rea.chat",
-      `REA: ${spec.title}`,
+      "area.chat",
+      `AREA: ${spec.title}`,
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,
@@ -90,7 +90,7 @@ export class ChatPanel implements vscode.Disposable {
     }
     try {
       const detail = await this.deps.api.getSession(this.sessionId);
-      this.panel.title = `REA: ${detail.session.title || this.spec.title}`;
+      this.panel.title = `AREA: ${detail.session.title || this.spec.title}`;
       this.panel.webview.postMessage({
         type: "init",
         title: detail.session.title,
@@ -113,7 +113,7 @@ export class ChatPanel implements vscode.Disposable {
     if (!this.deps.isConnected()) {
       this.panel.webview.postMessage({
         type: "error",
-        message: "Not connected to REA — run “REA: Sign In” first.",
+        message: "Not connected to AREA — run “AREA: Sign In” first.",
       });
       return;
     }
@@ -220,7 +220,7 @@ export class ChatPanel implements vscode.Disposable {
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="${csp}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>REA Chat</title>
+  <title>AREA Chat</title>
   <style>
     :root { color-scheme: var(--vscode-theme-kind); }
     * { box-sizing: border-box; }
@@ -275,7 +275,7 @@ export class ChatPanel implements vscode.Disposable {
 <body>
   <div id="log" aria-live="polite"></div>
   <form id="composer">
-    <textarea id="input" placeholder="Ask REA… (Enter to send, Shift+Enter for a new line)"></textarea>
+    <textarea id="input" placeholder="Ask AREA… (Enter to send, Shift+Enter for a new line)"></textarea>
     <button id="send" type="submit">Send</button>
   </form>
   <div class="hint" id="hint"></div>
@@ -304,7 +304,7 @@ export class ChatPanel implements vscode.Disposable {
         wrap.className = "msg " + role;
         var r = document.createElement("div");
         r.className = "role";
-        r.textContent = role === "user" ? "You" : "REA";
+        r.textContent = role === "user" ? "You" : "AREA";
         var b = document.createElement("div");
         b.className = "bubble";
         b.textContent = text || "";
@@ -324,7 +324,7 @@ export class ChatPanel implements vscode.Disposable {
         var wrap = document.createElement("div");
         wrap.className = "msg assistant";
         var r = document.createElement("div");
-        r.className = "role"; r.textContent = "REA";
+        r.className = "role"; r.textContent = "AREA";
         var b = document.createElement("div");
         b.className = "bubble";
         var status = document.createElement("div");
@@ -366,7 +366,7 @@ export class ChatPanel implements vscode.Disposable {
         switch (m.type) {
           case "init": {
             hint.textContent = m.hasMore
-              ? "Showing the most recent messages — older history stays in the REA web app."
+              ? "Showing the most recent messages — older history stays in the AREA web app."
               : (m.targetName ? "Target: " + m.targetName : "");
             (m.messages || []).forEach(function (msg) {
               var b = addMessage(msg.role === "assistant" ? "assistant" : "user", msg.content);

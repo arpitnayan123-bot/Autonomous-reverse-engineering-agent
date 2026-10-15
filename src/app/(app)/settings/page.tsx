@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { SettingsView } from "@/components/rea/settings-view";
+import { SettingsView } from "@/components/area/settings-view";
 
 interface Props {
   searchParams: Promise<{ tab?: string }>;
@@ -9,7 +9,7 @@ interface Props {
 export const metadata: Metadata = {
   title: "Settings",
   description:
-    "REA account settings: BYOK providers, security controls and sessions, cross-session memory, engine capabilities and documentation.",
+    "AREA account settings: BYOK providers, security controls and sessions, cross-session memory, engine capabilities and documentation.",
 };
 
 export default async function SettingsPage({ searchParams }: Props) {

@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Mint an REA session token for the MCP server (scripts/mcp-server.ts).
+ * Mint an AREA session token for the MCP server (scripts/mcp-server.ts).
  *
- * The MCP bridge authenticates to the running REA platform with the same
- * HMAC-signed session the web app stores in its `rea_session` cookie —
+ * The MCP bridge authenticates to the running AREA platform with the same
+ * HMAC-signed session the web app stores in its `area_session` cookie —
  * so every MCP tool call runs under your account with the platform's own
  * ownership, rate-limit and audit rules applied.
  *
@@ -13,7 +13,7 @@
  *   bun scripts/mcp-token.ts --base http://127.0.0.1:3000 --demo
  *
  * The token is printed once, to stdout, and never persisted by this script.
- * Feed it to the MCP server via the REA_MCP_TOKEN environment variable.
+ * Feed it to the MCP server via the AREA_MCP_TOKEN environment variable.
  */
 
 interface ParsedArgs {
@@ -40,8 +40,8 @@ async function mint(parsed: ParsedArgs): Promise<void> {
   const body = parsed.demo
     ? {}
     : {
-        email: parsed.email ?? process.env.REA_EMAIL,
-        password: parsed.password ?? process.env.REA_PASSWORD,
+        email: parsed.email ?? process.env.AREA_EMAIL,
+        password: parsed.password ?? process.env.AREA_PASSWORD,
       };
 
   if (!parsed.demo && (!body.email || !body.password)) {
@@ -58,7 +58,7 @@ async function mint(parsed: ParsedArgs): Promise<void> {
       signal: AbortSignal.timeout(15_000),
     });
   } catch (err) {
-    console.error(`Could not reach REA at ${parsed.base}: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`Could not reach AREA at ${parsed.base}: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
 
@@ -69,19 +69,19 @@ async function mint(parsed: ParsedArgs): Promise<void> {
   }
 
   const cookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
-  const sessionCookie = cookies.find((c) => c.startsWith("rea_session="));
-  const token = sessionCookie?.match(/rea_session=([^;]+)/)?.[1];
+  const sessionCookie = cookies.find((c) => c.startsWith("area_session="));
+  const token = sessionCookie?.match(/area_session=([^;]+)/)?.[1];
 
   if (!token) {
-    console.error("Login succeeded but no rea_session cookie was returned.");
+    console.error("Login succeeded but no area_session cookie was returned.");
     process.exit(1);
   }
 
   console.log(token);
   console.error(
-    `\n[rea-mcp] token minted from ${parsed.base}${path}\n` +
-    `[rea-mcp] run the MCP server with:\n` +
-    `[rea-mcp]   REA_MCP_TOKEN=<token> REA_MCP_URL=${parsed.base} bun scripts/mcp-server.ts`
+    `\n[area-mcp] token minted from ${parsed.base}${path}\n` +
+    `[area-mcp] run the MCP server with:\n` +
+    `[area-mcp]   AREA_MCP_TOKEN=<token> AREA_MCP_URL=${parsed.base} bun scripts/mcp-server.ts`
   );
 }
 

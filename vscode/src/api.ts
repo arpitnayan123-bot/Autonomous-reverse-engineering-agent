@@ -1,15 +1,15 @@
 /**
- * REA platform REST API client.
+ * AREA platform REST API client.
  *
  * Deliberately framework-free (no `vscode` import) so it can be reasoned
  * about and reused on its own. Authentication model:
  *
  *  1. `login()` POSTs email/password to `/api/auth/login`. The platform
- *     answers with an HMAC-signed session token in a `Set-Cookie: rea_session=
+ *     answers with an HMAC-signed session token in a `Set-Cookie: area_session=
  *     …` header (HttpOnly — browsers never see it in JS, so there is no
  *     first-party token endpoint to call).
  *  2. The extension stores that token in VS Code secret storage and replays
- *     it as a `Cookie: rea_session=…` header on every request — exactly what
+ *     it as a `Cookie: area_session=…` header on every request — exactly what
  *     the platform's session verifier reads.
  *  3. Chat uses `POST /api/chat` (Server-Sent Events). Frames are
  *     `data: {json}\n\n`; comment frames (`: ping`) are keepalives and are
@@ -18,30 +18,30 @@
 
 import type {
   ChatStreamEvent,
-  ReaMessage,
-  ReaProject,
-  ReaSession,
-  ReaSessionDetail,
-  ReaTarget,
-  ReaUploadResult,
-  ReaUser,
+  AreaMessage,
+  AreaProject,
+  AreaSession,
+  AreaSessionDetail,
+  AreaTarget,
+  AreaUploadResult,
+  AreaUser,
   StreamChatBody,
 } from "./types";
 
 /** Platform-reported upload cap (see server: MAX_UPLOAD_BYTES = 50 MB). */
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
-export class ReaApiError extends Error {
+export class AreaApiError extends Error {
   readonly status: number;
 
   constructor(message: string, status: number) {
     super(message);
-    this.name = "ReaApiError";
+    this.name = "AreaApiError";
     this.status = status;
   }
 }
 
-export interface ReaApiClientOptions {
+export interface AreaApiClientOptions {
   /** Fresh base URL on every call (settings can change mid-session). */
   baseUrl(): string;
   /** Fresh session token on every call (secret storage). */
@@ -55,10 +55,10 @@ type ParsedEnvelope<T> = {
   error?: string;
 } & T;
 
-const SESSION_COOKIE = "rea_session";
+const SESSION_COOKIE = "area_session";
 
-export class ReaApiClient {
-  constructor(private readonly opts: ReaApiClientOptions) {}
+export class AreaApiClient {
+  constructor(private readonly opts: AreaApiClientOptions) {}
 
   // ---------------------------------------------------------------- helpers
 
@@ -98,21 +98,21 @@ export class ReaApiClient {
         body: init.body,
       });
     } catch (err) {
-      throw new ReaApiError(
-        `Cannot reach REA at ${this.opts.baseUrl()} (${err instanceof Error ? err.message : String(err)})`,
+      throw new AreaApiError(
+        `Cannot reach AREA at ${this.opts.baseUrl()} (${err instanceof Error ? err.message : String(err)})`,
         0
       );
     }
     if (res.status === 401) this.opts.onUnauthorized?.();
     const json = (await this.parseBody(res)) as ParsedEnvelope<T> | null;
     if (!res.ok) {
-      throw new ReaApiError(
+      throw new AreaApiError(
         (json?.error as string) ?? `Request failed (HTTP ${res.status})`,
         res.status
       );
     }
     if (json && json.ok === false) {
-      throw new ReaApiError((json.error as string) ?? "Request failed", res.status);
+      throw new AreaApiError((json.error as string) ?? "Request failed", res.status);
     }
     return json as T;
   }
@@ -124,7 +124,7 @@ export class ReaApiClient {
    * session token from the Set-Cookie response header. Returns the token for
    * the caller to persist in secret storage, plus the user record.
    */
-  async login(email: string, password: string): Promise<{ token: string; user: ReaUser }> {
+  async login(email: string, password: string): Promise<{ token: string; user: AreaUser }> {
     let res: Response;
     try {
       res = await fetch(this.url("/api/auth/login"), {
@@ -133,37 +133,37 @@ export class ReaApiClient {
         body: JSON.stringify({ email, password }),
       });
     } catch (err) {
-      throw new ReaApiError(
-        `Cannot reach REA at ${this.opts.baseUrl()} (${err instanceof Error ? err.message : String(err)})`,
+      throw new AreaApiError(
+        `Cannot reach AREA at ${this.opts.baseUrl()} (${err instanceof Error ? err.message : String(err)})`,
         0
       );
     }
 
-    const json = (await this.parseBody(res)) as { ok?: boolean; error?: string; user?: ReaUser } | null;
+    const json = (await this.parseBody(res)) as { ok?: boolean; error?: string; user?: AreaUser } | null;
     if (res.status === 401) this.opts.onUnauthorized?.();
     if (!res.ok || !json || json.ok === false || !json.user) {
-      throw new ReaApiError(
+      throw new AreaApiError(
         json?.error ?? `Sign-in failed (HTTP ${res.status})`,
         res.status
       );
     }
 
     // Collect every Set-Cookie (getSetCookie on modern Node; single joined
-    // header as fallback) and pull the rea_session value out of it.
+    // header as fallback) and pull the area_session value out of it.
     const rawCookies: string[] =
       typeof (res.headers as { getSetCookie?: () => string[] }).getSetCookie === "function"
         ? (res.headers as { getSetCookie: () => string[] }).getSetCookie()
         : [res.headers.get("set-cookie") ?? ""];
     let token: string | null = null;
     for (const raw of rawCookies) {
-      const match = /(?:^|[,\s;])rea_session=([A-Za-z0-9_.\-]+)/.exec(raw);
+      const match = /(?:^|[,\s;])area_session=([A-Za-z0-9_.\-]+)/.exec(raw);
       if (match) {
         token = match[1];
         break;
       }
     }
     if (!token) {
-      throw new ReaApiError(
+      throw new AreaApiError(
         "The server accepted the login but did not return a session token",
         res.status
       );
@@ -175,24 +175,24 @@ export class ReaApiClient {
    * GET /api/auth/me — connection probe. Returns the user when a valid
    * session exists, null when not signed in.
    */
-  async me(): Promise<ReaUser | null> {
-    const json = await this.request<{ user: ReaUser | null }>("/api/auth/me");
+  async me(): Promise<AreaUser | null> {
+    const json = await this.request<{ user: AreaUser | null }>("/api/auth/me");
     return json.user ?? null;
   }
 
   // --------------------------------------------------------------- projects
 
   /** GET /api/projects — list the user's projects with activity counters. */
-  async listProjects(): Promise<ReaProject[]> {
-    const json = await this.request<{ projects: ReaProject[] }>("/api/projects");
+  async listProjects(): Promise<AreaProject[]> {
+    const json = await this.request<{ projects: AreaProject[] }>("/api/projects");
     return json.projects ?? [];
   }
 
   // ---------------------------------------------------------------- targets
 
   /** GET /api/targets — all uploaded targets with their latest run. */
-  async listTargets(): Promise<ReaTarget[]> {
-    const json = await this.request<{ targets: ReaTarget[] }>("/api/targets");
+  async listTargets(): Promise<AreaTarget[]> {
+    const json = await this.request<{ targets: AreaTarget[] }>("/api/targets");
     return json.targets ?? [];
   }
 
@@ -200,7 +200,7 @@ export class ReaApiClient {
    * POST /api/targets — upload a file as a new analysis target
    * (multipart field `file`).
    */
-  async uploadTarget(fileName: string, bytes: Uint8Array): Promise<ReaUploadResult> {
+  async uploadTarget(fileName: string, bytes: Uint8Array): Promise<AreaUploadResult> {
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(bytes)]), fileName);
     // Drop the JSON content type — fetch computes the multipart boundary.
@@ -209,17 +209,17 @@ export class ReaApiClient {
     try {
       res = await fetch(this.url("/api/targets"), { method: "POST", headers, body: form });
     } catch (err) {
-      throw new ReaApiError(
-        `Cannot reach REA at ${this.opts.baseUrl()} (${err instanceof Error ? err.message : String(err)})`,
+      throw new AreaApiError(
+        `Cannot reach AREA at ${this.opts.baseUrl()} (${err instanceof Error ? err.message : String(err)})`,
         0
       );
     }
     if (res.status === 401) this.opts.onUnauthorized?.();
     const json = (await this.parseBody(res)) as
-      | { ok?: boolean; error?: string; target?: ReaUploadResult }
+      | { ok?: boolean; error?: string; target?: AreaUploadResult }
       | null;
     if (!res.ok || !json || json.ok === false || !json.target) {
-      throw new ReaApiError(
+      throw new AreaApiError(
         json?.error ?? `Upload failed (HTTP ${res.status})`,
         res.status
       );
@@ -242,14 +242,14 @@ export class ReaApiClient {
   // ------------------------------------------------------------------ chats
 
   /** GET /api/chat — list chat sessions (sidebar summaries). */
-  async listSessions(): Promise<ReaSession[]> {
-    const json = await this.request<{ sessions: ReaSession[] }>("/api/chat");
+  async listSessions(): Promise<AreaSession[]> {
+    const json = await this.request<{ sessions: AreaSession[] }>("/api/chat");
     return json.sessions ?? [];
   }
 
   /** GET /api/chat?sessionId= — full message history for one session. */
-  async getSession(sessionId: string): Promise<ReaSessionDetail> {
-    const json = await this.request<ReaSessionDetail>(
+  async getSession(sessionId: string): Promise<AreaSessionDetail> {
+    const json = await this.request<AreaSessionDetail>(
       `/api/chat?sessionId=${encodeURIComponent(sessionId)}`
     );
     return json;
@@ -277,8 +277,8 @@ export class ReaApiClient {
       });
     } catch (err) {
       if (signal?.aborted) return;
-      throw new ReaApiError(
-        `Cannot reach REA at ${this.opts.baseUrl()} (${err instanceof Error ? err.message : String(err)})`,
+      throw new AreaApiError(
+        `Cannot reach AREA at ${this.opts.baseUrl()} (${err instanceof Error ? err.message : String(err)})`,
         0
       );
     }
@@ -286,7 +286,7 @@ export class ReaApiClient {
     if (res.status === 401) this.opts.onUnauthorized?.();
     if (!res.ok || !res.body) {
       const json = (await this.parseBody(res)) as { error?: string } | null;
-      throw new ReaApiError(json?.error ?? `Chat request failed (HTTP ${res.status})`, res.status);
+      throw new AreaApiError(json?.error ?? `Chat request failed (HTTP ${res.status})`, res.status);
     }
 
     const reader = res.body.getReader();
@@ -358,4 +358,4 @@ export function parseToolCalls(raw: string | null): {
   }
 }
 
-export type { ReaMessage };
+export type { AreaMessage };

@@ -36,16 +36,16 @@ import { db } from "@/lib/db";
  * which ships node/npm plus busybox userland (ls, cat, grep, find, tar, …)
  * but NOT python3/gcc/git — allowlisted commands that are missing from the
  * image fail inside the container with an honest exit-127 stderr. Operators
- * who need the full allowlist must set REA_SANDBOX_IMAGE to an image that
+ * who need the full allowlist must set AREA_SANDBOX_IMAGE to an image that
  * contains those binaries (documented in README.md).
  */
 
-/** Container image used when REA_SANDBOX_IMAGE is not set. */
+/** Container image used when AREA_SANDBOX_IMAGE is not set. */
 export const DEFAULT_SANDBOX_IMAGE = "node:20-alpine";
 
-/** The image that would be used right now (REA_SANDBOX_IMAGE override aware). */
+/** The image that would be used right now (AREA_SANDBOX_IMAGE override aware). */
 export function sandboxImage(): string {
-  const override = process.env.REA_SANDBOX_IMAGE?.trim();
+  const override = process.env.AREA_SANDBOX_IMAGE?.trim() ?? process.env.REA_SANDBOX_IMAGE?.trim(); // legacy REA_* env kept working
   return override && override.length > 0 ? override : DEFAULT_SANDBOX_IMAGE;
 }
 

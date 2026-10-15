@@ -1,8 +1,8 @@
-# REA Platform — VS Code extension
+# AREA Platform — VS Code extension
 
-Connect Visual Studio Code to a **self-hosted REA instance**: browse projects,
+Connect Visual Studio Code to a **self-hosted AREA instance**: browse projects,
 targets and investigation chats, analyze the file you are editing, and ask
-`@rea` directly from Copilot Chat.
+`@area` directly from Copilot Chat.
 
 The extension is plain TypeScript compiled with `tsc` — no webpack/bundler —
 so the build is a single `tsc -p ./` step (standard `yo code` layout).
@@ -11,43 +11,43 @@ so the build is a single `tsc -p ./` step (standard `yo code` layout).
 
 | Area | What it does |
 | --- | --- |
-| **Sign in** | Email/password prompt against your instance; the signed session token (`rea_session` cookie value) is stored in **VS Code secret storage** — never in settings or files. |
-| **REA Explorer** (Activity Bar) | Projects (collapsible) → per project: **Targets** (click to start an analysis run) and **Chats** (click to open a streaming chat panel). |
-| **`@rea` chat participant** | In Copilot Chat, type `@rea <question>`. The question is forwarded to the platform `POST /api/chat` with the **active project** as context; answers stream **token-by-token** and platform tool calls are rendered as **progress messages**. |
-| **REA: Analyze Current File** | Uploads the active editor file as a new target (`POST /api/targets`), starts a chat bound to it, and offers to queue a full engine analysis (`POST /api/targets/:id/analyze`). |
+| **Sign in** | Email/password prompt against your instance; the signed session token (`area_session` cookie value) is stored in **VS Code secret storage** — never in settings or files. |
+| **AREA Explorer** (Activity Bar) | Projects (collapsible) → per project: **Targets** (click to start an analysis run) and **Chats** (click to open a streaming chat panel). |
+| **`@area` chat participant** | In Copilot Chat, type `@area <question>`. The question is forwarded to the platform `POST /api/chat` with the **active project** as context; answers stream **token-by-token** and platform tool calls are rendered as **progress messages**. |
+| **AREA: Analyze Current File** | Uploads the active editor file as a new target (`POST /api/targets`), starts a chat bound to it, and offers to queue a full engine analysis (`POST /api/targets/:id/analyze`). |
 | **Status bar** | Connection state (connected / disconnected / connecting). Clicking it reconnects — revalidating the stored session or prompting for login. |
 
 ### Chat binding rules
 
-- Right-click a project → **Set as Active Project** — `@rea` then prefixes
+- Right-click a project → **Set as Active Project** — `@area` then prefixes
   questions with that project's context.
-- Clicking a chat in the tree makes it the **active chat**; the next `@rea`
-  message continues that thread. `REA: New Chat` clears the binding.
+- Clicking a chat in the tree makes it the **active chat**; the next `@area`
+  message continues that thread. `AREA: New Chat` clears the binding.
 - The platform associates chats with targets (uploaded files). For **file
   projects** the target comes from the project reference; targets you upload
-  with `REA: Analyze Current File` while a project is active are associated
+  with `AREA: Analyze Current File` while a project is active are associated
   with it via extension workspace state.
 
 ## Setup
 
 1. `npm install` (or `bun install`) inside `vscode/`.
 2. `npm run compile` — emits `out/extension.js`.
-3. Point the extension at your instance: Settings → **REA: Base Url**
-   (`rea.baseUrl`, default `http://localhost:3000`). Any self-hosted URL works,
-   including `https://rea.example.com`.
+3. Point the extension at your instance: Settings → **AREA: Base Url**
+   (`area.baseUrl`, default `http://localhost:3000`). Any self-hosted URL works,
+   including `https://area.example.com`.
 4. Launch: **F5** (Extension Development Host) or install the packaged `.vsix`
    (below).
-5. Click the REA status bar item (or run `REA: Sign In`) and sign in with your
+5. Click the AREA status bar item (or run `AREA: Sign In`) and sign in with your
    platform account.
 
-> The `@rea` participant requires **GitHub Copilot Chat** to be installed.
+> The `@area` participant requires **GitHub Copilot Chat** to be installed.
 > Everything else (tree, chat panels, uploads, status bar) works without it.
 
 ## Permissions & security notes
 
 - The session token lives in VS Code's secret storage (OS keychain backed) and
-  is only sent to the configured `rea.baseUrl`.
-- Changing `rea.baseUrl` triggers an automatic session re-validation — the
+  is only sent to the configured `area.baseUrl`.
+- Changing `area.baseUrl` triggers an automatic session re-validation — the
   cookie is host-scoped.
 - Uploads respect the platform cap (50 MB) and are rejected client-side first.
 
@@ -57,7 +57,7 @@ so the build is a single `tsc -p ./` step (standard `yo code` layout).
 cd vscode
 npm install
 npm run compile
-npm run package        # → rea-vscode-0.1.0.vsix
+npm run package        # → area-vscode-0.1.0.vsix
 ```
 
 `npm run package` runs `vsce package --allow-missing-repository` (this repo has
@@ -67,7 +67,7 @@ first, so `npm run package` alone is enough.
 Install into any VS Code:
 
 ```bash
-code --install-extension rea-vscode-0.1.0.vsix
+code --install-extension area-vscode-0.1.0.vsix
 ```
 
 or via the UI: Extensions view → `…` menu → **Install from VSIX…**.
@@ -107,8 +107,8 @@ vscode/
     ├── api.ts            # REST + SSE client (auth via session cookie)
     ├── types.ts          # wire-format mirrors of the platform API
     ├── status.ts         # status bar connection state
-    ├── tree.ts           # REA Explorer (projects/targets/chats)
-    ├── chat.ts           # @rea Copilot Chat participant
+    ├── tree.ts           # AREA Explorer (projects/targets/chats)
+    ├── chat.ts           # @area Copilot Chat participant
     └── chatPanel.ts      # streaming webview chat panel
 ```
 
@@ -116,7 +116,7 @@ vscode/
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/auth/login` | Email/password → `Set-Cookie: rea_session=…` |
+| `POST /api/auth/login` | Email/password → `Set-Cookie: area_session=…` |
 | `GET /api/auth/me` | Session validation / connection probe |
 | `GET /api/projects` | Project list (tree root) |
 | `GET /api/targets` · `POST /api/targets` | List / upload targets |

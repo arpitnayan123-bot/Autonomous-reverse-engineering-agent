@@ -1,6 +1,6 @@
 "use client";
 
-import { RouteError } from "@/components/rea/route-chrome";
+import { RouteError } from "@/components/area/route-chrome";
 
 export default function SettingsError({
   error,

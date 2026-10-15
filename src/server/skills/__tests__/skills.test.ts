@@ -341,10 +341,10 @@ describe("installSkill (real DB)", () => {
 describe("runtime sandbox permission enforcement", () => {
   test("filterAllowedTools intersects manifest permissions with the real registry", () => {
     const manifest = makeManifest({
-      permissions: ["web_research", "read_hex", "not_a_real_tool", "rea_tool"],
+      permissions: ["web_research", "read_hex", "not_a_real_tool", "area_tool"],
     });
     const { allowed, unknown } = filterAllowedTools(manifest, AGENT_TOOLS);
-    expect(allowed.map((t) => t.name).sort()).toEqual(["rea_tool", "read_hex", "web_research"]);
+    expect(allowed.map((t) => t.name).sort()).toEqual(["area_tool", "read_hex", "web_research"]);
     expect(unknown).toEqual(["not_a_real_tool"]);
   });
 
@@ -378,14 +378,14 @@ describe("runtime sandbox permission enforcement", () => {
   test("parseToolCalls is strict: valid lines parsed, malformed refused", () => {
     const reply = [
       "Thinking about it.",
-      'TOOL_CALL web_research {"q":"rea skills"}',
+      'TOOL_CALL web_research {"q":"area skills"}',
       "TOOL_CALL read_hex",
       "TOOL_CALL bad_tool {not json}",
       'TOOL_CALL read_hex {"offset":0, "length":64}',
     ].join("\n");
     const parsed = parseToolCalls(reply);
     expect(parsed.calls).toEqual([
-      { tool: "web_research", args: { q: "rea skills" } },
+      { tool: "web_research", args: { q: "area skills" } },
       { tool: "read_hex", args: {} },
       { tool: "read_hex", args: { offset: 0, length: 64 } },
     ]);

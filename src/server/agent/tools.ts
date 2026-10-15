@@ -3,7 +3,7 @@ import path from "path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { db } from "@/lib/db";
 import { isPathInside } from "@/lib/security";
-import { rea } from "@/server/engine/rea-bridge";
+import { area } from "@/server/engine/area-bridge";
 import { CHAT_TOOL_TIMEOUT_MS } from "@/lib/security";
 // Shared strings helper owned by task 2-a (use as-is): cache-first extraction
 // against storage/uploads/<targetId>/strings-cache.json.
@@ -51,12 +51,12 @@ import type { Target } from "@prisma/client";
 import type { ToolSchema } from "./providers";
 
 /**
- * Server-side tools exposed to the REA investigation agent.
+ * Server-side tools exposed to the AREA investigation agent.
  *
  * Security model:
- * - The agent never supplies filesystem paths. Every REA tool call is forced
+ * - The agent never supplies filesystem paths. Every AREA tool call is forced
  *   onto the current target's stored path (absolute, under storage/uploads).
- * - REA tools are allowlisted; everything else is rejected.
+ * - AREA tools are allowlisted; everything else is rejected.
  * - SQL tools run against a readOnly SQLite connection with a strict
  *   SELECT-only grammar guard.
  * - All outputs are truncated before they reach the LLM.
@@ -74,7 +74,7 @@ export const TOOL_RESULT_MAX_CHARS = 6000;
  */
 export const TOOL_REFUSAL_MARKER = "NOT EXECUTED";
 
-const REA_ALLOWLIST = new Set([
+const AREA_ALLOWLIST = new Set([
   "inspect_artifact",
   "analyze_javascript_application",
   "inspect_plist",
@@ -241,7 +241,7 @@ const targetInfoTool: AgentTool = {
       "## Analysis runs (latest first)",
     ];
     if (runs.length === 0) {
-      lines.push("(no runs yet — run analysis from the platform, or investigate directly with rea_tool)");
+      lines.push("(no runs yet — run analysis from the platform, or investigate directly with area_tool)");
     } else {
       for (const r of runs) {
         lines.push(
@@ -257,7 +257,7 @@ const listFindingsTool: AgentTool = {
   name: "list_findings",
   scope: "target",
   description:
-    "Query findings recorded by prior REA analysis runs on this target. Filter by type and/or name substring.",
+    "Query findings recorded by prior AREA analysis runs on this target. Filter by type and/or name substring.",
   args: {
     type: "object",
     properties: {
@@ -301,7 +301,7 @@ const getEvidenceTool: AgentTool = {
   name: "get_evidence",
   scope: "target",
   description:
-    "Recent evidence ledger entries (raw REA engine observations) for this target, newest first, with payload snippets.",
+    "Recent evidence ledger entries (raw AREA engine observations) for this target, newest first, with payload snippets.",
   args: {
     type: "object",
     properties: {
@@ -316,7 +316,7 @@ const getEvidenceTool: AgentTool = {
       orderBy: { createdAt: "desc" },
       take: limit,
     });
-    if (rows.length === 0) return "No evidence recorded yet. Use rea_tool to generate observations (e.g. binary_overview, inspect_artifact, list_strings).";
+    if (rows.length === 0) return "No evidence recorded yet. Use area_tool to generate observations (e.g. binary_overview, inspect_artifact, list_strings).";
     return rows
       .map((e, i) => {
         const head = `[${i + 1}] kind=${e.kind} operation=${e.operation ?? "-"} subject=${e.subjectName ?? "-"} confidence=${e.confidence ?? "-"}${e.predicateType ? ` predicate=${e.predicateType}` : ""}`;
@@ -477,21 +477,21 @@ const exploreUrlTool: AgentTool = {
   },
 };
 
-const reaTool: AgentTool = {
-  name: "rea_tool",
+const areaTool: AgentTool = {
+  name: "area_tool",
   scope: "target",
   description:
-    "THE core tool: execute a REAL REA engine (MCP) tool against the current target. The platform opens/closes the binary session and injects the target path automatically — never pass a path.",
+    "THE core tool: execute a REAL AREA engine (MCP) tool against the current target. The platform opens/closes the binary session and injects the target path automatically — never pass a path.",
   args: {
     type: "object",
     properties: {
       tool: {
         type: "string",
-        description: `REA tool name. Allowed: ${[...REA_ALLOWLIST].join(", ")}`,
+        description: `AREA tool name. Allowed: ${[...AREA_ALLOWLIST].join(", ")}`,
       },
       args: {
         type: "object",
-        description: "Arguments object for the REA tool (NO path/file keys — the platform injects them).",
+        description: "Arguments object for the AREA tool (NO path/file keys — the platform injects them).",
       },
     },
     required: ["tool"],
@@ -500,8 +500,8 @@ const reaTool: AgentTool = {
   async run(args, ctx) {
     const tool = argStr(args, "tool");
     if (!tool) return "Error: 'tool' is required.";
-    if (!REA_ALLOWLIST.has(tool)) {
-      return `Error: REA tool "${tool}" is not allowlisted. Allowed tools: ${[...REA_ALLOWLIST].join(", ")}.`;
+    if (!AREA_ALLOWLIST.has(tool)) {
+      return `Error: AREA tool "${tool}" is not allowlisted. Allowed tools: ${[...AREA_ALLOWLIST].join(", ")}.`;
     }
     const rawArgs =
       args?.args && typeof args.args === "object" && !Array.isArray(args.args)
@@ -516,7 +516,7 @@ const reaTool: AgentTool = {
     }
     try {
       if (NO_OPEN_TOOLS.has(tool)) {
-        const res = await rea.callTool(tool, cleanArgs, CHAT_TOOL_TIMEOUT_MS);
+        const res = await area.callTool(tool, cleanArgs, CHAT_TOOL_TIMEOUT_MS);
         return formatReaResult(tool, res);
       }
       const abs = absoluteStoredPath(ctx.target.storedPath);
@@ -526,7 +526,7 @@ const reaTool: AgentTool = {
       // already bound to the opened target.
       let toolArgs: Record<string, unknown> = { ...cleanArgs, path: abs };
       try {
-        const defs = await rea.listTools();
+        const defs = await area.listTools();
         const def = defs.find((d) => d.name === tool);
         const props = def?.inputSchema?.["properties"] as
           | Record<string, unknown>
@@ -537,13 +537,13 @@ const reaTool: AgentTool = {
       } catch {
         /* catalog unavailable — keep the always-inject fallback */
       }
-      const res = await rea.withTarget(abs, () =>
-        rea.callTool(tool, toolArgs, CHAT_TOOL_TIMEOUT_MS)
+      const res = await area.withTarget(abs, () =>
+        area.callTool(tool, toolArgs, CHAT_TOOL_TIMEOUT_MS)
       );
       return formatReaResult(tool, res);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return `Error executing REA tool "${tool}": ${msg.slice(0, 500)}. The engine may be busy or the format may not be supported; try a different tool.`;
+      return `Error executing AREA tool "${tool}": ${msg.slice(0, 500)}. The engine may be busy or the format may not be supported; try a different tool.`;
     }
   },
 };
@@ -557,7 +557,7 @@ function formatReaResult(
     : res.structured
       ? JSON.stringify(res.structured)
       : "(empty output)";
-  return `REA tool ${tool} → isError: ${res.isError}\n${body.slice(0, TOOL_RESULT_MAX_CHARS)}`;
+  return `AREA tool ${tool} → isError: ${res.isError}\n${body.slice(0, TOOL_RESULT_MAX_CHARS)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -588,7 +588,7 @@ const sqlSchemaTool: AgentTool = {
   args: { type: "object", properties: {}, additionalProperties: false },
   async run(_args, ctx) {
     if (ctx.target.detectedFormat !== "sqlite") {
-      return `Error: target format is "${ctx.target.detectedFormat ?? "unknown"}", not sqlite — sql_schema is unavailable. Use rea_tool (e.g. binary_overview, list_strings) instead.`;
+      return `Error: target format is "${ctx.target.detectedFormat ?? "unknown"}", not sqlite — sql_schema is unavailable. Use area_tool (e.g. binary_overview, list_strings) instead.`;
     }
     let dbh: SqliteDb | null = null;
     try {
@@ -653,7 +653,7 @@ const sqlQueryTool: AgentTool = {
   },
   async run(args, ctx) {
     if (ctx.target.detectedFormat !== "sqlite") {
-      return `Error: target format is "${ctx.target.detectedFormat ?? "unknown"}", not sqlite — sql_query is unavailable. Use rea_tool instead.`;
+      return `Error: target format is "${ctx.target.detectedFormat ?? "unknown"}", not sqlite — sql_query is unavailable. Use area_tool instead.`;
     }
     const query = argStr(args, "query");
     if (!query) return "Error: 'query' is required.";
@@ -1352,7 +1352,7 @@ async function runLspTool(name: LspToolName, args: Record<string, unknown>, key:
 // record an honest verdict, detect regressions against earlier runs.
 // ---------------------------------------------------------------------------
 
-const VERIFY_HISTORY_FILE = ".rea/verifications.json";
+const VERIFY_HISTORY_FILE = ".area/verifications.json";
 const VERIFY_HISTORY_MAX = 50;
 
 export interface VerificationRecord {
@@ -2095,7 +2095,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   getEvidenceTool,
   readStringsTool,
   readHexTool,
-  reaTool,
+  areaTool,
   sqlSchemaTool,
   sqlQueryTool,
   exploreUrlTool,
@@ -2206,19 +2206,19 @@ export async function executeAgentTool(
 ): Promise<string> {
   const tool = AGENT_TOOLS.find((t) => t.name === name);
   if (!tool) {
-    // LLMs sometimes call a REA engine tool directly (inspect_artifact,
-    // list_strings, …). Those are reachable ONLY through rea_tool — route the
+    // LLMs sometimes call a AREA engine tool directly (inspect_artifact,
+    // list_strings, …). Those are reachable ONLY through area_tool — route the
     // call there transparently so the model's tool choice still works. The
     // routing keeps every guarantee: allowlist, path-key scrubbing, forced
     // target binding, session open/close, output truncation.
-    if (REA_ALLOWLIST.has(name)) {
+    if (AREA_ALLOWLIST.has(name)) {
       return executeAgentTool(
-        "rea_tool",
+        "area_tool",
         { tool: name, args: args ?? {} },
         ctx
       );
     }
-    return `Error: unknown tool "${name}". Available tools: ${AGENT_TOOLS.map((t) => t.name).join(", ")}. REA engine tools (inspect_artifact, list_strings, …) run via the rea_tool wrapper.`;
+    return `Error: unknown tool "${name}". Available tools: ${AGENT_TOOLS.map((t) => t.name).join(", ")}. AREA engine tools (inspect_artifact, list_strings, …) run via the area_tool wrapper.`;
   }
   // Stateful tools (dedup:false — workspace_write/workspace_run) bypass the
   // retry-dedup cache: re-executing them IS the honest behavior, both across

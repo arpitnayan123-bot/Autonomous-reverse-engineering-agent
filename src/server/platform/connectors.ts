@@ -82,7 +82,7 @@ async function withMcpClient(
     } as Record<string, string>,
     stderr: "pipe",
   });
-  const client = new Client({ name: "rea-connector", version: "1.0.0" });
+  const client = new Client({ name: "area-connector", version: "1.0.0" });
   try {
     await client.connect(transport, { timeout: timeoutMs });
     return await fn(client);

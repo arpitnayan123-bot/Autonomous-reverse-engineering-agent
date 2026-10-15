@@ -1,49 +1,49 @@
 import * as vscode from "vscode";
-import { ReaApiError } from "./api";
-import type { ReaApiClient } from "./api";
-import type { ChatStreamEvent, ReaProject, ReaSession, ReaTarget } from "./types";
+import { AreaApiError } from "./api";
+import type { AreaApiClient } from "./api";
+import type { ChatStreamEvent, AreaProject, AreaSession, AreaTarget } from "./types";
 
-/** Context the participant attaches to every @rea question. */
-export interface ReaActiveContext {
-  project: ReaProject | null;
-  target: ReaTarget | null;
-  session: ReaSession | null;
+/** Context the participant attaches to every @area question. */
+export interface AreaActiveContext {
+  project: AreaProject | null;
+  target: AreaTarget | null;
+  session: AreaSession | null;
 }
 
-export interface ReaChatParticipantDeps {
-  api: ReaApiClient;
+export interface AreaChatParticipantDeps {
+  api: AreaApiClient;
   extensionUri: vscode.Uri;
-  getContext(): ReaActiveContext;
+  getContext(): AreaActiveContext;
   /** Remember the session so follow-up questions continue the same thread. */
-  onSessionSaved(session: ReaSession | null): void;
+  onSessionSaved(session: AreaSession | null): void;
   isConnected(): boolean;
 }
 
-/** Participant id — users type `@rea <question>` in Copilot Chat. */
-export const REA_PARTICIPANT_ID = "rea.agent";
+/** Participant id — users type `@area <question>` in Copilot Chat. */
+export const AREA_PARTICIPANT_ID = "area.agent";
 
 /**
- * Registers the `@rea` chat participant.
+ * Registers the `@area` chat participant.
  *
  * The question is forwarded to the platform's `POST /api/chat` with the
  * active project context; deltas stream token-by-token into the Copilot Chat
  * response and tool calls are surfaced as progress messages.
  */
-export function registerReaChatParticipant(deps: ReaChatParticipantDeps): vscode.Disposable {
+export function registerReaChatParticipant(deps: AreaChatParticipantDeps): vscode.Disposable {
   const handler: vscode.ChatRequestHandler = async (request, _context, stream, token): Promise<vscode.ChatResult> => {
     const question = extractPrompt(request).trim();
     if (!question) {
       stream.markdown(
-        "Ask me anything about your REA projects — pick a project in the **REA Explorer** first and I'll use it as context."
+        "Ask me anything about your AREA projects — pick a project in the **AREA Explorer** first and I'll use it as context."
       );
       return {};
     }
 
     if (!deps.isConnected()) {
       stream.markdown(
-        "⚠️ **Not connected to REA.** Run `REA: Sign In` from the Command Palette (or click the REA item in the status bar), then ask again."
+        "⚠️ **Not connected to AREA.** Run `AREA: Sign In` from the Command Palette (or click the AREA item in the status bar), then ask again."
       );
-      return { errorDetails: { message: "REA extension is not connected" } };
+      return { errorDetails: { message: "AREA extension is not connected" } };
     }
 
     const ctx = deps.getContext();
@@ -75,7 +75,7 @@ export function registerReaChatParticipant(deps: ReaChatParticipantDeps): vscode
     } catch (err) {
       if (!token.isCancellationRequested) {
         sawError = err instanceof Error ? err.message : String(err);
-        stream.markdown(`\n\n⚠️ REA request failed: ${sawError}`);
+        stream.markdown(`\n\n⚠️ AREA request failed: ${sawError}`);
       }
     } finally {
       cancelSub.dispose();
@@ -84,7 +84,7 @@ export function registerReaChatParticipant(deps: ReaChatParticipantDeps): vscode
     if (sawError) {
       if (sawError.toLowerCase().includes("unauthorized") || errStatus(sawError) === 401) {
         stream.markdown(
-          "\n\n_Your session may have expired — run `REA: Sign In` or click the REA status bar item to reconnect._"
+          "\n\n_Your session may have expired — run `AREA: Sign In` or click the AREA status bar item to reconnect._"
         );
       }
       return { errorDetails: { message: sawError } };
@@ -92,7 +92,7 @@ export function registerReaChatParticipant(deps: ReaChatParticipantDeps): vscode
     return {};
   };
 
-  const participant = vscode.chat.createChatParticipant(REA_PARTICIPANT_ID, handler);
+  const participant = vscode.chat.createChatParticipant(AREA_PARTICIPANT_ID, handler);
   participant.iconPath = vscode.Uri.joinPath(deps.extensionUri, "media", "icon.png");
   participant.followupProvider = {
     provideFollowups(result, _context, _token): vscode.ChatFollowup[] {
@@ -110,7 +110,7 @@ export function registerReaChatParticipant(deps: ReaChatParticipantDeps): vscode
 function renderEvent(
   event: ChatStreamEvent,
   stream: vscode.ChatResponseStream,
-  onSessionSaved: (session: ReaSession | null) => void
+  onSessionSaved: (session: AreaSession | null) => void
 ): void {
   switch (event.type) {
     case "session_saved":
@@ -201,4 +201,4 @@ function errStatus(message: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
-export { ReaApiError };
+export { AreaApiError };

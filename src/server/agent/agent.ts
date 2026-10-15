@@ -40,7 +40,7 @@ import {
 import type { Evidence, Finding, Target } from "@prisma/client";
 
 /**
- * REA investigation agent — ReAct loop with dual tool protocol.
+ * AREA investigation agent — ReAct loop with dual tool protocol.
  *
  * Two model→tool handoff paths share ONE execution core (per-call outcomes,
  * trace receipts, retry dedup, repeat guard, refusal handling — identical
@@ -1155,7 +1155,7 @@ export async function runAgentLoop(opts: {
     if (ctx) {
       // Target chat: registry tools execute; unknown names come back as the
       // honest "unknown tool" error string from executeAgentTool (allow-
-      // listed engine names are auto-routed through rea_tool there).
+      // listed engine names are auto-routed through area_tool there).
       events?.onToolCall?.(action.tool, action.args);
       const result = await executeAgentTool(action.tool, action.args, ctx);
       events?.onToolResult?.(action.tool, result);

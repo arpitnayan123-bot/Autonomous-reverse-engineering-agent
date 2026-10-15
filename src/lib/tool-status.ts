@@ -1,13 +1,13 @@
 /**
- * Client-side classification of REA tool-execution outcomes and turn-level
+ * Client-side classification of AREA tool-execution outcomes and turn-level
  * system notes — the UI's source of truth for honest status rendering.
  *
  * These classifiers MIRROR the server-side markers exactly:
  *  - TOOL_REFUSAL_MARKER = "NOT EXECUTED" (src/server/agent/tools.ts) —
  *    every refused tool intent's persisted/streamed result starts with it;
  *  - tool failures surface as result strings starting "Error" (invalid args,
- *    SSRF-guard refusals, timeouts, non-SELECT SQL, …) or the rea_tool MCP
- *    envelope "REA tool <name> → isError: true";
+ *    SSRF-guard refusals, timeouts, non-SELECT SQL, …) or the area_tool MCP
+ *    envelope "AREA tool <name> → isError: true";
  *  - finalizeTurnContent / formatInterruptedTurnContent (src/server/agent/
  *    agent.ts) append their system notes at the END of the persisted
  *    assistant content.
@@ -51,7 +51,7 @@ export function classifyToolOutcome(step: ToolOutcomeStep): ToolOutcome {
   if (step.pending) return "running";
   const text = (step.preview ?? "").trimStart();
   if (text.startsWith(TOOL_REFUSAL_MARKER)) return "refused";
-  if (/^Error\b/.test(text) || /^REA tool .*isError: true/.test(text)) return "failed";
+  if (/^Error\b/.test(text) || /^AREA tool .*isError: true/.test(text)) return "failed";
   return "executed";
 }
 

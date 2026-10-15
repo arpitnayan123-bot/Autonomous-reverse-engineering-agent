@@ -7,7 +7,7 @@ import { openHeaders } from "@/server/agent/vault";
 import { db } from "@/lib/db";
 
 /**
- * REA Research Agent — cited external research.
+ * AREA Research Agent — cited external research.
  *
  * Capabilities: platform web search (with citations), GitHub repository
  * analysis (REST API), documentation discovery (llms.txt convention + /docs
@@ -52,7 +52,7 @@ export async function platformWebSearch(query: string, num = 8): Promise<Array<{
 
 const GH_HEADERS: Record<string, string> = {
   "accept": "application/vnd.github+json",
-  "user-agent": "REA-Platform/1.0",
+  "user-agent": "AREA-Platform/1.0",
   ...(process.env.GITHUB_TOKEN ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` } : {}),
 };
 
@@ -270,7 +270,7 @@ function buildReportPrompt(query: string, sources: ResearchSource[]): string {
   const sourceBlock = sources
     .map((s, i) => `[${i + 1}] (${s.kind}) ${s.title}\n    URL: ${s.url}\n    ${s.snippet ?? ""}`)
     .join("\n");
-  return `You are the REA research analyst. Produce a concise cited markdown report for this query: "${query}".
+  return `You are the AREA research analyst. Produce a concise cited markdown report for this query: "${query}".
 
 SOURCES (each claim MUST cite [n] pointing at one of these):
 ${sourceBlock}

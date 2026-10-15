@@ -3,10 +3,10 @@ import * as vscode from "vscode";
 export type ConnectionState = "offline" | "connecting" | "connected";
 
 /**
- * Status bar item showing the REA connection state.
- * Clicking it always runs `REA: Reconnect` (validates or re-prompts login).
+ * Status bar item showing the AREA connection state.
+ * Clicking it always runs `AREA: Reconnect` (validates or re-prompts login).
  */
-export class ReaStatusBar implements vscode.Disposable {
+export class AreaStatusBar implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
   private state: ConnectionState = "offline";
   private email: string | null = null;
@@ -14,8 +14,8 @@ export class ReaStatusBar implements vscode.Disposable {
 
   constructor() {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    this.item.name = "REA";
-    this.item.command = { command: "rea.reconnect", title: "REA: Reconnect" };
+    this.item.name = "AREA";
+    this.item.command = { command: "area.reconnect", title: "AREA: Reconnect" };
     this.render();
     this.item.show();
   }
@@ -30,24 +30,24 @@ export class ReaStatusBar implements vscode.Disposable {
   private render(): void {
     switch (this.state) {
       case "connected":
-        this.item.text = "$(cloud) REA";
+        this.item.text = "$(cloud) AREA";
         this.item.backgroundColor = undefined;
         this.item.tooltip = new vscode.MarkdownString(
-          `**REA: connected**${this.email ? ` as \`${this.email}\`` : ""}\n\n` +
+          `**AREA: connected**${this.email ? ` as \`${this.email}\`` : ""}\n\n` +
             `Instance: ${this.baseUrl ?? "?"}\n\n` +
             `_Click to reconnect / refresh the session._`
         );
         break;
       case "connecting":
-        this.item.text = "$(sync~spin) REA…";
+        this.item.text = "$(sync~spin) AREA…";
         this.item.backgroundColor = undefined;
-        this.item.tooltip = "REA: checking connection…";
+        this.item.tooltip = "AREA: checking connection…";
         break;
       default:
-        this.item.text = "$(circle-slash) REA";
+        this.item.text = "$(circle-slash) AREA";
         this.item.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
         this.item.tooltip = new vscode.MarkdownString(
-          "**REA: disconnected**\n\nNo valid session for the configured instance.\n\n_Click to reconnect (you will be asked to sign in if needed)._"
+          "**AREA: disconnected**\n\nNo valid session for the configured instance.\n\n_Click to reconnect (you will be asked to sign in if needed)._"
         );
         break;
     }

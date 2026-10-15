@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mine REA's own verified analysis history into (input, ground-truth) training pairs.
+Mine AREA's own verified analysis history into (input, ground-truth) training pairs.
 
 Reads the platform SQLite database (tables Evidence, BuildArtifact, GraphNode) and
 emits JSONL rows of shape { task, input, output, source } with a deterministic 90/10
@@ -40,7 +40,7 @@ and exits 0. It NEVER fabricates rows to fill the dataset.
 
 Usage:
     python3 training/dataset_miner.py                        # default DB db/custom.db
-    REA_DB=/path/to/custom.db python3 training/dataset_miner.py
+    AREA_DB=/path/to/custom.db python3 training/dataset_miner.py
     python3 training/dataset_miner.py --min-confidence high --allow-unique-pair
 
 Output:
@@ -468,11 +468,11 @@ def write_pairs(pairs: list[dict], task: str, out_dir: Path, val_ratio: float) -
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Mine REA's DB into LoRA training pairs")
+    parser = argparse.ArgumentParser(description="Mine AREA's DB into LoRA training pairs")
     parser.add_argument(
         "--db",
-        default=os.environ.get("REA_DB") or str(DEFAULT_DB),
-        help=f"SQLite DB path (default: REA_DB env or {DEFAULT_DB})",
+        default=os.environ.get("AREA_DB") or str(DEFAULT_DB),
+        help=f"SQLite DB path (default: AREA_DB env or {DEFAULT_DB})",
     )
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument("--min-confidence", choices=["low", "medium", "high"], default="medium")

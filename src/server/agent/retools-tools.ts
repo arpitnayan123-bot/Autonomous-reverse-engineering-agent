@@ -100,7 +100,7 @@ const reToolsListTool: AgentTool = {
   name: "re_tools",
   scope: "any",
   description:
-    "List the classical reverse-engineering toolchain REA can orchestrate (Ghidra, rizin, pycdc/pycdas, angr; IDA/Hopper appear only when the operator supplies licensed images). Each entry reports kinds (disassembler/decompiler/symbolic-executor), supported operations (decompile | disassemble | functions | info | symbolic), and LIVE availability: a docker image, a local binary, or honestly unavailable with the exact command to enable it. Call this before re_tool to pick the right instrument.",
+    "List the classical reverse-engineering toolchain AREA can orchestrate (Ghidra, rizin, pycdc/pycdas, angr; IDA/Hopper appear only when the operator supplies licensed images). Each entry reports kinds (disassembler/decompiler/symbolic-executor), supported operations (decompile | disassemble | functions | info | symbolic), and LIVE availability: a docker image, a local binary, or honestly unavailable with the exact command to enable it. Call this before re_tool to pick the right instrument.",
   args: { type: "object", properties: {}, additionalProperties: false },
   run: runReToolsList,
 };

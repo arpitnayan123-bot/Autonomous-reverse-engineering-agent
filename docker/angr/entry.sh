@@ -1,10 +1,10 @@
 #!/bin/sh
-# REA angr runtime shim (image-internal; the runner still spawns argv-only).
+# AREA angr runtime shim (image-internal; the runner still spawns argv-only).
 #
-# The runner bind-mounts the run work dir at /rea (rw), which SHADOWS any
-# image content under /rea/scripts — but the registry entrypoint is
-# `python3 /rea/scripts/rea_angr.py`. So the script baked at
-# /opt/rea/scripts/rea_angr.py is materialized into the mounted work dir
+# The runner bind-mounts the run work dir at /area (rw), which SHADOWS any
+# image content under /area/scripts — but the registry entrypoint is
+# `python3 /area/scripts/area_angr.py`. So the script baked at
+# /opt/area/scripts/area_angr.py is materialized into the mounted work dir
 # before exec'ing the real command. Removable once the runner ships the
 # script itself.
 #
@@ -13,7 +13,7 @@
 # interpretation.
 set -eu
 
-mkdir -p /rea/scripts
-cp /opt/rea/scripts/rea_angr.py /rea/scripts/rea_angr.py
+mkdir -p /area/scripts
+cp /opt/area/scripts/area_angr.py /area/scripts/area_angr.py
 
 exec "$@"

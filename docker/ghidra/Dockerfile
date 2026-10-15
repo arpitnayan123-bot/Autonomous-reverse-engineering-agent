@@ -1,15 +1,15 @@
 # syntax=docker/dockerfile:1
 ###############################################################################
-# REA backend: NSA Ghidra headless — image tag rea/ghidra:11
+# AREA backend: NSA Ghidra headless — image tag area/ghidra:11
 #
 # Contract (src/server/retools/registry.ts, tool id "ghidra"):
 #   the runner invokes the container as
-#     <image> /opt/ghidra/support/analyzeHeadless <outDir> ReaProject \
-#       -import /rea/input -scriptPath /rea/scripts \
-#       -postScript <Rea*.java> <outDir> -deleteProject
+#     <image> /opt/ghidra/support/analyzeHeadless <outDir> AreaProject \
+#       -import /area/input -scriptPath /area/scripts \
+#       -postScript <Area*.java> <outDir> -deleteProject
 #   with posture: --rm --network none --read-only --tmpfs /tmp \
-#     --memory 2g --cpus 2 -v <workDir>:/rea:rw -w /rea
-#   <outDir> is /rea (the mounted work dir); postscripts receive it as
+#     --memory 2g --cpus 2 -v <workDir>:/area:rw -w /area
+#   <outDir> is /area (the mounted work dir); postscripts receive it as
 #   args[0] and must write <args[0]>/out/{decompiled.c,disasm.txt,
 #   functions.txt,info.txt} (the runner pre-creates <workDir>/out and
 #   collects those paths as artifacts).
@@ -44,17 +44,17 @@ RUN apt-get update \
  && rm -f /tmp/ghidra.zip \
  && sed -i 's/^MAXMEM=2G$/MAXMEM=1536M/' /opt/ghidra/support/analyzeHeadless
 
-# The runner gives containers a READ-ONLY rootfs; only /tmp (tmpfs) and /rea
+# The runner gives containers a READ-ONLY rootfs; only /tmp (tmpfs) and /area
 # (bind, rw) are writable. Ghidra resolves and persists its JDK path and user
 # settings under $HOME on first run, so HOME must live on the tmpfs.
 ENV HOME=/tmp
 
-# Postscripts are baked at /opt/rea/scripts — deliberately NOT at /rea/scripts,
-# because the runner bind-mounts the work dir over /rea and would shadow them.
-# The entry shim materializes them into /rea/scripts (the -scriptPath the
+# Postscripts are baked at /opt/area/scripts — deliberately NOT at /area/scripts,
+# because the runner bind-mounts the work dir over /area and would shadow them.
+# The entry shim materializes them into /area/scripts (the -scriptPath the
 # registry argv passes) before exec'ing the registry command.
-COPY scripts/ /opt/rea/scripts/
-COPY entry.sh /opt/rea/entry.sh
-RUN chmod +x /opt/rea/entry.sh /opt/ghidra/support/analyzeHeadless
+COPY scripts/ /opt/area/scripts/
+COPY entry.sh /opt/area/entry.sh
+RUN chmod +x /opt/area/entry.sh /opt/ghidra/support/analyzeHeadless
 
-ENTRYPOINT ["/opt/rea/entry.sh"]
+ENTRYPOINT ["/opt/area/entry.sh"]

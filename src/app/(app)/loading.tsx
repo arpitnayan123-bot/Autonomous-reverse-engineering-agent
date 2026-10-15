@@ -1,5 +1,5 @@
-import { RouteLoading } from "@/components/rea/route-chrome";
+import { RouteLoading } from "@/components/area/route-chrome";
 
 export default function Loading() {
-  return <RouteLoading label="loading REA…" />;
+  return <RouteLoading label="loading AREA…" />;
 }

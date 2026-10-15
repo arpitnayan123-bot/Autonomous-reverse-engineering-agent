@@ -1,5 +1,5 @@
 /**
- * Subagent tracking for the REA agent loop.
+ * Subagent tracking for the AREA agent loop.
  *
  * A subagent is a nested `runAgentLoop` run (depth 2) spawned by the primary
  * loop through the `spawn_subagent` tool: same target, same chat session

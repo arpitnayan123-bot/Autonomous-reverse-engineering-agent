@@ -23,7 +23,7 @@ export async function POST(req: Request) {
     );
   }
   try {
-    const email = "demo@rea.platform";
+    const email = "demo@area.platform";
     let user = await db.user.findUnique({ where: { email } });
     if (!user) {
       try {

@@ -17,11 +17,11 @@ export const metadata: Metadata = {
   metadataBase: new URL(
     process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"
   ),
-  title: "REA Platform — Reverse Engineer Anything",
+  title: "AREA — Autonomous reverse engineering agent",
   description:
-    "Browser-based AI reverse-engineering platform. Upload a binary, artifact, database or app — the REA engine investigates it with evidence-backed rigor.",
+    "AREA is an autonomous reverse engineering agent: upload a binary, artifact, database or app — the engine investigates it with 170 real tools and evidence-backed rigor.",
   keywords: [
-    "REA",
+    "AREA",
     "reverse engineering",
     "binary analysis",
     "evidence-first",
@@ -29,29 +29,29 @@ export const metadata: Metadata = {
     "AI agent",
   ],
   icons: {
-    icon: "/rea-logo-256.png",
-    apple: "/rea-logo-180.png",
+    icon: "/area-logo-256.png",
+    apple: "/area-logo-180.png",
   },
   openGraph: {
-    title: "REA Platform — Reverse Engineer Anything",
+    title: "AREA — Autonomous reverse engineering agent",
     description:
       "Professional reverse engineering, as easy as chatting with an AI.",
-    siteName: "REA Platform",
+    siteName: "AREA",
     type: "website",
     images: [
       {
-        url: "/rea-logo.png",
+        url: "/area-logo.png",
         width: 1024,
         height: 1024,
-        alt: "REA — Reverse Engineer Anything",
+        alt: "AREA — Autonomous reverse engineering agent",
       },
     ],
   },
   twitter: {
     card: "summary",
-    title: "REA Platform — Reverse Engineer Anything",
+    title: "AREA — Autonomous reverse engineering agent",
     description: "Evidence-first AI reverse engineering in the browser.",
-    images: ["/rea-logo.png"],
+    images: ["/area-logo.png"],
   },
 };
 

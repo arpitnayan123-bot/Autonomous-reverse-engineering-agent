@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LoRA fine-tune a code LLM on REA-mined RE task datasets (GPU host REQUIRED).
+LoRA fine-tune a code LLM on AREA-mined RE task datasets (GPU host REQUIRED).
 
 Fine-tunes Qwen/Qwen2.5-Coder-7B-Instruct (or --base-model: Llama/DeepSeek
 coder variants) with peft+transformers:
@@ -10,12 +10,12 @@ coder variants) with peft+transformers:
   - prompt-masked loss (labels = -100 on the system+user part);
   - saves to training/out/<task>-lora/ (+ training_meta.json for the registry);
   - --merge exports MERGED standalone weights (training/out/<task>-lora-merged/)
-    that a vLLM / llama.cpp server can serve directly, so REA can register it
+    that a vLLM / llama.cpp server can serve directly, so AREA can register it
     via /api/models as adapter "openai-compatible".
 
 HARDWARE HONESTY: this needs a real CUDA GPU — 1x A100 40GB is the minimum for
 a 7B model in 4-bit LoRA (batch 2 + grad accum 8, seq len 2048). The sandbox
-host that REA runs on has NO GPU by design: training is out-of-band. The script
+host that AREA runs on has NO GPU by design: training is out-of-band. The script
 refuses to start without CUDA instead of silently training on CPU.
 
 The system prompts are byte-identical to src/server/models/adapters.ts
@@ -174,7 +174,7 @@ input does not show.""",
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="LoRA fine-tune for REA RE tasks")
+    parser = argparse.ArgumentParser(description="LoRA fine-tune for AREA RE tasks")
     parser.add_argument("--task", required=True, choices=TASKS)
     parser.add_argument("--dataset", default=None,
                         help="JSONL with {task,input,output,source} (default training/data/<task>.train.jsonl)")
@@ -294,10 +294,10 @@ def maybe_merge(args: argparse.Namespace, out_dir: Path) -> None:
     tokenizer.save_pretrained(str(merged_dir))
     print(
         f"[train_lora] merged weights written to {merged_dir}\n"
-        f"[train_lora] serve them with vLLM and register in REA:\n"
+        f"[train_lora] serve them with vLLM and register in AREA:\n"
         f"[train_lora]   vllm serve {merged_dir} --served-model-name {args.task}\n"
-        f"[train_lora]   curl -X POST $REA_URL/api/models -H 'content-type: application/json' \\\n"
-        f"[train_lora]     -b rea_session=<cookie> -d '{{\"action\":\"register\",\"name\":\"{args.task} lora\","
+        f"[train_lora]   curl -X POST $AREA_URL/api/models -H 'content-type: application/json' \\\n"
+        f"[train_lora]     -b area_session=<cookie> -d '{{\"action\":\"register\",\"name\":\"{args.task} lora\","
         f"\"task\":\"{args.task}\",\"baseModel\":\"{args.base_model}\","
         f"\"adapter\":\"openai-compatible\",\"endpoint\":\"http://<gpu-host>:8000/v1/chat/completions\","
         f"\"priority\":10}}'"
@@ -316,7 +316,7 @@ def main() -> int:
 
     if not torch.cuda.is_available():
         raise SystemExit(
-            "[train_lora] NO CUDA device available — refusing to train. This host (the REA "
+            "[train_lora] NO CUDA device available — refusing to train. This host (the AREA "
             "sandbox) has no GPU by design; run this script on a GPU machine "
             "(1x A100 40GB minimum for a 7B model in 4-bit LoRA)."
         )

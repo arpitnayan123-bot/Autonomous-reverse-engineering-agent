@@ -18,16 +18,34 @@ import { getRuntimeSecret } from "@/lib/runtime-secret";
  */
 
 function vaultSecret(): string {
-  return getRuntimeSecret("REA_VAULT_SECRET", "vaultSecret");
+  return getRuntimeSecret("AREA_VAULT_SECRET", "vaultSecret");
 }
 
 let cachedKey: Buffer | null = null;
 
+/**
+ * Salt generation order matters for the REA → AREA rename: deployments that
+ * sealed keys before the rename used "area-vault-salt-v1"'s predecessor
+ * ("rea-vault-salt-v1"). New seals always use the current salt; opens fall
+ * back to the legacy salt so pre-rename ciphertexts stay decryptable.
+ */
+const VAULT_SALT = "area-vault-salt-v1";
+const LEGACY_VAULT_SALT = "rea-vault-salt-v1";
+
 function vaultKey(): Buffer {
   if (!cachedKey) {
-    cachedKey = scryptSync(vaultSecret(), "rea-vault-salt-v1", 32);
+    cachedKey = scryptSync(vaultSecret(), VAULT_SALT, 32);
   }
   return cachedKey;
+}
+
+let cachedLegacyKey: Buffer | null = null;
+
+function legacyVaultKey(): Buffer {
+  if (!cachedLegacyKey) {
+    cachedLegacyKey = scryptSync(vaultSecret(), LEGACY_VAULT_SALT, 32);
+  }
+  return cachedLegacyKey;
 }
 
 export interface SealedKey {
@@ -48,17 +66,19 @@ export function sealKey(plaintext: string): SealedKey {
 }
 
 export function openKey(sealed: SealedKey): string {
-  const decipher = createDecipheriv(
-    "aes-256-gcm",
-    vaultKey(),
-    Buffer.from(sealed.iv, "base64")
-  );
-  decipher.setAuthTag(Buffer.from(sealed.tag, "base64"));
-  const dec = Buffer.concat([
-    decipher.update(Buffer.from(sealed.cipher, "base64")),
-    decipher.final(),
-  ]);
-  return dec.toString("utf8");
+  const iv = Buffer.from(sealed.iv, "base64");
+  const data = Buffer.from(sealed.cipher, "base64");
+  for (const key of [vaultKey(), legacyVaultKey()]) {
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", key, iv);
+      decipher.setAuthTag(Buffer.from(sealed.tag, "base64"));
+      const dec = Buffer.concat([decipher.update(data), decipher.final()]);
+      return dec.toString("utf8");
+    } catch {
+      /* wrong key (pre/post rename salt) — try the next */
+    }
+  }
+  throw new Error("sealed key cannot be opened with any known vault salt");
 }
 
 /** Mask a key for display: keep provider prefix + last 4 only. */

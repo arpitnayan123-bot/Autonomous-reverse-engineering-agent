@@ -5,7 +5,7 @@ import { safeFetch, assertPublicUrl, BlockedUrlError } from "./net";
 import { upsertGraph, type NodeRef, type EdgeRef } from "./graph";
 
 /**
- * REA Explorer — polite website crawler.
+ * AREA Explorer — polite website crawler.
  *
  * Discovers a site's publicly observable surface: pages, navigation links,
  * page titles/descriptions, and technology fingerprints from headers/markup.

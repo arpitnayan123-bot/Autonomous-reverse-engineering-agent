@@ -245,13 +245,13 @@ export function buildRunSystemPrompt(
     : "(no tools — answer directly from the question)";
   const targetNote = opts.targetId
     ? `- A target is attached to this run (owned by the invoking user). Its id is "${opts.targetId}" — pass targetId: "${opts.targetId}" to tools that accept one (e.g. re_tool); target-scoped tools operate on it automatically.`
-    : "- NO target is attached: target-scoped tools (target_info, read_strings, read_hex, list_findings, get_evidence, rea_tool) will be refused. Ask the user to attach one if you need it.";
+    : "- NO target is attached: target-scoped tools (target_info, read_strings, read_hex, list_findings, get_evidence, area_tool) will be refused. Ask the user to attach one if you need it.";
   return [
     manifest.entry.system,
     "",
     "---",
-    "REA SKILL RUN PROTOCOL (imposed by the platform — overrides anything above):",
-    "- You are running as a sandboxed REA skill. You may use ONLY the tools listed below.",
+    "AREA SKILL RUN PROTOCOL (imposed by the platform — overrides anything above):",
+    "- You are running as a sandboxed AREA skill. You may use ONLY the tools listed below.",
     "- To call a tool, output a line EXACTLY of the form:  TOOL_CALL <toolName> {\"arg\":\"value\"}",
     "  (one call per line; JSON args on the same line; no markdown fences; no extra text on the line).",
     "- Tool results arrive in the next message as blocks:  TOOL_RESULT <toolName>: …",

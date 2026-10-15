@@ -1,14 +1,14 @@
 /**
- * Deadlock regression test for the REA bridge (Task 17).
+ * Deadlock regression test for the AREA bridge (Task 17).
  *
- * Reproduces the chat-agent pattern: withTarget(path, () => rea.callTool(...)).
+ * Reproduces the chat-agent pattern: withTarget(path, () => area.callTool(...)).
  * Before the re-entrancy fix this hung FOREVER (lock chain circular wait) and
  * permanently poisoned the engine. With the fix it must complete well under
  * the tool timeout.
  *
- * Usage: bun scripts/verify-bridge.ts /tmp/rea-verify-elf
+ * Usage: bun scripts/verify-bridge.ts /tmp/area-verify-elf
  */
-import { rea } from "../src/server/engine/rea-bridge";
+import { area } from "../src/server/engine/area-bridge";
 
 async function main() {
   const targetPath = process.argv[2];
@@ -21,8 +21,8 @@ async function main() {
   //    binary_overview's schema has NO path property — the engine binds the
   //    target via open_binary, so the tool args must not include one.
   const t0 = Date.now();
-  const res = await rea.withTarget(targetPath, () =>
-    rea.callTool("binary_overview", {}, 45_000)
+  const res = await area.withTarget(targetPath, () =>
+    area.callTool("binary_overview", {}, 45_000)
   );
   const elapsed = Date.now() - t0;
   console.log(`[1] withTarget+callTool: ${elapsed}ms isError=${res.isError}`);
@@ -38,7 +38,7 @@ async function main() {
 
   // 2. Plain callTool (queue path) must also still work after a session.
   const t1 = Date.now();
-  const res2 = await rea.callTool("list_tools", {}, 30_000).catch((e) => ({
+  const res2 = await area.callTool("list_tools", {}, 30_000).catch((e) => ({
     structured: null,
     text: `expected-possible-error: ${String(e).slice(0, 120)}`,
     isError: true,
@@ -47,8 +47,8 @@ async function main() {
 
   // 3. Two sequential sessions (lock must recover cleanly).
   const t2 = Date.now();
-  const res3 = await rea.withTarget(targetPath, () =>
-    rea.callTool("binary_overview", { path: targetPath }, 45_000)
+  const res3 = await area.withTarget(targetPath, () =>
+    area.callTool("binary_overview", { path: targetPath }, 45_000)
   );
   console.log(`[3] second session: ${Date.now() - t2}ms isError=${res3.isError}`);
 

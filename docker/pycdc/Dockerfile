@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 ###############################################################################
-# REA backend: pycdc (Decompyle++) — image tag rea/pycdc:latest
+# AREA backend: pycdc (Decompyle++) — image tag area/pycdc:latest
 #
 # Contract (src/server/retools/registry.ts, tool ids "pycdc" and "pycdas"):
 #   the runner invokes the container as
@@ -9,7 +9,7 @@
 #   so this image must NOT define ENTRYPOINT/CMD — the runner passes the full
 #   registry argv after the image name — and both binaries must be on PATH.
 #   Posture: --rm --network none --read-only --tmpfs /tmp --memory 512m
-#   --cpus 1 -v <workDir>:/rea:rw -w /rea.
+#   --cpus 1 -v <workDir>:/area:rw -w /area.
 #
 # Verified against the pycdc source at W1b authoring time: BOTH pycdc and
 # pycdas take `-o <filename>` as an OUTPUT FILE (default stdout) — see the
@@ -42,4 +42,4 @@ RUN git clone --depth 1 https://github.com/zrax/pycdc /tmp/pycdc \
 
 ENV HOME=/tmp
 
-WORKDIR /rea
+WORKDIR /area

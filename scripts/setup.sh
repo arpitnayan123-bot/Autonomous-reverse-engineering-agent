@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# REA one-command setup (Capability C6).
+# AREA one-command setup (Capability C6).
 #   ./scripts/setup.sh           — core platform (deps, db, build check)
 #   ./scripts/setup.sh --retools — also build the classical RE tool images
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "== REA setup =="
+echo "== AREA setup =="
 command -v bun >/dev/null || { echo "bun is required: https://bun.sh"; exit 1; }
 
 echo "-- 1/4 dependencies"
@@ -29,5 +29,5 @@ if [ "${1:-}" = "--retools" ]; then
 fi
 
 echo ""
-echo "REA is ready:  bun run dev    →  http://localhost:3000"
+echo "AREA is ready:  bun run dev    →  http://localhost:3000"
 echo "Optional:      bun run bench  (benchmark + leaderboard sync), scripts/mcp-server.ts (MCP), vscode/ extension"

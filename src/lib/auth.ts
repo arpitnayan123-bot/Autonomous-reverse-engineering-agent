@@ -4,7 +4,7 @@ import { db } from "./db";
 import { getRuntimeSecret } from "./runtime-secret";
 
 /**
- * Authentication for the REA platform.
+ * Authentication for the AREA platform.
  * - Passwords hashed with scrypt (node:crypto), per-user random salt.
  * - Sessions: HMAC-SHA256 signed payload (carrying a server-side session id)
  *   stored in an HttpOnly cookie. Every request validates the session id
@@ -15,11 +15,11 @@ import { getRuntimeSecret } from "./runtime-secret";
  *   it is never a hardcoded value.
  */
 
-const SESSION_COOKIE = "rea_session";
+const SESSION_COOKIE = "area_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
 
 function sessionSecret(): string {
-  return getRuntimeSecret("REA_SESSION_SECRET", "sessionSecret");
+  return getRuntimeSecret("AREA_SESSION_SECRET", "sessionSecret");
 }
 
 export function hashPassword(password: string): string {

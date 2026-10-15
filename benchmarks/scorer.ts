@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * REA benchmark scorer — turns raw runner captures into 0-100 scores.
+ * AREA benchmark scorer — turns raw runner captures into 0-100 scores.
  *
  * Scoring types (from task.toml):
  *   - rubric: an LLM judge (the platform default model) scores the agent's

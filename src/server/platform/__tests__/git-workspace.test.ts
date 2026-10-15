@@ -5,7 +5,7 @@
  * Proves the workspace's built-in version control end-to-end against REAL
  * git repositories under storage/workspaces/ (gitignored, throwaway):
  *   - creation (ensureWorkspace) runs `git init`, stamps the repo-local
- *     identity "REA Agent <agent@rea.local>" and records the initial EMPTY
+ *     identity "AREA Agent <agent@area.local>" and records the initial EMPTY
  *     commit — idempotently;
  *   - every successful workspace write is auto-committed with the
  *     deterministic message "write: <path> (<bytes> bytes)" and the tree
@@ -113,12 +113,12 @@ describe("git-integrated workspace", () => {
     expect(fsSync.existsSync(path.join(dir(), ".git"))).toBe(true);
 
     // Repo-local commit identity stamped at init.
-    expect(gitSync(dir(), ["config", "user.name"]).stdout.trim()).toBe("REA Agent");
-    expect(gitSync(dir(), ["config", "user.email"]).stdout.trim()).toBe("agent@rea.local");
+    expect(gitSync(dir(), ["config", "user.name"]).stdout.trim()).toBe("AREA Agent");
+    expect(gitSync(dir(), ["config", "user.email"]).stdout.trim()).toBe("agent@area.local");
 
     // Two commits after init: the housekeeping .gitignore commit (HEAD) and
     // the initial EMPTY commit at the root of the history.
-    expect(commitSubjects(dir())).toEqual(["write: .gitignore (6 bytes)", "init"]);
+    expect(commitSubjects(dir())).toEqual(["write: .gitignore (7 bytes)", "init"]);
     const root = gitSync(dir(), ["rev-list", "--max-parents=0", "HEAD"]).stdout.trim();
     expect(root).toMatch(/^[0-9a-f]{7,40}$/);
     expect(gitSync(dir(), ["log", "--format=%s", root]).stdout.trim()).toBe("init");
@@ -128,8 +128,8 @@ describe("git-integrated workspace", () => {
 
     // Idempotent: re-ensuring adds no commits and keeps the identity.
     await ensureWorkspace(key);
-    expect(commitSubjects(dir())).toEqual(["write: .gitignore (6 bytes)", "init"]);
-    expect(gitSync(dir(), ["config", "user.name"]).stdout.trim()).toBe("REA Agent");
+    expect(commitSubjects(dir())).toEqual(["write: .gitignore (7 bytes)", "init"]);
+    expect(gitSync(dir(), ["config", "user.name"]).stdout.trim()).toBe("AREA Agent");
   });
 
   test("auto-commit on workspace_write: deterministic message, clean tree, real receipt", async () => {

@@ -1,56 +1,56 @@
 import * as vscode from "vscode";
 import path from "path";
-import { MAX_UPLOAD_BYTES, ReaApiClient } from "./api";
+import { MAX_UPLOAD_BYTES, AreaApiClient } from "./api";
 import { openChatPanel } from "./chatPanel";
-import { REA_PARTICIPANT_ID, registerReaChatParticipant } from "./chat";
-import { ReaStatusBar } from "./status";
-import { REA_PROJECT_TARGETS_KEY, ReaTreeDataProvider } from "./tree";
-import type { ReaProject, ReaTarget } from "./types";
+import { AREA_PARTICIPANT_ID, registerReaChatParticipant } from "./chat";
+import { AreaStatusBar } from "./status";
+import { AREA_PROJECT_TARGETS_KEY, AreaTreeDataProvider } from "./tree";
+import type { AreaProject, AreaTarget } from "./types";
 
-/** Secret storage key for the platform session token (rea_session cookie). */
-const SECRET_KEY = "rea.sessionToken";
-/** Workspace-state key for the last active project (drives @rea context). */
-const ACTIVE_PROJECT_KEY = "rea.activeProjectId";
+/** Secret storage key for the platform session token (area_session cookie). */
+const SECRET_KEY = "area.sessionToken";
+/** Workspace-state key for the last active project (drives @area context). */
+const ACTIVE_PROJECT_KEY = "area.activeProjectId";
 
 export function activate(context: vscode.ExtensionContext): void {
-  const output = vscode.window.createOutputChannel("REA");
+  const output = vscode.window.createOutputChannel("AREA");
   context.subscriptions.push(output);
 
   const baseUrl = () =>
-    vscode.workspace.getConfiguration("rea").get<string>("baseUrl", "http://localhost:3000");
+    vscode.workspace.getConfiguration("area").get<string>("baseUrl", "http://localhost:3000");
 
   // ------------------------------------------------------------- runtime state
   let connected = false;
   let userEmail: string | null = null;
   let activeProjectId: string | null =
     context.workspaceState.get<string>(ACTIVE_PROJECT_KEY) ?? null;
-  let activeTarget: ReaTarget | null = null;
+  let activeTarget: AreaTarget | null = null;
   let activeSessionId: string | null = null;
 
-  const api = new ReaApiClient({
+  const api = new AreaApiClient({
     baseUrl,
     token: async () => (await context.secrets.get(SECRET_KEY)) ?? null,
     onUnauthorized: () => setConnected(false, null),
   });
 
-  const statusBar = new ReaStatusBar();
-  const tree = new ReaTreeDataProvider({
+  const statusBar = new AreaStatusBar();
+  const tree = new AreaTreeDataProvider({
     api,
     workspaceState: context.workspaceState,
     isConnected: () => connected,
     isActiveProject: (id) => id === activeProjectId,
   });
-  context.subscriptions.push(statusBar, vscode.window.registerTreeDataProvider("rea.explorer", tree));
+  context.subscriptions.push(statusBar, vscode.window.registerTreeDataProvider("area.explorer", tree));
 
   function setConnected(value: boolean, email: string | null): void {
     connected = value;
     userEmail = email;
     statusBar.set(value ? "connected" : "offline", email, baseUrl());
-    void vscode.commands.executeCommand("setContext", "rea.connected", value);
+    void vscode.commands.executeCommand("setContext", "area.connected", value);
     tree.refresh();
   }
 
-  function activeProject(): ReaProject | null {
+  function activeProject(): AreaProject | null {
     return tree.projects.find((p) => p.id === activeProjectId) ?? null;
   }
 
@@ -88,7 +88,7 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (err) {
       setConnected(false, userEmail);
       if (interactive) {
-        vscode.window.showErrorMessage(`REA connection failed: ${errorMessage(err)}`);
+        vscode.window.showErrorMessage(`AREA connection failed: ${errorMessage(err)}`);
       }
       output.appendLine(`[reconnect] ${errorMessage(err)}`);
     }
@@ -96,7 +96,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   async function loginFlow(): Promise<void> {
     const email = await vscode.window.showInputBox({
-      prompt: "REA account email",
+      prompt: "AREA account email",
       placeHolder: "you@example.com",
       ignoreFocusOut: true,
       validateInput: (v) => (v.includes("@") ? null : "Enter a valid email"),
@@ -106,7 +106,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const password = await vscode.window.showInputBox({
-      prompt: `REA password for ${email}`,
+      prompt: `AREA password for ${email}`,
       password: true,
       ignoreFocusOut: true,
     });
@@ -117,15 +117,15 @@ export function activate(context: vscode.ExtensionContext): void {
     statusBar.set("connecting", userEmail, baseUrl());
     try {
       const { token, user } = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "Signing in to REA…" },
+        { location: vscode.ProgressLocation.Notification, title: "Signing in to AREA…" },
         () => api.login(email.trim(), password)
       );
       await context.secrets.store(SECRET_KEY, token);
       setConnected(true, user.email);
-      vscode.window.showInformationMessage(`Connected to REA as ${user.email}`);
+      vscode.window.showInformationMessage(`Connected to AREA as ${user.email}`);
     } catch (err) {
       setConnected(false, null);
-      vscode.window.showErrorMessage(`REA sign-in failed: ${errorMessage(err)}`);
+      vscode.window.showErrorMessage(`AREA sign-in failed: ${errorMessage(err)}`);
     }
   }
 
@@ -134,7 +134,7 @@ export function activate(context: vscode.ExtensionContext): void {
     activeSessionId = null;
     activeTarget = null;
     setConnected(false, null);
-    vscode.window.showInformationMessage("Signed out of REA.");
+    vscode.window.showInformationMessage("Signed out of AREA.");
   }
 
   // -------------------------------------------------------------- file upload
@@ -146,7 +146,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     if (editor.document.uri.scheme !== "file") {
-      vscode.window.showWarningMessage("Only local files can be uploaded as REA targets.");
+      vscode.window.showWarningMessage("Only local files can be uploaded as AREA targets.");
       return;
     }
     const uri = editor.document.uri;
@@ -155,7 +155,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const stat = await vscode.workspace.fs.stat(uri);
       if (stat.size > MAX_UPLOAD_BYTES) {
         vscode.window.showErrorMessage(
-          `${fileName} exceeds the ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))} MB REA upload cap.`
+          `${fileName} exceeds the ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))} MB AREA upload cap.`
         );
         return;
       }
@@ -171,10 +171,10 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
 
-    let target: ReaTarget;
+    let target: AreaTarget;
     try {
       const uploaded = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Uploading ${fileName} to REA…` },
+        { location: vscode.ProgressLocation.Notification, title: `Uploading ${fileName} to AREA…` },
         () => api.uploadTarget(fileName, bytes)
       );
       target = {
@@ -189,7 +189,7 @@ export function activate(context: vscode.ExtensionContext): void {
         lastRun: null,
       };
     } catch (err) {
-      vscode.window.showErrorMessage(`REA upload failed: ${errorMessage(err)}`);
+      vscode.window.showErrorMessage(`AREA upload failed: ${errorMessage(err)}`);
       return;
     }
 
@@ -213,7 +213,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.window
       .showInformationMessage(
-        `Uploaded ${fileName} to REA — chat started (format: ${target.detectedFormat ?? "unknown"}).`,
+        `Uploaded ${fileName} to AREA — chat started (format: ${target.detectedFormat ?? "unknown"}).`,
         "Run full analysis"
       )
       .then((pick) => {
@@ -224,10 +224,10 @@ export function activate(context: vscode.ExtensionContext): void {
   async function runAnalysis(targetId: string, name: string): Promise<void> {
     try {
       const runId = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Starting REA analysis of ${name}…` },
+        { location: vscode.ProgressLocation.Notification, title: `Starting AREA analysis of ${name}…` },
         () => api.analyzeTarget(targetId)
       );
-      vscode.window.showInformationMessage(`REA analysis started (run ${runId}).`);
+      vscode.window.showInformationMessage(`AREA analysis started (run ${runId}).`);
       tree.refresh();
     } catch (err) {
       vscode.window.showErrorMessage(`Could not start analysis: ${errorMessage(err)}`);
@@ -235,11 +235,11 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   async function associateProjectTarget(projectId: string, targetId: string): Promise<void> {
-    const map = context.workspaceState.get<Record<string, string[]>>(REA_PROJECT_TARGETS_KEY, {});
+    const map = context.workspaceState.get<Record<string, string[]>>(AREA_PROJECT_TARGETS_KEY, {});
     const list = new Set(map[projectId] ?? []);
     list.add(targetId);
     map[projectId] = Array.from(list);
-    await context.workspaceState.update(REA_PROJECT_TARGETS_KEY, map);
+    await context.workspaceState.update(AREA_PROJECT_TARGETS_KEY, map);
   }
 
   // -------------------------------------------------------------- chat panels
@@ -255,17 +255,17 @@ export function activate(context: vscode.ExtensionContext): void {
   // ----------------------------------------------------------------- commands
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("rea.login", () => void loginFlow()),
-    vscode.commands.registerCommand("rea.logout", () => void logout()),
-    vscode.commands.registerCommand("rea.reconnect", () => void reconnect(true)),
-    vscode.commands.registerCommand("rea.refresh", () => tree.refresh()),
-    vscode.commands.registerCommand("rea.newChat", () => {
+    vscode.commands.registerCommand("area.login", () => void loginFlow()),
+    vscode.commands.registerCommand("area.logout", () => void logout()),
+    vscode.commands.registerCommand("area.reconnect", () => void reconnect(true)),
+    vscode.commands.registerCommand("area.refresh", () => tree.refresh()),
+    vscode.commands.registerCommand("area.newChat", () => {
       activeSessionId = null;
-      vscode.window.showInformationMessage("Next @rea message starts a new chat.");
+      vscode.window.showInformationMessage("Next @area message starts a new chat.");
     }),
-    vscode.commands.registerCommand("rea.analyzeCurrentFile", () => void analyzeCurrentFile()),
+    vscode.commands.registerCommand("area.analyzeCurrentFile", () => void analyzeCurrentFile()),
     vscode.commands.registerCommand(
-      "rea.openChat",
+      "area.openChat",
       (node: { kind: string; session?: { id: string; title: string } }) => {
         if (node?.kind === "chat" && node.session) {
           activeSessionId = node.session.id;
@@ -277,8 +277,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     ),
     vscode.commands.registerCommand(
-      "rea.analyzeTarget",
-      (node: { kind: string; target?: ReaTarget }) => {
+      "area.analyzeTarget",
+      (node: { kind: string; target?: AreaTarget }) => {
         if (node?.kind === "target" && node.target) {
           activeTarget = node.target;
           void runAnalysis(node.target.id, node.target.originalName);
@@ -286,14 +286,14 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     ),
     vscode.commands.registerCommand(
-      "rea.setActiveProject",
-      (node: { kind: string; project?: ReaProject }) => {
+      "area.setActiveProject",
+      (node: { kind: string; project?: AreaProject }) => {
         if (node?.kind === "project" && node.project) {
           activeProjectId = node.project.id;
           void context.workspaceState.update(ACTIVE_PROJECT_KEY, activeProjectId);
           tree.refresh();
           vscode.window.showInformationMessage(
-            `Active REA project: ${node.project.name} — @rea will use it as context.`
+            `Active AREA project: ${node.project.name} — @area will use it as context.`
           );
         }
       }
@@ -319,7 +319,7 @@ export function activate(context: vscode.ExtensionContext): void {
     );
   } else {
     output.appendLine(
-      `GitHub Copilot Chat not detected — the ${REA_PARTICIPANT_ID} participant is unavailable. All other features work.`
+      `GitHub Copilot Chat not detected — the ${AREA_PARTICIPANT_ID} participant is unavailable. All other features work.`
     );
   }
 
@@ -327,7 +327,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("rea.baseUrl")) {
+      if (e.affectsConfiguration("area.baseUrl")) {
         // The session cookie is host-scoped — revalidate against the new URL.
         void reconnect(false);
       }

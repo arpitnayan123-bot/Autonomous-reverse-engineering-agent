@@ -6,7 +6,7 @@ import { upsertGraph } from "./graph";
 import { tryBrowser } from "./browser";
 
 /**
- * REA Verification — functional checks, reference comparison, regression.
+ * AREA Verification — functional checks, reference comparison, regression.
  *
  * Runs HTTP-level checks with assertions (status, title presence, security
  * headers, soft-404 detection, latency), compares a reconstruction against
@@ -143,7 +143,7 @@ export async function runVerification(
 
   // 9. 404 behavior (soft-404 detection on a random missing path).
   if (res) {
-    const probeUrl = new URL(`/rea-verify-${Math.random().toString(36).slice(2, 10)}`, res.url).toString();
+    const probeUrl = new URL(`/area-verify-${Math.random().toString(36).slice(2, 10)}`, res.url).toString();
     try {
       const probe = await safeFetch(probeUrl, { maxBytes: 256 * 1024, timeoutMs: 10_000 });
       let probeText = "";

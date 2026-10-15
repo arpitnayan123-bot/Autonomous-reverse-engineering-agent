@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-DecompileBench-style eval harness for REA's specialized RE models.
+DecompileBench-style eval harness for AREA's specialized RE models.
 
 Loads a DecompileBench-style JSONL ({ task, input, expected, [source] }), runs
 inference against EITHER
   - an OpenAI-compatible endpoint (--endpoint http://gpu-host:8000/v1/chat/completions),
 or
-  - the REA platform LLM through the model registry chain (POST REA_URL/api/models
+  - the AREA platform LLM through the model registry chain (POST AREA_URL/api/models
     with {"action":"suggest","task":...,"payload":...} — requires a session cookie,
-    obtained by logging in via /api/auth/login with REA_EMAIL/REA_PASSWORD, exactly
+    obtained by logging in via /api/auth/login with AREA_EMAIL/AREA_PASSWORD, exactly
     the convention of scripts/mcp-token.ts),
 and scores FUNCTION NAME RECOVERY with exact-match + token-F1 (identifier-aware
 tokenization: snake_case / camelCase splits). Other tasks are listed and checked
@@ -17,14 +17,14 @@ for non-empty output but are NOT numerically scored here.
 If no dataset is configured, a tiny SYNTHETIC fixture is generated locally and
 clearly announced — those numbers are smoke-test numbers, not benchmark results.
 
-With --publish the aggregate is POSTed to REA_URL/api/leaderboard as provenance
+With --publish the aggregate is POSTed to AREA_URL/api/leaderboard as provenance
 OBSERVED with an explicit methodology string (what was measured, on what, with
 which metric; synthetic fixtures are flagged in the methodology itself).
 
 Usage:
     DECOMPILEBENCH_PATH=bench.jsonl python3 training/eval_decompilebench.py \
         --endpoint http://gpu-host:8000/v1/chat/completions
-    REA_EMAIL=you@example.com REA_PASSWORD='…' python3 training/eval_decompilebench.py --publish
+    AREA_EMAIL=you@example.com AREA_PASSWORD='…' python3 training/eval_decompilebench.py --publish
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from train_lora import PROMPTS, TASKS  # noqa: E402  (same-directory import)
 
-REA_URL = os.environ.get("REA_URL", "http://127.0.0.1:3000").rstrip("/")
+AREA_URL = os.environ.get("AREA_URL", "http://127.0.0.1:3000").rstrip("/")
 DEFAULT_FIXTURE = REPO_ROOT / "training" / "data" / "decompilebench-synthetic.jsonl"
 DEFAULT_REPORT_DIR = REPO_ROOT / "training" / "out"
 
@@ -133,13 +133,13 @@ def write_synthetic_fixture(path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# REA auth (scripts/mcp-token.ts convention) + inference transports
+# AREA auth (scripts/mcp-token.ts convention) + inference transports
 # ---------------------------------------------------------------------------
 
-def rea_login(email: str, password: str) -> str:
-    """POST /api/auth/login → the rea_session cookie value (mcp-token convention)."""
+def area_login(email: str, password: str) -> str:
+    """POST /api/auth/login → the area_session cookie value (mcp-token convention)."""
     req = urllib.request.Request(
-        f"{REA_URL}/api/auth/login",
+        f"{AREA_URL}/api/auth/login",
         data=json.dumps({"email": email, "password": password}).encode(),
         headers={"content-type": "application/json"},
         method="POST",
@@ -150,26 +150,26 @@ def rea_login(email: str, password: str) -> str:
                 raise SystemExit(f"[eval] login failed: HTTP {res.status}")
             cookies = res.headers.get_all("Set-Cookie") or []
     except urllib.error.URLError as exc:
-        raise SystemExit(f"[eval] cannot reach REA at {REA_URL}: {exc}")
-    session = next((c for c in cookies if c.startswith("rea_session=")), None)
+        raise SystemExit(f"[eval] cannot reach AREA at {AREA_URL}: {exc}")
+    session = next((c for c in cookies if c.startswith("area_session=")), None)
     token = session.split(";", 1)[0].split("=", 1)[1] if session else None
     if not token:
-        raise SystemExit("[eval] login succeeded but no rea_session cookie was returned")
+        raise SystemExit("[eval] login succeeded but no area_session cookie was returned")
     return token
 
 
 def infer_via_platform(task: str, payload: str, cookie: str, timeout_s: float) -> str:
     """Use the registry chain exactly as the UI does: POST /api/models suggest."""
     req = urllib.request.Request(
-        f"{REA_URL}/api/models",
+        f"{AREA_URL}/api/models",
         data=json.dumps({"action": "suggest", "task": task, "payload": payload}).encode(),
-        headers={"content-type": "application/json", "cookie": f"rea_session={cookie}"},
+        headers={"content-type": "application/json", "cookie": f"area_session={cookie}"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout_s) as res:
         body = json.loads(res.read().decode())
     if not body.get("ok"):
-        raise RuntimeError(f"REA suggest failed: {body.get('error')}")
+        raise RuntimeError(f"AREA suggest failed: {body.get('error')}")
     return body["result"]["suggestion"]
 
 
@@ -247,18 +247,18 @@ def token_f1(predicted: str, expected: str) -> float:
 # ---------------------------------------------------------------------------
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="DecompileBench-style eval for REA models")
+    parser = argparse.ArgumentParser(description="DecompileBench-style eval for AREA models")
     parser.add_argument("--dataset", default=os.environ.get("DECOMPILEBENCH_PATH"),
                         help="DecompileBench-style JSONL (env DECOMPILEBENCH_PATH)")
     parser.add_argument("--endpoint", default=None,
-                        help="OpenAI-compatible chat-completions URL; omit to use the REA platform LLM")
+                        help="OpenAI-compatible chat-completions URL; omit to use the AREA platform LLM")
     parser.add_argument("--model", default="Qwen/Qwen2.5-Coder-7B-Instruct",
                         help="model name sent to the OpenAI-compatible endpoint")
     parser.add_argument("--limit", type=int, default=0, help="cap items (0 = all)")
     parser.add_argument("--timeout-s", type=float, default=60.0)
     parser.add_argument("--report", default=None, help="markdown report path (default training/out/eval-<ts>.md)")
     parser.add_argument("--publish", action="store_true",
-                        help="POST the aggregate to REA /api/leaderboard as provenance OBSERVED")
+                        help="POST the aggregate to AREA /api/leaderboard as provenance OBSERVED")
     args = parser.parse_args()
 
     # ---- dataset (honest fixture fallback) ----
@@ -300,15 +300,15 @@ def main() -> int:
         mode = f"openai-compatible endpoint {args.endpoint} (model {args.model})"
         print("[eval] inference mode: openai-compatible endpoint")
     else:
-        email = os.environ.get("REA_EMAIL")
-        password = os.environ.get("REA_PASSWORD")
+        email = os.environ.get("AREA_EMAIL")
+        password = os.environ.get("AREA_PASSWORD")
         if not email or not password:
             raise SystemExit(
-                "[eval] platform-LLM mode needs REA_EMAIL and REA_PASSWORD (login via "
-                f"{REA_URL}/api/auth/login, scripts/mcp-token.ts convention) — or pass --endpoint"
+                "[eval] platform-LLM mode needs AREA_EMAIL and AREA_PASSWORD (login via "
+                f"{AREA_URL}/api/auth/login, scripts/mcp-token.ts convention) — or pass --endpoint"
             )
-        cookie = rea_login(email, password)
-        mode = f"REA platform LLM via {REA_URL}/api/models (action suggest)"
+        cookie = area_login(email, password)
+        mode = f"AREA platform LLM via {AREA_URL}/api/models (action suggest)"
 
     def infer(task: str, payload: str) -> str:
         if args.endpoint:
@@ -344,7 +344,7 @@ def main() -> int:
     other_ok = sum(1 for r in other_rows if r["produced"])
 
     lines = [
-        "# DecompileBench-style eval — REA specialized models",
+        "# DecompileBench-style eval — AREA specialized models",
         "",
         f"- inference: {mode}",
         f"- dataset: {'SYNTHETIC FIXTURE (not a real benchmark)' if synthetic else (args.dataset or 'unknown')}",
@@ -374,7 +374,7 @@ def main() -> int:
     print(report)
     print(f"[eval] report written to {report_path}")
 
-    # ---- optional publish to the REA leaderboard ----
+    # ---- optional publish to the AREA leaderboard ----
     if args.publish:
         if not n:
             print("[eval] publish skipped: no name-recovery items were scored")
@@ -387,7 +387,7 @@ def main() -> int:
             f"suggestions provenance INFERRED, aggregate published as OBSERVED (we ran the eval)."
         )
         payload = {
-            "agent": f"REA eval_decompilebench ({'endpoint' if args.endpoint else 'platform-llm'})",
+            "agent": f"AREA eval_decompilebench ({'endpoint' if args.endpoint else 'platform-llm'})",
             "benchmark": "decompilebench",
             "category": "binary",
             "score": score,
@@ -396,23 +396,23 @@ def main() -> int:
             "provenance": "OBSERVED",
         }
         req = urllib.request.Request(
-            f"{REA_URL}/api/leaderboard",
+            f"{AREA_URL}/api/leaderboard",
             data=json.dumps(payload).encode(),
-            headers={"content-type": "application/json", "cookie": f"rea_session={cookie or ''}"},
+            headers={"content-type": "application/json", "cookie": f"area_session={cookie or ''}"},
             method="POST",
         )
         try:
             with urllib.request.urlopen(req, timeout=15) as res:
                 body = res.read().decode()[:300]
-            print(f"[eval] published to {REA_URL}/api/leaderboard: HTTP OK — {body}")
+            print(f"[eval] published to {AREA_URL}/api/leaderboard: HTTP OK — {body}")
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                print(f"[eval] {REA_URL}/api/leaderboard returned 404 — the leaderboard endpoint "
-                      "is not deployed on this REA instance yet; result stays local (honest).")
+                print(f"[eval] {AREA_URL}/api/leaderboard returned 404 — the leaderboard endpoint "
+                      "is not deployed on this AREA instance yet; result stays local (honest).")
             else:
                 print(f"[eval] publish failed: HTTP {exc.code} {exc.read().decode()[:200]}")
         except urllib.error.URLError as exc:
-            print(f"[eval] publish failed: cannot reach REA at {REA_URL}: {exc}")
+            print(f"[eval] publish failed: cannot reach AREA at {AREA_URL}: {exc}")
     return 0
 
 

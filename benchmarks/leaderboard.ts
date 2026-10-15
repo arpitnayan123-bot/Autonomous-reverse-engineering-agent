@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 /**
- * REA leaderboard sync — record our latest MEASURED benchmark scores as
- * OBSERVED leaderboard entries (agent "REA (measured)").
+ * AREA leaderboard sync — record our latest MEASURED benchmark scores as
+ * OBSERVED leaderboard entries (agent "AREA (measured)").
  *
  * Reads benchmarks/report.json (written by benchmarks/report.ts) and writes
  * one LeaderboardEntry per category average (binary|web|code|mixed) plus the
  * overall average, directly via Prisma — no HTTP round-trip needed.
  *
- * Idempotent: previous entries for agent "REA (measured)" with the same
+ * Idempotent: previous entries for agent "AREA (measured)" with the same
  * benchmark + category are deleted before inserting, so re-running after a
  * fresh benchmark run replaces (never duplicates) our rows.
  *
@@ -23,10 +23,10 @@ import { db } from "@/lib/db";
 
 const PROJECT_ROOT = path.resolve(import.meta.dir, "..");
 const REPORT_PATH = path.join(PROJECT_ROOT, "benchmarks", "report.json");
-const REPO_URL = "https://github.com/morluto/rea";
+const REPO_URL = "https://github.com/arpitnayan123-bot/reverse-engineering-agent";
 
-const AGENT_NAME = "REA (measured)";
-const BENCHMARK = "rea-bench";
+const AGENT_NAME = "AREA (measured)";
+const BENCHMARK = "area-bench";
 
 interface ReportAggregates {
   tasks: number;
@@ -44,7 +44,7 @@ interface Report {
 
 function methodologyFor(category: string, scored: number, runId: string): string {
   const base =
-    `Measured by the open REA benchmark harness (benchmarks/runner.ts → scorer.ts → report.ts): ` +
+    `Measured by the open AREA benchmark harness (benchmarks/runner.ts → scorer.ts → report.ts): ` +
     `${scored} scored rubric/exact task${scored === 1 ? "" : "s"} in category "${category}", run ${runId} ` +
     `(benchmarks/report.json). LLM-judged with an anti-fabrication rule — no tool-trace evidence caps a criterion at half credit.`;
   return category === "overall"

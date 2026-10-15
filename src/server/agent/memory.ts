@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import type { Memory } from "@prisma/client";
 
 /**
- * Cross-session persistent memory for the REA agent.
+ * Cross-session persistent memory for the AREA agent.
  *
  * The agent can store durable facts ("remember") and search them in later
  * sessions ("recall"). Rows live in the Memory table, scoped per user:

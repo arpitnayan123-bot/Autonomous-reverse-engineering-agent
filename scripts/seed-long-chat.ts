@@ -6,7 +6,7 @@
 import { db } from "../src/lib/db";
 
 async function main() {
-  const user = await db.user.findUnique({ where: { email: "demo@rea.platform" } });
+  const user = await db.user.findUnique({ where: { email: "demo@area.platform" } });
   if (!user) {
     console.log("no demo user — sign in once via the UI first");
     process.exit(1);

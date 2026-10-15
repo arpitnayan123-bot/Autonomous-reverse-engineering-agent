@@ -1,6 +1,6 @@
 /**
  * Format detection via magic bytes + filename hints.
- * Mirrors REA's fail-closed admission: unknown formats are clearly reported.
+ * Mirrors AREA's fail-closed admission: unknown formats are clearly reported.
  */
 
 export interface FormatDetection {
@@ -104,7 +104,7 @@ export function detectFormat(
     family: "unknown",
     label: "Unknown binary format",
     confidence: "low",
-    details: "No known magic signature matched. REA will treat this as a raw binary and extract strings/hex only.",
+    details: "No known magic signature matched. AREA will treat this as a raw binary and extract strings/hex only.",
   };
 }
 
@@ -123,7 +123,7 @@ function looksLikeJson(head: string): boolean {
   return t.startsWith("{") || t.startsWith("[");
 }
 
-/** Formats the platform can meaningfully analyze with the bundled REA engine. */
+/** Formats the platform can meaningfully analyze with the bundled AREA engine. */
 export const SUPPORTED_FORMATS: Record<string, string[]> = {
   zip: ["inspect_artifact", "extract_artifact"],
   apk: ["inspect_artifact", "extract_artifact"],

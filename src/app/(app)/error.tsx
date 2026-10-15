@@ -1,6 +1,6 @@
 "use client";
 
-import { RouteError } from "@/components/rea/route-chrome";
+import { RouteError } from "@/components/area/route-chrome";
 
 export default function AppError({
   error,
@@ -9,5 +9,5 @@ export default function AppError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
-  return <RouteError error={error} reset={reset} label="REA hit an error" />;
+  return <RouteError error={error} reset={reset} label="AREA hit an error" />;
 }

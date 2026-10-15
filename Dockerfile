@@ -1,6 +1,6 @@
-# REA platform image (self-hosting the Next.js app).
-# Build:  docker build -t rea-platform .
-# Run:    docker run -p 3000:3000 -v rea-data:/app/db -v rea-storage:/app/storage rea-platform
+# AREA platform image (self-hosting the Next.js app).
+# Build:  docker build -t area-platform .
+# Run:    docker run -p 3000:3000 -v area-data:/app/db -v area-storage:/app/storage area-platform
 # NOTE: Docker-based command/RE-tool sandboxing requires a docker socket or
 # dockerd-in-docker; without it the platform runs its process-jail sandbox.
 FROM oven/bun:1 AS deps

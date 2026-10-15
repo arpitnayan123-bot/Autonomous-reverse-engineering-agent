@@ -19,20 +19,20 @@ export const dynamic = "force-dynamic";
  *                           DecompileBench baselines, competitors…) are
  *                           INFERRED with a cited methodology — never
  *                           OBSERVED. Only scores measured by the open harness
- *                           in benchmarks/ (benchmark "rea-bench") may be
+ *                           in benchmarks/ (benchmark "area-bench") may be
  *                           submitted as OBSERVED.
  */
 
 const CATEGORIES = ["binary", "web", "code", "mixed", "overall"] as const;
 const PROVENANCES = ["OBSERVED", "DERIVED", "INFERRED", "UNKNOWN"] as const;
-const BENCH_BENCHMARK = "rea-bench"; // the open harness (benchmarks/)
+const BENCH_BENCHMARK = "area-bench"; // the open harness (benchmarks/)
 
 /** Hard cap — the leaderboard is small; 2000 rows is far beyond honest scale. */
 const MAX_ROWS = 2000;
 
 const METHODOLOGY_STATEMENT =
   "Scores are 0-100 per (agent, benchmark, category); per triple only the best score is listed. " +
-  "REA rows are OBSERVED — measured by the open benchmark harness in benchmarks/ " +
+  "AREA rows are OBSERVED — measured by the open benchmark harness in benchmarks/ " +
   "(runner.ts → scorer.ts → report.ts: rubric/exact scoring with an anti-fabrication rule). " +
   "Third-party rows carry provenance INFERRED (or UNKNOWN) and must cite a methodology of at least 30 characters; " +
   "external claims are never graded OBSERVED.";

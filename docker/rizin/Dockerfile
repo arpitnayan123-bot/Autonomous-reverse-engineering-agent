@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 ###############################################################################
-# REA backend: rizin — image tag rea/rizin:latest
+# AREA backend: rizin — image tag area/rizin:latest
 #
 # Contract (src/server/retools/registry.ts, tool ids "rizin"):
 #   the runner invokes the container as
@@ -8,8 +8,8 @@
 #   runner passes the full registry argv after the image name, so this image
 #   must NOT define ENTRYPOINT/CMD)
 #   with posture: --rm --network none --read-only --tmpfs /tmp \
-#     --memory 1g --cpus 1 -v <workDir>:/rea:rw -w /rea
-#   Outputs land in /rea/out/ (pre-created by the runner; rw mount).
+#     --memory 1g --cpus 1 -v <workDir>:/area:rw -w /area
+#   Outputs land in /area/out/ (pre-created by the runner; rw mount).
 #
 # Built from source per the W1b spec (git clone --depth 1 of the default
 # branch). NOTE: a depth-1 clone of a moving default branch is NOT pinned —
@@ -19,7 +19,7 @@
 # build below ATTEMPTS it best-effort (it vendors the Ghidra decompiler as a
 # git submodule and is a long C++ build). If it fails, the image is still
 # valid for disassemble/functions/info and the outcome is recorded in
-# /opt/rea/r2ghidra.status — decompile runs then produce empty artifacts,
+# /opt/area/r2ghidra.status — decompile runs then produce empty artifacts,
 # which the runner reports honestly.
 ###############################################################################
 FROM debian:12-slim
@@ -49,7 +49,7 @@ RUN git clone --depth 1 https://github.com/rizinorg/rizin /tmp/rizin \
 # --- r2ghidra plugin (pdg) — best effort, status recorded --------------------
 # r2ghidra builds against the installed rizin (CMAKE_PREFIX_PATH=/usr/local)
 # and installs its plugin + Sleigh files into the same prefix.
-RUN mkdir -p /opt/rea \
+RUN mkdir -p /opt/area \
  && { git clone --depth 1 --recurse-submodules --shallow-submodules \
         https://github.com/rizinorg/r2ghidra /tmp/r2ghidra \
    && cmake -S /tmp/r2ghidra -B /tmp/r2ghidra/build \
@@ -60,11 +60,11 @@ RUN mkdir -p /opt/rea \
    && cmake --install /tmp/r2ghidra/build \
    && rm -rf /tmp/r2ghidra \
    && ldconfig \
-   && printf 'installed\n' > /opt/rea/r2ghidra.status; \
+   && printf 'installed\n' > /opt/area/r2ghidra.status; \
     } \
  || { printf 'build-failed — pdg unavailable; disassemble/functions/info remain usable\n' \
-        > /opt/rea/r2ghidra.status; }
+        > /opt/area/r2ghidra.status; }
 
 ENV HOME=/tmp
 
-WORKDIR /rea
+WORKDIR /area

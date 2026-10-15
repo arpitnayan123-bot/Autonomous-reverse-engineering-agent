@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { TargetPanel } from "@/components/rea/target-panel";
+import { TargetPanel } from "@/components/area/target-panel";
 import { clipTitle, fetchRouteTitle } from "@/lib/meta";
 
 interface Props {
@@ -17,14 +17,14 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   );
   return {
     title: title ? `Target: ${clipTitle(title)}` : "Target detail",
-    description: "Evidence, findings and analysis runs for one REA target.",
+    description: "Evidence, findings and analysis runs for one AREA target.",
   };
 }
 
 export default async function TargetDetailPage({ params }: Props) {
   const { targetId } = await params;
   return (
-    <div className="min-h-0 w-full flex-1 overflow-y-auto rea-scroll">
+    <div className="min-h-0 w-full flex-1 overflow-y-auto area-scroll">
       <TargetPanel targetId={targetId} className="mx-auto w-full max-w-5xl" />
     </div>
   );

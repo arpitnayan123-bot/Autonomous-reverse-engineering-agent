@@ -648,7 +648,7 @@ async function anthropicStream(
 }
 
 /**
- * The REA loop puts the system prompt as the first 'assistant' message
+ * The AREA loop puts the system prompt as the first 'assistant' message
  * (z-ai SDK convention). We mark it so Anthropic/Gemini can route it to
  * their native system-prompt fields.
  */

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { AppShellLoader } from "@/components/rea/app-shell-loader";
+import { AppShellLoader } from "@/components/area/app-shell-loader";
 
 /**
  * Shared layout for every workspace route (/, /chat, /projects, /targets,
@@ -10,8 +10,8 @@ import { AppShellLoader } from "@/components/rea/app-shell-loader";
  */
 export const metadata: Metadata = {
   title: {
-    default: "REA Platform — Reverse Engineer Anything",
-    template: "%s — REA",
+    default: "AREA — Autonomous reverse engineering agent",
+    template: "%s — AREA",
   },
 };
 

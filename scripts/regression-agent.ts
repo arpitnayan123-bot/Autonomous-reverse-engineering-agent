@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * REA agent tool-execution reliability regression.
+ * AREA agent tool-execution reliability regression.
  *
  * Proves the model-to-tool handoff actually executes tools instead of
  * silently degrading them into prose, and that every refusal is honest:
@@ -48,7 +48,7 @@ import {
   workspaceDiskUsage,
   writeFile as builderWriteFile,
 } from "@/server/platform/builder";
-import { capStructured } from "@/server/engine/rea-bridge";
+import { capStructured } from "@/server/engine/area-bridge";
 import { promises as fs } from "fs";
 import path from "path";
 import { freeChatSystemPrompt, systemPrompt } from "@/server/agent/prompts";
@@ -104,7 +104,7 @@ async function withDnsRetry<T>(fn: () => Promise<T>, label: string): Promise<T> 
 const TOOL_BLOCK = '```tool\n{"tool":"explore_url","args":{"url":"https://example.com"}}\n```';
 
 async function main(): Promise<void> {
-  console.log("REA agent tool-execution reliability regression\n");
+  console.log("AREA agent tool-execution reliability regression\n");
 
   // ---------------------------------------------------------------------
   section("A. Tool-block parsing (model-to-tool handoff)");
@@ -168,7 +168,7 @@ async function main(): Promise<void> {
   check("A12 non-tool fence (```json) yields null", jsonFence === null, JSON.stringify(jsonFence));
 
   const closedBeatsTail = parseToolAction(
-    `${TOOL_BLOCK}\n\nUnrelated trailing text with an unterminated opener:\n\`\`\`tool\n{"tool":"rea_tool","args":{"tool":"search"}}`
+    `${TOOL_BLOCK}\n\nUnrelated trailing text with an unterminated opener:\n\`\`\`tool\n{"tool":"area_tool","args":{"tool":"search"}}`
   );
   check(
     "A13 closed block takes priority over a later unterminated opener",
@@ -185,12 +185,12 @@ async function main(): Promise<void> {
     "B1  unknown tool returns actionable error string (never throws)",
     unknown.startsWith("Error: unknown tool") &&
       unknown.includes("target_info") &&
-      unknown.includes("rea_tool"),
+      unknown.includes("area_tool"),
     unknown.slice(0, 120)
   );
 
   const notAllowed = await executeAgentTool(
-    "rea_tool",
+    "area_tool",
     { tool: "definitely_not_allowlisted", args: {} },
     stubCtx
   );
@@ -200,8 +200,8 @@ async function main(): Promise<void> {
     notAllowed.slice(0, 120)
   );
 
-  const missingTool = await executeAgentTool("rea_tool", { args: {} }, stubCtx);
-  check("B3  rea_tool without 'tool' arg returns usage error", missingTool.startsWith("Error: 'tool' is required."), missingTool.slice(0, 80));
+  const missingTool = await executeAgentTool("area_tool", { args: {} }, stubCtx);
+  check("B3  area_tool without 'tool' arg returns usage error", missingTool.startsWith("Error: 'tool' is required."), missingTool.slice(0, 80));
 
   const plan = await applyPlanUpdate({
     tasks: [
@@ -591,8 +591,8 @@ async function main(): Promise<void> {
     ""
   );
 
-  const errA = await executeAgentTool("rea_tool", { tool: "not_allowlisted_e4" }, dedupCtx("sess-e4"));
-  const errB = await executeAgentTool("rea_tool", { tool: "not_allowlisted_e4" }, dedupCtx("sess-e4"));
+  const errA = await executeAgentTool("area_tool", { tool: "not_allowlisted_e4" }, dedupCtx("sess-e4"));
+  const errB = await executeAgentTool("area_tool", { tool: "not_allowlisted_e4" }, dedupCtx("sess-e4"));
   check(
     "E4  failures are never cached (transient errors stay retryable)",
     errA.startsWith("Error:") && errB.startsWith("Error:") && !errB.includes("NOT re-executed"),
@@ -623,7 +623,7 @@ async function main(): Promise<void> {
   );
 
   const withToolBlock = formatInterruptedTurnContent(
-    '```tool\n{"tool":"rea_tool","args":{}}\n```',
+    '```tool\n{"tool":"area_tool","args":{}}\n```',
     new Error("socket hang up")
   );
   check(
@@ -743,7 +743,7 @@ async function main(): Promise<void> {
   // cancelled (reproduced live). The map must be the SAME object across
   // module evaluations, reached through the well-known symbol.
   const globalMap = (globalThis as unknown as Record<symbol, unknown>)[
-    Symbol.for("rea.activeTurns")
+    Symbol.for("area.activeTurns")
   ];
   check(
     "F5b turn registry is globalThis-backed (HMR-proof stop lookups)",
@@ -1155,13 +1155,13 @@ async function main(): Promise<void> {
   );
 
   // H3: failure shapes classify as failed — the plain "Error:" prefix every
-  // tool error returns, and the rea_tool MCP isError envelope.
+  // tool error returns, and the area_tool MCP isError envelope.
   check(
     "H3 tool failures classify as failed",
     classifyToolOutcome({ pending: false, preview: "Error: 'query' is required." }) === "failed" &&
       classifyToolOutcome({
         pending: false,
-        preview: "REA tool binary_overview → isError: true\nboom",
+        preview: "AREA tool binary_overview → isError: true\nboom",
       }) === "failed",
     ""
   );
@@ -1470,7 +1470,7 @@ async function main(): Promise<void> {
     "I17 redirect notice is registry-derived (workspace tools listed, target tools absent)",
     i17Notice.includes("update_plan") &&
       i17Notice.includes("workspace_run") &&
-      !i17Notice.includes("rea_tool") &&
+      !i17Notice.includes("area_tool") &&
       i17Notice.includes("remain fully functional"),
     ""
   );
@@ -1682,13 +1682,13 @@ async function main(): Promise<void> {
   // guessed content, never dropped.
   const j4 = await runWebResearchTool({
     query: "unreachable host probe",
-    urls: ["https://nonexistent-rea-test.invalid"],
+    urls: ["https://nonexistent-area-test.invalid"],
     fetch_pages: 1,
   });
   check(
     "J4  unreachable source is INACCESSIBLE with the honest failure reason",
     j4.includes("[INACCESSIBLE]") &&
-      j4.includes("nonexistent-rea-test.invalid") &&
+      j4.includes("nonexistent-area-test.invalid") &&
       (j4.includes("DNS") || j4.includes("fetch failed") || j4.includes("getaddrinfo") || j4.includes("unreachable") || j4.length > 0),
     j4.includes("[INACCESSIBLE]") ? "inaccessible row present" : "MISSING"
   );
@@ -1764,7 +1764,7 @@ async function main(): Promise<void> {
 
   // K5: the record file persists the honest history (stateful dedup opt-out
   // means every run is recorded, never cached away).
-  const k5raw = await runFreeChatTool("workspace_read", { path: ".rea/verifications.json" }, { sessionId: kSession, userId: "regression" });
+  const k5raw = await runFreeChatTool("workspace_read", { path: ".area/verifications.json" }, { sessionId: kSession, userId: "regression" });
   let k5count = -1;
   let k5verdicts = "";
   try {
@@ -1832,7 +1832,7 @@ async function main(): Promise<void> {
   const l4 = `${freeChatSystemPrompt()}\n${systemPrompt({} as Target)}`;
   check(
     "L4  prompts no longer hardcode the engine tool count",
-    !/170 MCP tools|full REA toolchain \(170 tools\)/.test(l4),
+    !/170 MCP tools|full AREA toolchain \(170 tools\)/.test(l4),
     ""
   );
 

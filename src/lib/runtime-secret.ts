@@ -6,7 +6,7 @@ import path from "path";
  * Runtime secret resolution for secrets that MUST NOT ship in source.
  *
  * Priority:
- *  1. Environment variable (REA_SESSION_SECRET / REA_VAULT_SECRET) — for
+ *  1. Environment variable (AREA_SESSION_SECRET / AREA_VAULT_SECRET) — for
  *     real deployments that provision secrets properly.
  *  2. A previously generated secret persisted under db/.secrets.json
  *     (gitignored, 0600) so restarts keep sessions/vault stable.
@@ -49,10 +49,17 @@ const cache = new Map<string, string>();
 /**
  * Resolve a named runtime secret. `envVar` is checked first; otherwise the
  * persisted file is consulted/generated. `fileKey` is the JSON field name.
+ *
+ * Legacy compat: the platform was renamed REA → AREA; deployments that still
+ * provision the old `REA_*` env var keep working (new `AREA_*` name wins).
  */
 export function getRuntimeSecret(envVar: string, fileKey: string): string {
   const fromEnv = process.env[envVar];
-  if (fromEnv && fromEnv.length >= 16) return fromEnv;
+  const legacyEnv = envVar.startsWith("AREA_")
+    ? process.env[`REA_${envVar.slice("AREA_".length)}`]
+    : undefined;
+  const resolvedEnv = fromEnv && fromEnv.length >= 16 ? fromEnv : legacyEnv;
+  if (resolvedEnv && resolvedEnv.length >= 16) return resolvedEnv;
 
   const cached = cache.get(fileKey);
   if (cached) return cached;

@@ -1,10 +1,12 @@
-# REA Platform Architecture — Universal Software Intelligence & Reconstruction
+# AREA Platform Architecture — Universal Software Intelligence & Reconstruction
+
+> **AREA — the autonomous reverse engineering agent.**
 
 > Owner: Arpit Nayan. Status: living document. Last updated with the "strongest RE agent" product brief.
 
-## 1. What REA is
+## 1. What AREA is
 
-REA is a reverse-engineering agent platform: it takes a **web app, GitHub repo, or binary
+AREA is a reverse-engineering agent platform: it takes a **web app, GitHub repo, or binary
 file target** and drives an evidence-graded pipeline —
 `DISCOVER → COLLECT → UNDERSTAND → MAP → RESEARCH → PLAN → BUILD → CLONE → TEST → VERIFY` —
 persisting every intermediate artifact, so a final claim ("here is a runnable clone") is
@@ -17,13 +19,13 @@ absent reports its absence verbatim and how to enable it.
 | Substrate | Location | Notes |
 |---|---|---|
 | Pipeline DAG runner | `src/server/platform/orchestrator.ts` | waves, retries, approval gates, per-step JSON checkpoints |
-| Engine bridge (≈170 tools) | `src/server/engine/rea-bridge.ts` | JSON-RPC/MCP client to the `rea-agents` engine |
+| Engine bridge (≈170 tools) | `src/server/engine/area-bridge.ts` | JSON-RPC/MCP client to the `rea-agents` engine |
 | Agent tool registry | `src/server/agent/tools.ts` | 27 tools, `scope: any|target`, dedup, 6 000-char receipts |
 | Workspaces + sandbox | `src/server/platform/builder.ts`, `sandbox.ts` | path jail, no-shell tokenizer, allowlist, Docker mode |
 | LSP integration | `src/server/platform/lsp.ts` | JSON-RPC over stdio to ts/py/rust/go/c servers |
 | Benchmarks | `benchmarks/` | 20 TOML tasks → runner → LLM-judge scorer → `report.html` |
 | MCP server | `scripts/mcp-server.ts` | 20 outbound tools over authenticated REST |
-| VS Code extension | `vscode/` | tree view, `@rea` chat participant, status bar |
+| VS Code extension | `vscode/` | tree view, `@area` chat participant, status bar |
 | Auth / vault / audit | `src/lib/security`, `src/server/agent/vault.ts` | scrypt, AES-256-GCM BYOK, audit log |
 
 ## 2. Capability map (product brief → subsystems)
@@ -33,7 +35,7 @@ A pluggable, versioned registry of classical RE tools, each declaring:
 `{ id, kind: disassembler|decompiler|debugger|symbolic-executor|analyzer, image, entrypoint,
 profile: { memory, cpus, timeoutMs, network, readonly }, license? }`.
 
-- **Execution model** (`retools/runner.ts`): for a given tool + input file, REA picks the
+- **Execution model** (`retools/runner.ts`): for a given tool + input file, AREA picks the
   best available mode — **docker image** (built from `docker/<tool>/Dockerfile`) →
   **local binary on PATH** → honest unavailability error with exact enable instructions.
   Container runs use per-tool profiles (Ghidra: 2 GB; angr: python env) — *not* the 512 MB
@@ -44,7 +46,7 @@ profile: { memory, cpus, timeoutMs, network, readonly }, license? }`.
   `OBSERVED`.
 - **Exposure**: agent tools `re_tools` (list + availability) and `re_tool` (run, with
   per-tool operation presets), REST `/api/retools` (+ `/run`), MCP wrappers
-  `rea_re_tools` / `rea_re_tool`, and a Capabilities UI card.
+  `area_re_tools` / `area_re_tool`, and a Capabilities UI card.
 - **Backends** (Dockerfiles in `docker/`): `ghidra` (headless analyzer + decompile
   postscript), `rizin` (JSON command output), `pycdc` (Python bytecode decompiler),
   `angr` (symbolic execution scripts). `ida`/`hopper` are declared in the registry but
@@ -59,7 +61,7 @@ profile: { memory, cpus, timeoutMs, network, readonly }, license? }`.
   best available model for the task, degrades honestly to the platform LLM, and marks the
   result provenance `INFERRED` when produced by a model rather than a tool.
 - **Training** (`training/`): LoRA fine-tune scripts (Qwen/Llama/DeepSeek via
-  peft/transformers), a dataset miner that converts REA's own verified
+  peft/transformers), a dataset miner that converts AREA's own verified
   Evidence/BuildArtifact history into (decompiled-code, ground-truth) pairs, and an eval
   harness aligned with DecompileBench-style tasks. Training is out-of-band (needs GPU);
   the platform only consumes registered endpoints.
@@ -89,7 +91,7 @@ The pipeline above gains **CLONE** between BUILD and TEST:
   regressions > 10 points.
 
 ### C5. Community Skills Marketplace
-- **Manifest v1** (`rea-skill.json`): `{ slug, name, version, description, entry: { system,
+- **Manifest v1** (`area-skill.json`): `{ slug, name, version, description, entry: { system,
   opening }, permissions: string[] (agent-tool allowlist), limits: { toolCalls, workspaceBytes,
   timeoutMs } }` — checksummed (sha256 of canonical form), optional platform signature.
 - **Sandboxed runtime** (`src/server/skills/runtime.ts`): a skill run is a constrained
@@ -100,8 +102,8 @@ The pipeline above gains **CLONE** between BUILD and TEST:
   ("Analyze .NET malware", "Reverse a WASM module", "Decompile and rebuild").
 
 ### C6. Ecosystem, Security, DX
-- MCP server gains `rea_re_tools`, `rea_re_tool`, `rea_skills_list`, `rea_skill_run`,
-  `rea_leaderboard_top`.
+- MCP server gains `area_re_tools`, `area_re_tool`, `area_skills_list`, `area_skill_run`,
+  `area_leaderboard_top`.
 - `.env.example`, `scripts/setup.sh` one-command setup, `Dockerfile` + `docker-compose.yml`
   for the platform itself; telemetry is **opt-in** (`UserPreference.telemetryOptIn`) and
   counters only (no content).

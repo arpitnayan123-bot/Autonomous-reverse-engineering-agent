@@ -1,6 +1,6 @@
-# rea/ida:latest — operator-supplied licensed image
+# area/ida:latest — operator-supplied licensed image
 
-**REA never distributes IDA Pro or the Hex-Rays decompiler.** IDA is
+**AREA never distributes IDA Pro or the Hex-Rays decompiler.** IDA is
 proprietary software (Hex-Rays); shipping it — or any part of it — from this
 repository or its images would violate its license. The `ida` entry in
 `src/server/retools/registry.ts` is therefore a **license-required** profile:
@@ -33,26 +33,26 @@ docker/ida/installer/
 Build and verify:
 
 ```sh
-docker build -t rea/ida:latest docker/ida
-docker run --rm --network none --read-only --tmpfs /tmp rea/ida:latest /opt/ida/idat -?
+docker build -t area/ida:latest docker/ida
+docker run --rm --network none --read-only --tmpfs /tmp area/ida:latest /opt/ida/idat -?
 ```
 
 ## Runtime contract (once built)
 
 `src/server/retools/registry.ts` (tool id `ida`) will discover the image via
-`docker image inspect rea/ida:latest` and run:
+`docker image inspect area/ida:latest` and run:
 
 ```
-/opt/ida/idat -A -S"<script> <out>" /rea/input
+/opt/ida/idat -A -S"<script> <out>" /area/input
 ```
 
-inside the standard REA container posture (network disabled, read-only
-rootfs, tmpfs `/tmp`, work dir bind-mounted rw at `/rea`). Two things are
+inside the standard AREA container posture (network disabled, read-only
+rootfs, tmpfs `/tmp`, work dir bind-mounted rw at `/area`). Two things are
 **your** responsibility as the operator:
 
 1. The IDA IDC/IDAPython scripts referenced by the registry
-   (`rea_ida_decomp.py`, `rea_ida_disasm.py`) are not shipped here — add them
+   (`area_ida_decomp.py`, `area_ida_disasm.py`) are not shipped here — add them
    to the installer image or have the runner provide them (see the W1b
-   worklog notes on `/rea/scripts` and the input-copy gap).
+   worklog notes on `/area/scripts` and the input-copy gap).
 2. A headless-valid license (IDA must not open any interactive dialog; `-A`
    suppresses dialogs but a missing license still fails).

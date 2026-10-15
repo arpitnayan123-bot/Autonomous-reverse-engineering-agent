@@ -128,7 +128,7 @@ export function isPathInside(child: string, root: string): boolean {
 // ---------------------------------------------------------------------------
 
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
-export const ANALYSIS_TIMEOUT_MS = 120_000; // per REA tool call
+export const ANALYSIS_TIMEOUT_MS = 120_000; // per AREA tool call
 export const CHAT_TOOL_TIMEOUT_MS = 60_000;
 export const MAX_CHAT_ITERATIONS = 12;
-export const MAX_OUTPUT_BYTES = 12 * 1024 * 1024; // REA output cap
+export const MAX_OUTPUT_BYTES = 12 * 1024 * 1024; // AREA output cap

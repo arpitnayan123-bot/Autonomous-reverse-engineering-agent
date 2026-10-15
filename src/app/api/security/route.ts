@@ -6,7 +6,7 @@ import {
   revokeOtherSessions,
 } from "@/lib/auth";
 import { audit, clientIp, rateLimit } from "@/lib/security";
-import { rea } from "@/server/engine/rea-bridge";
+import { area } from "@/server/engine/area-bridge";
 import {
   ANALYSIS_TIMEOUT_MS,
   MAX_OUTPUT_BYTES,
@@ -53,7 +53,7 @@ export async function GET() {
         control: "Sandboxed engine subprocess",
         status: "enforced",
         detail:
-          "REA runs as a child process (node rea.mjs --mcp) with a scrubbed environment, cwd /tmp, and SIGKILL hard timeouts on every call.",
+          "AREA runs as a child process (node rea.mjs --mcp) with a scrubbed environment, cwd /tmp, and SIGKILL hard timeouts on every call.",
       },
       {
         control: "Engine output budgets",
@@ -99,13 +99,13 @@ export async function GET() {
         control: "Read-only file parsing",
         status: "enforced",
         detail:
-          "Uploaded artifacts are parsed, never executed. REA static-analysis providers run inert; no uploaded bytes are ever interpreted as code on the host.",
+          "Uploaded artifacts are parsed, never executed. AREA static-analysis providers run inert; no uploaded bytes are ever interpreted as code on the host.",
       },
       {
         control: "Chat workspace sandbox",
         status: "partial",
         detail:
-          "Per-chat workspaces (storage/workspaces/chat-<sessionId>/) give chats REAL file write/read and command execution: isPathInside path jail, no-shell tokenizer, allowlisted binaries only, sed/awk/find/tar/git/env + eval flags (node -e) + absolute/.. paths blocked, 55s SIGKILL cap, scrubbed env, output caps, and an 8 MB per-workspace disk quota enforced on every chat write and re-checked before each chat command (over-quota operations are refused honestly, nothing written/run). Built-in git version control: each workspace gets a git repo at creation (identity REA Agent <agent@rea.local>, initial empty commit); writes and file-changing runs are auto-committed, and git is exposed to the model ONLY through the workspace_diff/log/reset tools — sandboxed spawns (no shell, cwd jail, scrubbed env, timeout), an 8-subcommand allowlist, per-subcommand flag allowlists, and revision validation refuse --git-dir/--work-tree/-c style escapes; raw git via workspace_run stays blocked, and .git/ counts toward the disk quota. When the git binary is missing the workspace degrades gracefully (tools return an honest error, writes/runs unaffected). PARTIAL by design: the jail is process-level, not an OS namespace jail — code written INTO the workspace and run by an interpreter executes with server privileges (env carries no secrets, HOME is the workspace, single-tenant self-hosted deployment).",
+          "Per-chat workspaces (storage/workspaces/chat-<sessionId>/) give chats REAL file write/read and command execution: isPathInside path jail, no-shell tokenizer, allowlisted binaries only, sed/awk/find/tar/git/env + eval flags (node -e) + absolute/.. paths blocked, 55s SIGKILL cap, scrubbed env, output caps, and an 8 MB per-workspace disk quota enforced on every chat write and re-checked before each chat command (over-quota operations are refused honestly, nothing written/run). Built-in git version control: each workspace gets a git repo at creation (identity AREA Agent <agent@area.local>, initial empty commit); writes and file-changing runs are auto-committed, and git is exposed to the model ONLY through the workspace_diff/log/reset tools — sandboxed spawns (no shell, cwd jail, scrubbed env, timeout), an 8-subcommand allowlist, per-subcommand flag allowlists, and revision validation refuse --git-dir/--work-tree/-c style escapes; raw git via workspace_run stays blocked, and .git/ counts toward the disk quota. When the git binary is missing the workspace degrades gracefully (tools return an honest error, writes/runs unaffected). PARTIAL by design: the jail is process-level, not an OS namespace jail — code written INTO the workspace and run by an interpreter executes with server privileges (env carries no secrets, HOME is the workspace, single-tenant self-hosted deployment).",
       },
       {
         control: "Path traversal protection",
@@ -127,7 +127,7 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       posture,
-      engineDiag: rea.getDiagnostics(),
+      engineDiag: area.getDiagnostics(),
       recentThreats,
       sessions,
     });

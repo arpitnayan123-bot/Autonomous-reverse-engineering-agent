@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { PlatformView } from "@/components/rea/platform-view";
+import { PlatformView } from "@/components/area/platform-view";
 import { clipTitle, fetchRouteTitle } from "@/lib/meta";
 
 interface Props {
@@ -18,7 +18,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return {
     title: title ? `Project: ${clipTitle(title)}` : "Project detail",
     description:
-      "Pipeline, workspace and knowledge graph for one REA investigation project.",
+      "Pipeline, workspace and knowledge graph for one AREA investigation project.",
   };
 }
 

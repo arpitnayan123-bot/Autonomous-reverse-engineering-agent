@@ -1,5 +1,5 @@
 /**
- * Types mirroring the REA platform REST API responses.
+ * Types mirroring the AREA platform REST API responses.
  *
  * These are intentionally structural mirrors (not imported from the server
  * code) — the extension only depends on the documented wire format of the
@@ -7,7 +7,7 @@
  * platform source tree.
  */
 
-export interface ReaUser {
+export interface AreaUser {
   id: string;
   email: string;
   name: string | null;
@@ -15,7 +15,7 @@ export interface ReaUser {
   isDemo?: boolean;
 }
 
-export interface ReaProjectCounts {
+export interface AreaProjectCounts {
   pages: number;
   nodes: number;
   reports: number;
@@ -23,7 +23,7 @@ export interface ReaProjectCounts {
   verifications: number;
 }
 
-export interface ReaProject {
+export interface AreaProject {
   id: string;
   /** "website" | "github" | "file" */
   kind: string;
@@ -34,10 +34,10 @@ export interface ReaProject {
   status: string;
   createdAt: string;
   updatedAt: string;
-  counts: ReaProjectCounts;
+  counts: AreaProjectCounts;
 }
 
-export interface ReaTargetRun {
+export interface AreaTargetRun {
   id: string;
   status: string;
   progress: number;
@@ -47,7 +47,7 @@ export interface ReaTargetRun {
   createdAt: string;
 }
 
-export interface ReaTarget {
+export interface AreaTarget {
   id: string;
   originalName: string;
   sizeBytes: number;
@@ -56,10 +56,10 @@ export interface ReaTarget {
   status: string;
   summary: string | null;
   createdAt: string;
-  lastRun: ReaTargetRun | null;
+  lastRun: AreaTargetRun | null;
 }
 
-export interface ReaSession {
+export interface AreaSession {
   id: string;
   title: string;
   targetId: string | null;
@@ -71,7 +71,7 @@ export interface ReaSession {
   updatedAt: string;
 }
 
-export interface ReaMessage {
+export interface AreaMessage {
   id: string;
   role: string;
   content: string;
@@ -84,7 +84,7 @@ export interface ReaMessage {
   createdAt: string;
 }
 
-export interface ReaSessionDetail {
+export interface AreaSessionDetail {
   session: {
     id: string;
     title: string;
@@ -92,12 +92,12 @@ export interface ReaSessionDetail {
     targetName: string | null;
     detectedFormat: string | null;
   };
-  messages: ReaMessage[];
+  messages: AreaMessage[];
   total: number;
   hasMore: boolean;
 }
 
-export interface ReaUploadResult {
+export interface AreaUploadResult {
   id: string;
   originalName: string;
   sizeBytes: number;

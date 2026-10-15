@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ChatSessionRoute } from "@/components/rea/chat-route";
+import { ChatSessionRoute } from "@/components/area/chat-route";
 import { clipTitle, fetchRouteTitle } from "@/lib/meta";
 
 interface Props {
@@ -17,7 +17,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   );
   return {
     title: title ? `Chat: ${clipTitle(title)}` : "Chat session",
-    description: "Deep link into a REA investigation chat.",
+    description: "Deep link into a AREA investigation chat.",
   };
 }
 

@@ -1,7 +1,7 @@
 {
-  "name": "rea-vscode",
-  "displayName": "REA Platform",
-  "description": "Connect Visual Studio Code to your self-hosted REA platform: browse projects, targets and chats, analyze the current file, and ask @rea in Copilot Chat.",
+  "name": "area-vscode",
+  "displayName": "AREA Platform",
+  "description": "Connect Visual Studio Code to your self-hosted AREA platform: browse projects, targets and chats, analyze the current file, and ask @area in Copilot Chat.",
   "version": "0.1.0",
   "publisher": "arpit-nayan",
   "license": "MIT",
@@ -14,7 +14,7 @@
     "Other"
   ],
   "keywords": [
-    "rea",
+    "area",
     "security",
     "analysis",
     "chatbot",
@@ -26,113 +26,113 @@
   "main": "./out/extension.js",
   "contributes": {
     "configuration": {
-      "title": "REA",
+      "title": "AREA",
       "properties": {
-        "rea.baseUrl": {
+        "area.baseUrl": {
           "type": "string",
           "default": "http://localhost:3000",
-          "markdownDescription": "Base URL of the self-hosted REA instance to connect to, e.g. `https://rea.example.com`. The extension authenticates against this URL and stores the session token in VS Code secret storage."
+          "markdownDescription": "Base URL of the self-hosted AREA instance to connect to, e.g. `https://area.example.com`. The extension authenticates against this URL and stores the session token in VS Code secret storage."
         }
       }
     },
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "rea-explorer",
-          "title": "REA",
-          "icon": "media/rea.svg"
+          "id": "area-explorer",
+          "title": "AREA",
+          "icon": "media/area.svg"
         }
       ]
     },
     "views": {
-      "rea-explorer": [
+      "area-explorer": [
         {
-          "id": "rea.explorer",
+          "id": "area.explorer",
           "name": "Explorer",
-          "contextualTitle": "REA"
+          "contextualTitle": "AREA"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "rea.explorer",
-        "contents": "Connect VS Code to your self-hosted REA platform to browse projects, targets and investigation chats.\n[Sign in to REA](command:rea.login)\nOr [check the connection](command:rea.reconnect) if you already have a session.\nSet the instance URL via the `rea.baseUrl` setting."
+        "view": "area.explorer",
+        "contents": "Connect VS Code to your self-hosted AREA platform to browse projects, targets and investigation chats.\n[Sign in to AREA](command:area.login)\nOr [check the connection](command:area.reconnect) if you already have a session.\nSet the instance URL via the `area.baseUrl` setting."
       }
     ],
     "commands": [
       {
-        "command": "rea.login",
+        "command": "area.login",
         "title": "Sign In",
-        "category": "REA"
+        "category": "AREA"
       },
       {
-        "command": "rea.logout",
+        "command": "area.logout",
         "title": "Sign Out",
-        "category": "REA"
+        "category": "AREA"
       },
       {
-        "command": "rea.reconnect",
+        "command": "area.reconnect",
         "title": "Reconnect",
-        "category": "REA"
+        "category": "AREA"
       },
       {
-        "command": "rea.refresh",
+        "command": "area.refresh",
         "title": "Refresh Explorer",
-        "category": "REA",
+        "category": "AREA",
         "icon": "$(refresh)"
       },
       {
-        "command": "rea.newChat",
+        "command": "area.newChat",
         "title": "New Chat",
-        "category": "REA"
+        "category": "AREA"
       },
       {
-        "command": "rea.analyzeCurrentFile",
+        "command": "area.analyzeCurrentFile",
         "title": "Analyze Current File",
-        "category": "REA"
+        "category": "AREA"
       },
       {
-        "command": "rea.openChat",
+        "command": "area.openChat",
         "title": "Open Chat",
-        "category": "REA"
+        "category": "AREA"
       },
       {
-        "command": "rea.analyzeTarget",
+        "command": "area.analyzeTarget",
         "title": "Analyze Target",
-        "category": "REA"
+        "category": "AREA"
       },
       {
-        "command": "rea.setActiveProject",
+        "command": "area.setActiveProject",
         "title": "Set as Active Project",
-        "category": "REA"
+        "category": "AREA"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "rea.refresh",
-          "when": "view == rea.explorer",
+          "command": "area.refresh",
+          "when": "view == area.explorer",
           "group": "navigation"
         }
       ],
       "view/item/context": [
         {
-          "command": "rea.setActiveProject",
-          "when": "view == rea.explorer && viewItem == reaProject",
+          "command": "area.setActiveProject",
+          "when": "view == area.explorer && viewItem == areaProject",
           "group": "inline"
         }
       ],
       "commandPalette": [
         {
-          "command": "rea.openChat",
+          "command": "area.openChat",
           "when": "false"
         },
         {
-          "command": "rea.analyzeTarget",
+          "command": "area.analyzeTarget",
           "when": "false"
         },
         {
-          "command": "rea.setActiveProject",
+          "command": "area.setActiveProject",
           "when": "false"
         }
       ]

@@ -13,7 +13,7 @@ import {
 } from "@/server/platform/sandbox";
 
 /**
- * REA Builder — isolated workspace execution.
+ * AREA Builder — isolated workspace execution.
  *
  * Every project gets its own workspace directory under storage/workspaces/.
  * All file operations are sandbox-checked with isPathInside BEFORE touching
@@ -176,7 +176,7 @@ export interface WriteResult {
    * Auto-commit receipt (git-integrated workspaces). Present when a git
    * commit was ATTEMPTED for this write: committed=true carries the short
    * SHA; committed=false carries the honest failure reason. Absent when git
-   * is unavailable, the path is internal bookkeeping (.rea/), or the
+   * is unavailable, the path is internal bookkeeping (.area/), or the
    * workspace has no repository — the write itself is unaffected either way.
    */
   git?: GitCommitInfo;
@@ -286,7 +286,7 @@ export async function materializeGitHubRepo(projectId: string, owner: string, re
   const dir = await ensureWorkspace(projectId);
   const tarUrl = `https://codeload.github.com/${owner}/${repo}/tar.gz/HEAD`;
   const res = await fetch(tarUrl, {
-    headers: { "user-agent": "REA-Platform/1.0" },
+    headers: { "user-agent": "AREA-Platform/1.0" },
     signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
@@ -656,7 +656,7 @@ export async function runCommand(
 //
 // Every workspace carries a built-in git repository:
 //   * creation (ensureWorkspace) runs `git init`, stamps the repo-local
-//     commit identity (REA Agent <agent@rea.local>) and records an initial
+//     commit identity (AREA Agent <agent@area.local>) and records an initial
 //     EMPTY commit as the root of the history;
 //   * every successful file write is auto-committed ("write: <path> (N bytes)");
 //   * every executed command that changed the working tree is auto-committed
@@ -678,7 +678,7 @@ export async function runCommand(
 // GIT_UNAVAILABLE_ERROR verbatim.
 
 /** Commit identity stamped on every workspace commit (repo-local config). */
-export const GIT_COMMIT_IDENTITY = { name: "REA Agent", email: "agent@rea.local" } as const;
+export const GIT_COMMIT_IDENTITY = { name: "AREA Agent", email: "agent@area.local" } as const;
 
 /** Exact tool-facing error when the git binary is not installed. */
 export const GIT_UNAVAILABLE_ERROR = "Error: git is not available on this platform.";
@@ -911,7 +911,7 @@ async function writeGitIdentity(dir: string): Promise<void> {
 /**
  * Initialize the workspace git repository (idempotent, best-effort):
  * `git init` → repo-local identity → initial EMPTY commit → housekeeping
- * .gitignore (platform bookkeeping under .rea/ is not version-controlled
+ * .gitignore (platform bookkeeping under .area/ is not version-controlled
  * material). Any failure degrades silently — the workspace keeps working
  * without git.
  */
@@ -927,7 +927,7 @@ export async function ensureGitRepository(projectId: string, dir?: string): Prom
     // The initial EMPTY commit — the root of the workspace history.
     const empty = await gitSpawn(d, ["commit", "--no-verify", "--allow-empty", "-m", "init"], GIT_TIMEOUT_MS);
     if (empty.exitCode !== 0) return;
-    const gitignore = ".rea/\n"; // verify-history bookkeeping stays out of VCS
+    const gitignore = ".area/\n"; // verify-history bookkeeping stays out of VCS
     const giPath = path.join(d, ".gitignore");
     if (!fsSync.existsSync(giPath)) {
       try {
@@ -963,7 +963,7 @@ function gitFirstLine(s: string): string {
  * receipt note — the write itself is already on disk and stays.
  */
 async function gitCommitFileWrite(projectId: string, relPath: string, bytes: number): Promise<GitCommitInfo | undefined> {
-  if (relPath.startsWith(".rea/")) return undefined; // gitignored bookkeeping
+  if (relPath.startsWith(".area/")) return undefined; // gitignored bookkeeping
   if (!(await gitAvailable())) return undefined;
   const dir = workspaceDir(projectId);
   if (!fsSync.existsSync(path.join(dir, ".git"))) return undefined;

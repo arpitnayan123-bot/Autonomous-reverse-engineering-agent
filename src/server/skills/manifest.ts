@@ -1,5 +1,5 @@
 /**
- * rea-skill manifest v1 — the publishable contract of a community skill.
+ * area-skill manifest v1 — the publishable contract of a community skill.
  *
  * A manifest is a pure JSON object (no code): { slug, name, version,
  * description, entry: { system, opening }, permissions: string[],
@@ -92,7 +92,7 @@ const LIMIT_BOUNDS = {
 // ---------------------------------------------------------------------------
 
 /**
- * Validate an unknown JSON value as a rea-skill manifest v1. On success the
+ * Validate an unknown JSON value as a area-skill manifest v1. On success the
  * manifest is NORMALIZED: only known keys survive and limits defaults are
  * applied — so canonicalize(manifest) is deterministic for every equivalent
  * input (missing limits === explicit defaults).

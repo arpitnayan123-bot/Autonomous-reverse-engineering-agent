@@ -1,8 +1,10 @@
 <div align="center">
 
-<img src="public/rea-logo.png" width="120" alt="REA — Reverse Engineer Anything" />
+<img src="public/area-logo.png" width="120" alt="AREA — Autonomous reverse engineering agent" />
 
-# REA — Reverse Engineer Anything
+# AREA
+
+### Autonomous reverse engineering agent
 
 **A browser-native AI platform for software intelligence & reconstruction.**
 
@@ -14,7 +16,7 @@ dressed as facts.
 
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-71717a?logo=typescript)](https://www.typescriptlang.org)
-[![Engine](https://img.shields.io/badge/engine-rea--agents%206.4.0-10b981?logo=npm)](https://www.npmjs.com/package/rea-agents)
+[![Engine](https://img.shields.io/badge/engine-area--agents%206.4.0-10b981?logo=npm)](https://www.npmjs.com/package/rea-agents)
 [![Tools](https://img.shields.io/badge/MCP%20tools-170%20online-14b8a6)](https://github.com/morluto/rea)
 [![License](https://img.shields.io/badge/lineage-MIT-f59e0b)](https://github.com/morluto/rea)
 
@@ -53,7 +55,7 @@ flowchart LR
         PIPE["Universal pipeline<br/>crawl · parse · research ·<br/>build · verify · orchestrate"]
         CONN["Connector registry<br/>HTTP · MCP stdio"]
     end
-    subgraph Engine["REA engine"]
+    subgraph Engine["AREA engine"]
         MCP["rea-agents MCP server<br/>170 tools · JSON-RPC · stdio"]
         HOST["Host tools<br/>strings · hex · format"]
     end
@@ -100,7 +102,7 @@ The server exposes a small, honest REST surface (`/api/chat`,
 
 ## 🚀 Quickstart
 
-**Prerequisites** — [Bun](https://bun.sh) (or Node 22+), and **Node ≥ 22.19** for the REA engine runtime.
+**Prerequisites** — [Bun](https://bun.sh) (or Node 22+), and **Node ≥ 22.19** for the AREA engine runtime.
 
 ```bash
 git clone https://github.com/arpitnayan123-bot/reverse-engineering-agent.git
@@ -151,26 +153,26 @@ provider keys) under **Connectors**.
 Third-party licensing is documented in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md);
 the ecosystem audit lives at [`docs/ecosystem-audit.md`](docs/ecosystem-audit.md).
 
-## 🔌 MCP server — drive REA from any coding agent
+## 🔌 MCP server — drive AREA from any coding agent
 
-REA ships an MCP (Model Context Protocol) stdio server that exposes the whole
+AREA ships an MCP (Model Context Protocol) stdio server that exposes the whole
 platform — projects, pipeline, explorer, recon, research, knowledge graph,
 builder workspace, verifier and connector registry — to external coding agents
 (Claude Code, Cursor, Codex, or any MCP client):
 
 ```bash
 bun run mcp:token -- --demo          # mint a session token (or --email/--password)
-REA_MCP_TOKEN=<token> bun run mcp:server
+AREA_MCP_TOKEN=<token> bun run mcp:server
 ```
 
-- **20 tools** — `rea_health`, `rea_list_projects`, `rea_create_project`,
-  `rea_crawl`, `rea_recon`, `rea_research`, `rea_graph`, `rea_verify`,
-  `rea_probe_url` (single-page Explorer probe — SSRF-guarded, no project
-  needed), `rea_crawl_url` (bounded same-domain deep crawl — depth/page
-  caps, visited set, structured results), `rea_workspace_op`,
-  `rea_orchestrate` (start / approve / cancel gates),
-  `rea_orchestration_status`, `rea_list_connectors`,
-  `rea_connector_action` and friends — every one a 1:1 bridge onto the
+- **20 tools** — `area_health`, `area_list_projects`, `area_create_project`,
+  `area_crawl`, `area_recon`, `area_research`, `area_graph`, `area_verify`,
+  `area_probe_url` (single-page Explorer probe — SSRF-guarded, no project
+  needed), `area_crawl_url` (bounded same-domain deep crawl — depth/page
+  caps, visited set, structured results), `area_workspace_op`,
+  `area_orchestrate` (start / approve / cancel gates),
+  `area_orchestration_status`, `area_list_connectors`,
+  `area_connector_action` and friends — every one a 1:1 bridge onto the
   authenticated REST API.
 - **One source of truth** — the server never touches the database or vault.
   Auth, ownership scoping, rate limits, sandboxing and auditing all stay in
@@ -180,7 +182,7 @@ REA_MCP_TOKEN=<token> bun run mcp:server
   status; nothing is faked to make an agent's life easier.
 
 Point your MCP client at `bun scripts/mcp-server.ts` with
-`REA_MCP_TOKEN` (and optionally `REA_MCP_URL`, default
+`AREA_MCP_TOKEN` (and optionally `AREA_MCP_URL`, default
 `http://127.0.0.1:3000`) in its environment.
 
 ## 🔑 Model providers
@@ -207,7 +209,7 @@ Point your MCP client at `bun scripts/mcp-server.ts` with
 
   Container runs get: `--network none`, a **read-only rootfs**, a writable `tmpfs /tmp`, **512 MB memory**, **1 CPU**, and the workspace bind-mounted read-write at `/workspace` (`--rm` removes the container after every run). The command argv is passed exec-form (no shell on either side), and every tool result reports the context that actually ran — `executed in Docker sandbox` vs `executed in process sandbox`. The command **allowlist and chat guards apply identically in every mode**: the sandbox decides *where* code runs, never *what* may run.
 
-  **`REA_SANDBOX_IMAGE` — image allowlist contract.** The container image defaults to `node:20-alpine` and can be overridden with the `REA_SANDBOX_IMAGE` environment variable. **The image must contain the binaries builder's allowlist admits** (`node`, `python3`, `git`, `gcc`, …). `node:20-alpine` ships node/npm and the busybox userland (`ls`, `cat`, `grep`, `find`, `tar`, …) but **not** `python3`/`gcc`/`git` — allowlisted commands missing from the image fail inside the container with an honest exit-127 stderr. For the full allowlist, build an image that installs those binaries, e.g.:
+  **`AREA_SANDBOX_IMAGE` — image allowlist contract.** The container image defaults to `node:20-alpine` and can be overridden with the `AREA_SANDBOX_IMAGE` environment variable. **The image must contain the binaries builder's allowlist admits** (`node`, `python3`, `git`, `gcc`, …). `node:20-alpine` ships node/npm and the busybox userland (`ls`, `cat`, `grep`, `find`, `tar`, …) but **not** `python3`/`gcc`/`git` — allowlisted commands missing from the image fail inside the container with an honest exit-127 stderr. For the full allowlist, build an image that installs those binaries, e.g.:
 
   ```dockerfile
   FROM node:20-alpine
@@ -215,7 +217,7 @@ Point your MCP client at `bun scripts/mcp-server.ts` with
   ```
 
   ```bash
-  REA_SANDBOX_IMAGE=my-rea-sandbox:latest bun run dev
+  AREA_SANDBOX_IMAGE=my-area-sandbox:latest bun run dev
   ```
 
 ## ⌨️ Keyboard
@@ -230,12 +232,12 @@ src/app/(app)/           Multi-route UI — (app)/layout mounts the shared shell
                          /targets/[targetId], /settings, /admin + loading/error
 src/middleware.ts        Auth redirect for workspace routes (?auth=signin)
 src/app/api/             REST + SSE handlers (chat, projects, targets, auth, …)
-src/components/rea/      Shell chrome, chat workspace, home, inspector,
+src/components/area/      Shell chrome, chat workspace, home, inspector,
                          platform, targets list, settings, admin console
 src/server/agent/        Agent loop, providers, BYOK vault, prompts
 src/server/platform/     Universal pipeline: explorer, recon, research,
                          builder, verifier, connectors, orchestrator, graph
-src/server/engine/       REA MCP bridge (JSON-RPC over stdio)
+src/server/engine/       AREA MCP bridge (JSON-RPC over stdio)
 prisma/schema.prisma     SQLite schema — users, chats, evidence, projects,
                          knowledge graph, orchestrations, connectors, audit
 public/                  Static assets
@@ -246,7 +248,7 @@ skills/, examples/       Bundled tooling & reference examples
 
 ## 🙏 Credits & lineage
 
-Built on the open-source **REA** project —
+Built on the open-source **AREA** project —
 [morluto/rea](https://github.com/morluto/rea) (published as
 [`rea-agents`](https://www.npmjs.com/package/rea-agents), MIT-licensed).
 The engine, its 170-tool MCP server and the evidence-first philosophy belong
@@ -264,5 +266,5 @@ see the ecosystem audit for the license-driven decisions.
 ---
 
 <div align="center">
-<sub>Reverse Engineer Anything — ask questions, get evidence.</sub>
+<sub>AREA — Autonomous reverse engineering agent. Ask questions, get evidence.</sub>
 </div>

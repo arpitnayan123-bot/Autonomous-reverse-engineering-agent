@@ -150,10 +150,10 @@ describe("native tool schema surface", () => {
     const target = nativeToolSchemas("target");
     expect(free.map((s) => s.function.name).sort()).toEqual([...FREE_CHAT_TOOL_NAMES].sort());
     // The model must never see a tool the loop cannot route in a free chat.
-    expect(free.map((s) => s.function.name)).not.toContain("rea_tool");
+    expect(free.map((s) => s.function.name)).not.toContain("area_tool");
     expect(free.map((s) => s.function.name)).not.toContain("read_hex");
     expect(target.length).toBeGreaterThanOrEqual(free.length);
-    expect(target.map((s) => s.function.name)).toContain("rea_tool");
+    expect(target.map((s) => s.function.name)).toContain("area_tool");
     // Every schema carries a non-empty description + object parameters.
     for (const s of free) {
       expect(s.type).toBe("function");
@@ -201,7 +201,7 @@ describe("native tool schema surface", () => {
 describe("native wire formats", () => {
   test("openAiNativeMessages: system role conversion, tool_calls round-trip, role:tool answers", () => {
     const messages: LlmMessage[] = [
-      { role: "assistant", content: "###SYSTEM###\nYou are REA." },
+      { role: "assistant", content: "###SYSTEM###\nYou are AREA." },
       { role: "user", content: "investigate" },
       {
         role: "assistant",
@@ -215,7 +215,7 @@ describe("native wire formats", () => {
       { role: "tool", content: "[]", toolCallId: "call_2" },
     ];
     const wire = openAiNativeMessages(messages);
-    expect(wire[0]).toEqual({ role: "system", content: "You are REA." });
+    expect(wire[0]).toEqual({ role: "system", content: "You are AREA." });
     expect(wire[1]).toEqual({ role: "user", content: "investigate" });
     expect(wire[2]).toEqual({
       role: "assistant",
@@ -456,7 +456,7 @@ describe("text-protocol fallback", () => {
 
   test("finalizeTurnContent labels simulated fences with the executed-tool list (path-agnostic gate)", () => {
     const out = finalizeTurnContent(
-      `Here you go:\n${TOOL_FENCE}\n{"tool":"rea_tool","args":{}}\n${"```"}\nstrings found: fake`,
+      `Here you go:\n${TOOL_FENCE}\n{"tool":"area_tool","args":{}}\n${"```"}\nstrings found: fake`,
       [{ tool: "update_plan", args: {}, result: "Plan updated: 2 steps." }],
       ["update_plan", "explore_url"]
     );
@@ -483,7 +483,7 @@ describe("openAiCompatibleTools against a local SSE fixture", () => {
             `data: {"choices":[{"delta":{"content":"Let me check the workspace."}}]}`,
             `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"update_plan","arguments":"{\\"tas"}}]}}]}`,
             `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ks\\":[{\\"title\\":\\"T\\",\\"status\\":\\"pending\\"}]}"}}]}}]}`,
-            `data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"rea_tool","arguments":"not-json-at-all"}}]}}]}`,
+            `data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"area_tool","arguments":"not-json-at-all"}}]}}]}`,
             `data: {"choices":[{"delta":{"tool_calls":[{"index":2,"id":"call_c","function":{"name":"workspace_list"}}]}}]}`,
             `data: {"usage":{"prompt_tokens":11,"completion_tokens":7}}`,
             `data: [DONE]`,
@@ -501,7 +501,7 @@ describe("openAiCompatibleTools against a local SSE fixture", () => {
         const deltas: string[] = [];
         const usage: TokenUsage[] = [];
         const messages: LlmMessage[] = [
-          { role: "assistant", content: "###SYSTEM###\nYou are REA." },
+          { role: "assistant", content: "###SYSTEM###\nYou are AREA." },
           { role: "user", content: "go" },
           { role: "assistant", content: "Earlier.", toolCalls: [{ id: "x", name: "t", arguments: {} }] },
           { role: "tool", content: "res", toolCallId: "x" },
@@ -538,7 +538,7 @@ describe("openAiCompatibleTools against a local SSE fixture", () => {
         };
         expect(body.stream).toBe(true);
         expect(body.tools.map((t) => t.function.name)).toContain("update_plan");
-        expect(body.messages[0]).toEqual({ role: "system", content: "You are REA." });
+        expect(body.messages[0]).toEqual({ role: "system", content: "You are AREA." });
         expect(body.messages[2]).toMatchObject({ role: "assistant", content: "Earlier." });
         expect(body.messages[3]).toEqual({ role: "tool", tool_call_id: "x", content: "res" });
       } finally {
