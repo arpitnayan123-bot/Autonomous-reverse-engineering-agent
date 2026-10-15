@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { rea, reaEngineInfo } from "@/server/engine/rea-bridge";
 import { getSessionUser } from "@/lib/auth";
 import { lspCapabilityReport } from "@/server/platform/lsp";
+import { listRegistryWithAvailability } from "@/server/retools/runner";
 
 export const runtime = "nodejs";
 
@@ -68,12 +69,25 @@ export async function GET() {
     // cached (which/where probe), so this stays cheap.
     const lsp = await lspCapabilityReport().catch(() => []);
 
+    // Classical RE toolchain (Ghidra/rizin/pycdc/angr/ida/hopper) — live
+    // availability per tool so the UI can show the real instrument rack.
+    const retools = await listRegistryWithAvailability().catch(() => []).then((list) =>
+      list.map((t) => ({
+        id: t.id,
+        name: t.name,
+        kinds: t.kinds,
+        mode: t.availability.mode,
+        detail: t.availability.detail,
+      }))
+    );
+
     return NextResponse.json({
       ok: true,
       engine,
       tools,
       hostTools,
       lsp,
+      retools,
       providers: {
         native: false,
         reason:

@@ -43,6 +43,7 @@ import {
   remember as rememberMemory,
   scopeOf as memoryScopeOf,
 } from "./memory";
+import { RETOOLS_AGENT_TOOLS, runReToolsList, runReToolRun } from "./retools-tools";
 import { BlockedUrlError } from "@/server/platform/net";
 import { platformWebSearch } from "@/server/platform/research";
 import { getUserSandboxMode } from "@/server/platform/sandbox";
@@ -2115,6 +2116,7 @@ export const AGENT_TOOLS: AgentTool[] = [
   rememberTool,
   recallTool,
   forgetTool,
+  ...RETOOLS_AGENT_TOOLS,
 ];
 
 /**
@@ -2183,6 +2185,12 @@ export async function runFreeChatTool(
   }
   if (name === "forget") {
     return runForgetTool(args ?? {}, { userId: session.userId, target: null });
+  }
+  if (name === "re_tools") {
+    return runReToolsList(args ?? {}, { userId: session.userId, target: null });
+  }
+  if (name === "re_tool") {
+    return runReToolRun(args ?? {}, { userId: session.userId, target: null });
   }
   if ((WORKSPACE_TOOL_NAMES as readonly string[]).includes(name) || name === "workspace_verify") {
     return runWorkspaceTool(name, args ?? {}, session);
