@@ -37,13 +37,14 @@ dressed as facts.
 | 🧮 **Honest accounting** | Per-message token counts, cost estimates, turn durations and live tool-run timers — sourced from actual provider payloads, not invented. |
 | 🔊 **Read aloud** | Any assistant message can be spoken through TTS without leaving the page. |
 | ⌨️ **Keyboard-first** | Command palette (`⌘K`), quick filters (`⌘F`), jump-to-message search with flash highlight, and a shortcuts cheat-sheet (`?`). |
+| 🧭 **Multi-route app** | Real App Router URLs for every workspace — `/`, `/chat`, `/chat/[sessionId]`, `/projects`, `/projects/[projectId]`, `/targets`, `/targets/[targetId]`, `/settings`, `/admin` — with deep links, working browser back/forward, per-route metadata and loading/error boundaries. `middleware.ts` bounces unauthenticated deep links to the sign-in gate. |
 
 ## 🏗 Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Browser["Browser — single-route SPA"]
-        UI["Chat workspace +<br/>ambient particle canvas"]
+    subgraph Browser["Browser — multi-route App Router UI"]
+        UI["Shell chrome (sidebar · inspector · palette)<br/>+ route views: chat · projects · targets ·<br/>settings · admin"]
     end
     subgraph Server["Next.js 16 — API routes"]
         AGENT["Agent loop<br/>(tool-calling, SSE)"]
@@ -69,11 +70,33 @@ flowchart LR
     PIPE --> DB
 ```
 
-**One route, many rooms.** The whole product lives on `/` — home, chat,
-inspector, targets, security, the universal platform workspace and admin are
-client-side views. The server exposes a small, honest REST surface
-(`/api/chat`, `/api/projects/*`, `/api/connectors`, `/api/capabilities`,
-`/api/security`, …) and speaks SSE for streaming turns.
+**Many routes, one shell.** Every workspace is a real URL under the App
+Router. A shared `(app)` route group boots the session once and mounts the
+chrome (top bar, sidebar, inspector, palette, dialogs) in a layout; each
+route renders its own view as the layout's main content — server component
+wrapper first, client view inside:
+
+| Route | View (client component) |
+| --- | --- |
+| `/` | Landing = chat home (`ChatRoute` → `ChatWorkspace` + greeting dashboard) |
+| `/chat` | Fresh chat workspace (`ChatRoute`) |
+| `/chat/[sessionId]` | Deep-linkable session (`ChatSessionRoute`; first send promotes the draft URL via `history.replaceState`) |
+| `/projects` | Project list (`PlatformView`) |
+| `/projects/[projectId]` | Pipeline / Explorer / Graph / Research / Builder / Verify tabs (`PlatformView` → `PlatformProject`) |
+| `/targets` | Uploaded targets grid (`TargetsList`) |
+| `/targets/[targetId]` | Evidence / findings / runs (`TargetPanel`) |
+| `/settings` | Providers, security, memory, engine, docs tabs (`SettingsView`) |
+| `/admin` | Operations console — account posture + audit trail (`AdminView`, tenant-isolated by the API) |
+
+`src/middleware.ts` redirects unauthenticated requests to the protected
+routes above to `/?auth=signin` (cookie presence check — the session itself
+is always re-verified server-side). Dynamic routes emit per-route
+`generateMetadata` (cookie-forwarded titles), and every segment ships
+`loading.tsx` + `error.tsx` boundaries.
+
+The server exposes a small, honest REST surface (`/api/chat`,
+`/api/projects/*`, `/api/connectors`, `/api/capabilities`, `/api/security`,
+…) and speaks SSE for streaming turns.
 
 ## 🚀 Quickstart
 
@@ -202,8 +225,13 @@ Point your MCP client at `bun scripts/mcp-server.ts` with
 ## 📁 Repository layout
 
 ```
-src/app/                 Next.js App Router — single-route UI + /api/* handlers
-src/components/rea/      Chat workspace, home, inspector, platform, security
+src/app/(app)/           Multi-route UI — (app)/layout mounts the shared shell;
+                         /, /chat/[sessionId], /projects/[projectId],
+                         /targets/[targetId], /settings, /admin + loading/error
+src/middleware.ts        Auth redirect for workspace routes (?auth=signin)
+src/app/api/             REST + SSE handlers (chat, projects, targets, auth, …)
+src/components/rea/      Shell chrome, chat workspace, home, inspector,
+                         platform, targets list, settings, admin console
 src/server/agent/        Agent loop, providers, BYOK vault, prompts
 src/server/platform/     Universal pipeline: explorer, recon, research,
                          builder, verifier, connectors, orchestrator, graph
