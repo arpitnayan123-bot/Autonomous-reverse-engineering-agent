@@ -208,7 +208,7 @@ function runChild(bin: string, argv: string[], cwd: string, timeoutMs: number, e
     let settled = false;
     let child;
     try {
-      child = spawn(bin, argv, { cwd, env: env ?? ({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, LANG: "C.UTF-8", NO_COLOR: "1" } as NodeJS.ProcessEnv), stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(bin, argv, { cwd, env: env ?? ({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: cwd, LANG: "C.UTF-8", NO_COLOR: "1", NODE_ENV: process.env.NODE_ENV } as NodeJS.ProcessEnv), stdio: ["ignore", "pipe", "pipe"] });
     } catch (err) {
       resolve({ code: -1, stdout: "", stderr: `spawn failed: ${err instanceof Error ? err.message : String(err)}`, timedOut: false });
       return;
