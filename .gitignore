@@ -65,3 +65,9 @@ dev.pid
 
 # benchmark run outputs (raw captures, scored files, judge cache)
 benchmarks/results/
+
+# VS Code extension (vscode/) build artifacts
+vscode/out/
+vscode/node_modules/
+vscode/.vscode-test/
+*.vsix

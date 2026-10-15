@@ -40,6 +40,7 @@
     "node_modules",
     "skills",
     "examples",
-    "download"
+    "download",
+    "vscode"
   ]
 }
