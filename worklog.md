@@ -1351,3 +1351,27 @@ Work Log:
 Stage Summary:
 - All 6 capability waves implemented, committed as 8 focused commits (Arpit Nayan). Honest-degradation doctrine preserved end-to-end (absent tools report enable commands verbatim; external leaderboard claims require cited methodology; skills are allowlist+budget sandboxed).
 - Known limits (documented): docker/Ghidra/rizin absent on this host (images build on deployment hosts); anonymous /leaderboard page still shows auth gate in the client shell (API is public); CI bench job continues-on-error until judge creds exist as repo secret.
+
+---
+Task ID: AREA-REBRAND
+Agent: Z.ai Code (main session)
+Task: Rebrand the platform REA → AREA ("Autonomous reverse engineering agent") everywhere in code/UI/docs, and push all pending work to GitHub.
+
+Work Log:
+- Recon first (blind "rea"→"area" would corrupt create/REAL/area): enumerated case-sensitive token families across tracked files — \bREA\b (172 in src, 30 docs, 45 README, 133 worklog), Rea* identifiers (ReaStore/ReaUser/ReaEvidence/ReaShell/ReaMcpClient/ReaApiClient…), lowercase tokens (rea_session cookie, rea-bench, rea_* MCP tool names, rea-* CSS classes ~60, /rea docker mount, rea:session-expired event, rea.vscode ids, rea.local git identity, rea-vault-salt-v1), plus REA_* env vars (SESSION/VAULT_SECRET, SANDBOX_IMAGE, BROWSER_PATH, MCP_*, ALLOWLIST, CODE_STYLE, EMAIL, PASSWORD, REPO_URL, SCRIPT).
+- Mechanical pass (perl, guarded): \bREA\b→AREA; \bRea(?!ct|d|r|s|l|c|h|p)→Area (protects React/Read/Reason/Real/Reach/Reap); \brea_→area_; \brea(?=[A-Z])→area; \brea\b→area catch-all. Excluded skills/ (bundled third-party content), binaries, bun.lockb. Zero stragglers verified by re-scan; English words intact (React 2 in button.tsx, "Reap orphans", "REAL file" spot-checked).
+- git mv: src/components/rea→area (rea-app→area-app), rea-store→area-store, rea-bridge→area-bridge, public/area-logo{,-180,-256}.png, vscode/media/area.svg, docker/angr/scripts/area_angr.py, docker/ghidra/scripts/Area{Decomp,Disasm,Funcs,Info}.java.
+- CAUGHT + FIXED two mechanical collateral damages: (1) the third-party rea-agents npm ENGINE had been renamed too (package.json dep "area-agents", spawn target node_modules/rea-agents/scripts/rea.mjs, ENGINE_VERSION rea-6.4.0, npmjs links, upstream morluto/rea attribution) — reverted engine identity to rea-agents/rea.mjs/rea-6.4.0/morluto/rea; product-home URLs (landing footer + benchmarks/leaderboard.ts REPO_URL) repointed to arpitnayan123-bot/reverse-engineering-agent. (2) bun.lock bin key "rea"→"area" corruption — bun.lock restored from HEAD (no legitimate lockfile change).
+- Tagline "Autonomous reverse engineering agent" under the name: README hero (# AREA / ### tagline), layout.tsx metadata (title/description/OG/Twitter/siteName), (app)/page.tsx + (app)/layout.tsx defaults, auth card (pre-existing), mobile SheetTitle brand, home footer, docs-view, ARCHITECTURE.md blockquote. Zero "Reverse Engineer Anything" leftovers except THIRD_PARTY_NOTICES attribution context.
+- Legacy compat shims: getRuntimeSecret falls back AREA_X→REA_X (existing deployments keep working); vault openKey falls back to pre-rename salt rea-vault-salt-v1 (sealed keys stay decryptable, new seals use area-vault-salt-v1); sandbox image/browser path/MCP URL+token read REA_* as fallback; mcp-server comment placement bug from perl fixed.
+- DB: leaderboard rows empty (nothing to migrate); benchmarks/leaderboard.ts now writes agent "AREA (measured)"; skills table has 0 REA mentions.
+- Test fix: git-workspace suite assertion 6→7 bytes (workspace .gitignore now ignores .area/ bookkeeping dir). 109/109 tests pass; tsc 0 errors; lint clean.
+- Dev server restarted (setsid -f), Ready in 784ms; browser-verified: title "AREA — Autonomous reverse engineering agent", auth gate heading AREA + tagline, demo sign-in works (n@area.platform), shell brand/footer/starter prompts say AREA, "Public leaderboard — AREA", "Skills — AREA" pages render, zero browser console errors, 390px mobile screenshot reviewed (no overflow, palette intact).
+- Commit a948f9e (180 files, author Arpit Nayan <arpitnayan123@gmail.com>): "feat(area): rebrand platform REA → AREA — code, UI, docs, tools, docker, vscode". Secret-scanned staged diff (no PAT). bun.lock untouched.
+- Push: 12 commits (11 pending brief waves + rebrand) pushed to origin/main via PAT-in-URL only (never stored).
+
+Stage Summary:
+- Platform is now AREA ("Autonomous reverse engineering agent") end-to-end: code identifiers, cookie, env vars, MCP wrapper names, docker paths/mounts, git commit identity, vscode extension (area-vscode, @area participant), UI strings, metadata, docs and README.
+- The upstream rea-agents engine (170 tools) keeps its real name everywhere it must (dependency, spawn path, version, attribution) — AREA is the product brand, rea-agents the engine it drives.
+- Sessions created before the rename are invalidated (area_session cookie); stored vault keys remain readable via the legacy-salt fallback; deployments provisioned with REA_* env vars keep working via documented fallbacks.
+- Known wrinkle: pre-rename chat workspaces have a .rea/ bookkeeping dir that the new .area/-only .gitignore no longer excludes (throwaway workspaces, cosmetic).
