@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Image from "next/image";
+import { usePathname, useRouter } from "next/navigation";
 import {
   Binary,
   Check,
@@ -19,6 +20,7 @@ import {
   Plus,
   Radar,
   SearchIcon,
+  ShieldCheck,
   Settings2,
   Sparkles,
   Upload,
@@ -45,8 +47,6 @@ import { exportChat, exportTargetReport } from "@/lib/export";
 import { formatCostUsd } from "@/lib/pricing";
 import { useReaStore } from "@/store/rea-store";
 import { refreshProviderInStore } from "@/components/rea/rea-app";
-import { ChatWorkspace } from "@/components/rea/chat-workspace";
-import { PlatformView } from "@/components/rea/platform-view";
 import type { MessageSearchHit } from "@/lib/api-client";
 import { CommandPalette } from "@/components/rea/command-palette";
 import { SettingsDialog } from "@/components/rea/settings-dialog";
@@ -95,7 +95,15 @@ function useIsDesktop(): boolean {
   return isDesktop;
 }
 
-export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => void }) {
+export function AppShell({
+  user,
+  onLogout,
+  children,
+}: {
+  user: ReaUser;
+  onLogout?: () => void;
+  children: React.ReactNode;
+}) {
   const isDesktop = useIsDesktop();
   const {
     sessions,
@@ -114,14 +122,20 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     setTargets,
     setTargetsLoaded,
     setDialog,
-    openSession,
     newFreeChat,
     closeInspector,
     setCapabilities,
-    workspaceMode,
-    setWorkspaceMode,
   } = useReaStore();
   const inspectorTabNonce = useReaStore((s) => s.inspectorTabNonce);
+  const router = useRouter();
+  const pathname = usePathname();
+  /**
+   * Workspace area derived from the URL (multi-route refactor) — replaces the
+   * old `workspaceMode` store field. Chat routes own the inspector panel;
+   * platform routes (/projects, /targets) render their own full-page views.
+   */
+  const isChatRoute = pathname === "/" || pathname.startsWith("/chat");
+  const isPlatformRoute = pathname.startsWith("/projects") || pathname.startsWith("/targets");
 
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [deletingSession, setDeletingSession] = React.useState<SessionSummary | null>(null);
@@ -236,6 +250,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
       } else if (key === "o" && e.shiftKey) {
         e.preventDefault();
         s.newFreeChat();
+        router.push("/chat");
       } else if (key === "f" && !e.shiftKey) {
         // ⌘F — focus the sidebar quick filter (Cursor-style). Must not yank
         // focus out of a field the user is typing in (composer, rename…).
@@ -271,6 +286,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
       void apiPost(`/api/targets/${res.target.id}/analyze`, {}).catch(() => undefined);
       await refreshTargets();
       useReaStore.getState().newTargetChat(res.target.id);
+      router.push("/chat");
       setMobileNavOpen(false);
     } catch (err) {
       toastError(err, "Upload failed");
@@ -288,6 +304,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
       await deleteChatSession(target.id);
       if (useReaStore.getState().activeSessionId === target.id) {
         useReaStore.getState().newFreeChat();
+        router.push("/chat");
       }
       await refreshSessions();
     } catch (err) {
@@ -362,7 +379,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
   };
 
   const openSessionAndClose = (id: string) => {
-    openSession(id);
+    router.push(`/chat/${id}`);
     setMobileNavOpen(false);
   };
 
@@ -371,7 +388,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     const st = useReaStore.getState();
     st.requestJumpToMessage(hit.messageId);
     if (hit.sessionId !== st.activeSessionId) {
-      openSession(hit.sessionId);
+      router.push(`/chat/${hit.sessionId}`);
     }
     setMobileNavOpen(false);
   };
@@ -409,13 +426,15 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
     }
   };
 
-  const topBarTitle = workspaceMode === "universal"
-    ? "Universal Platform"
-    : activeSession
-      ? activeSession.title
-      : draftTarget
-        ? draftTarget.originalName
-        : "New chat";
+  const topBarTitle = pathname.startsWith("/targets")
+    ? "Targets"
+    : isPlatformRoute
+      ? "Universal Platform"
+      : activeSession
+        ? activeSession.title
+        : draftTarget
+          ? draftTarget.originalName
+          : "New chat";
 
   return (
     <div
@@ -475,6 +494,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
               setRenameValue={setRenameValue}
               onNewChat={() => {
                 newFreeChat();
+                router.push("/chat");
                 setMobileNavOpen(false);
               }}
               onOpenSession={openSessionAndClose}
@@ -487,6 +507,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
               onUpload={onPickFile}
               onOpenTargetChat={(id) => {
                 useReaStore.getState().newTargetChat(id);
+                router.push("/chat");
                 setMobileNavOpen(false);
               }}
               onInspect={(id) => {
@@ -494,11 +515,15 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
                 setMobileNavOpen(false);
               }}
               onOpenSettings={() => {
-                setDialog("settings");
+                router.push("/settings");
                 setMobileNavOpen(false);
               }}
               onOpenSystem={() => {
-                setDialog("system");
+                router.push("/settings?tab=engine");
+                setMobileNavOpen(false);
+              }}
+              onOpenAdmin={() => {
+                router.push("/admin");
                 setMobileNavOpen(false);
               }}
               user={user}
@@ -510,7 +535,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
         {/* Brand — clicking returns to the Home dashboard (fresh free chat). */}
         <button
           type="button"
-          onClick={() => { newFreeChat(); setWorkspaceMode("chat"); }}
+          onClick={() => { newFreeChat(); router.push("/"); }}
           title="Back to Home"
           aria-label="REA home — start a fresh chat"
           className="flex items-center gap-2 rounded font-mono text-xs font-bold tracking-widest text-zinc-200 transition-colors hover:text-emerald-300 focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none"
@@ -519,34 +544,28 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           REA
         </button>
 
-        {/* Mode switch — chat investigator vs universal platform. */}
-        <div className="ml-1 flex items-center rounded-lg border border-zinc-800 bg-zinc-900/70 p-0.5" role="tablist" aria-label="Workspace mode">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={workspaceMode === "chat"}
-            onClick={() => setWorkspaceMode("chat")}
-            title="Chat workspace"
-            className={`flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] tracking-wide transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none ${
-              workspaceMode === "chat" ? "bg-emerald-500/15 text-emerald-300" : "text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            <MessageSquare className="size-3" aria-hidden />
-            <span className="hidden sm:inline">CHAT</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={workspaceMode === "universal"}
-            onClick={() => setWorkspaceMode("universal")}
-            title="Universal platform — crawl, parse, research, build, verify"
-            className={`flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] tracking-wide transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none ${
-              workspaceMode === "universal" ? "bg-emerald-500/15 text-emerald-300" : "text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            <Radar className="size-3" aria-hidden />
-            <span className="hidden sm:inline">PLATFORM</span>
-          </button>
+        {/* Route tabs — multi-route workspace navigation. */}
+        <div className="ml-1 flex items-center rounded-lg border border-zinc-800 bg-zinc-900/70 p-0.5" role="tablist" aria-label="Workspace area">
+          {([
+            { id: "chat", label: "CHAT", icon: MessageSquare, href: "/chat", title: "Chat workspace", active: isChatRoute },
+            { id: "platform", label: "PLATFORM", icon: Radar, href: "/projects", title: "Universal platform — crawl, parse, research, build, verify", active: pathname.startsWith("/projects") },
+            { id: "targets", label: "TARGETS", icon: Binary, href: "/targets", title: "Uploaded targets — evidence, findings, analysis runs", active: pathname.startsWith("/targets") },
+          ] as const).map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={tab.active}
+              onClick={() => router.push(tab.href)}
+              title={tab.title}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] tracking-wide transition-colors focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:outline-none ${
+                tab.active ? "bg-emerald-500/15 text-emerald-300" : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              <tab.icon className="size-3" aria-hidden />
+              <span className="hidden sm:inline">{tab.label}</span>
+            </button>
+          ))}
         </div>
 
         {/* Context title */}
@@ -561,7 +580,7 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           size="icon"
           className={cn(
             "size-8 text-zinc-400",
-            (!activeSession || workspaceMode !== "chat") && "hidden"
+            (!activeSession || !isChatRoute) && "hidden"
           )}
           aria-label="Export chat as Markdown"
           disabled={exportingChat}
@@ -570,8 +589,8 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
           <Download className="size-4" aria-hidden />
         </Button>
 
-        {/* Inspector toggle (desktop, chat mode) */}
-        {workspaceMode === "chat" && (
+        {/* Inspector toggle (desktop, chat routes) */}
+        {isChatRoute && (
         <Button
           variant="ghost"
           size="icon"
@@ -616,8 +635,11 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
             renamingSession={renamingSession}
             renameValue={renameValue}
             setRenameValue={setRenameValue}
-            onNewChat={newFreeChat}
-            onOpenSession={openSession}
+            onNewChat={() => {
+              newFreeChat();
+              router.push("/chat");
+            }}
+            onOpenSession={(id) => router.push(`/chat/${id}`)}
             onOpenMessageHit={openMessageHit}
             onDeleteSession={(s) => setDeletingSession(s)}
             onStartRename={startRename}
@@ -625,32 +647,25 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
             onCancelRename={() => setRenamingSession(null)}
             onTogglePin={(s) => void onTogglePin(s)}
             onUpload={onPickFile}
-            onOpenTargetChat={(id) => useReaStore.getState().newTargetChat(id)}
+            onOpenTargetChat={(id) => {
+              useReaStore.getState().newTargetChat(id);
+              router.push("/chat");
+            }}
             onInspect={(id) => useReaStore.getState().openInspector(id)}
-            onOpenSettings={() => setDialog("settings")}
-            onOpenSystem={() => setDialog("system")}
+            onOpenSettings={() => router.push("/settings")}
+            onOpenSystem={() => router.push("/settings?tab=engine")}
+            onOpenAdmin={() => router.push("/admin")}
             user={user}
             onLogout={() => void doLogout()}
           />
         </aside>
 
-        {/* Main: universal platform OR chat + optional inspector */}
+        {/* Main: active route (chat workspace, platform views, settings…) */}
         <main className="flex min-w-0 flex-1">
-          {workspaceMode === "universal" ? (
-            <div className="relative min-w-0 flex-1">
-              <PlatformView />
-            </div>
-          ) : (
-            <>
-              <ChatWorkspace
-                className="min-w-0 flex-1"
-                onSessionsChanged={refreshSessions}
-                onTargetsChanged={refreshTargets}
-                onAttachFile={onPickFile}
-              />
+          {children}
 
-              {/* Desktop inspector (lg+) */}
-              {isDesktop && inspectorOpen && inspectorTargetId && (
+          {/* Desktop inspector (lg+, chat routes only) */}
+          {isDesktop && isChatRoute && inspectorOpen && inspectorTargetId && (
                 <aside
                   className="flex w-[420px] shrink-0 flex-col overflow-hidden border-l border-zinc-800/80 bg-zinc-950"
                   aria-label="Target inspector"
@@ -688,15 +703,13 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
                       externalTabNonce={inspectorTabNonce}
                     />
                   </div>
-                </aside>
-              )}
-            </>
+            </aside>
           )}
         </main>
       </div>
 
-      {/* Mobile inspector overlay (<lg only) */}
-      {!isDesktop && inspectorOpen && inspectorTargetId && (
+      {/* Mobile inspector overlay (<lg, chat routes only) */}
+      {!isDesktop && isChatRoute && inspectorOpen && inspectorTargetId && (
         <Sheet open onOpenChange={(open) => !open && closeInspector()}>
           <SheetContent side="right" className="w-full border-zinc-800 bg-zinc-950 p-0 sm:w-[420px]">
             <SheetHeader className="border-b border-zinc-800/80 px-4 py-2.5">
@@ -800,7 +813,8 @@ export function AppShell({ user, onLogout }: { user: ReaUser; onLogout?: () => v
 // ---------------------------------------------------------------------------
 
 function ModelChip() {
-  const { providerActive, hasProviderKey, providerLoaded, setDialog } = useReaStore();
+  const router = useRouter();
+  const { providerActive, hasProviderKey, providerLoaded } = useReaStore();
 
   const label = providerActive
     ? `${providerActive.provider} · ${providerActive.model}`
@@ -810,7 +824,7 @@ function ModelChip() {
     <Button
       type="button"
       variant="ghost"
-      onClick={() => setDialog("settings")}
+      onClick={() => router.push("/settings")}
       aria-label={`Active AI model: ${label}. Open API key settings.`}
       className="hidden h-7 gap-1.5 rounded-full border border-zinc-800 bg-zinc-900 px-2.5 font-mono text-[10px] tracking-wide text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 sm:inline-flex"
     >
@@ -855,6 +869,7 @@ interface SidebarBodyProps {
   onInspect: (targetId: string) => void;
   onOpenSettings: () => void;
   onOpenSystem: () => void;
+  onOpenAdmin: () => void;
   user: ReaUser;
   onLogout: () => void;
 }
@@ -1330,11 +1345,15 @@ function SidebarBody(p: SidebarBodyProps) {
           >
             <DropdownMenuItem onClick={p.onOpenSettings} className="gap-2">
               <KeyRound className="size-3.5" aria-hidden />
-              API key & model
+              Settings
             </DropdownMenuItem>
             <DropdownMenuItem onClick={p.onOpenSystem} className="gap-2">
               <MonitorDot className="size-3.5" aria-hidden />
               Engine & security
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={p.onOpenAdmin} className="gap-2">
+              <ShieldCheck className="size-3.5" aria-hidden />
+              Operations console
             </DropdownMenuItem>
             <DropdownMenuSeparator className="bg-zinc-800" />
             <DropdownMenuItem

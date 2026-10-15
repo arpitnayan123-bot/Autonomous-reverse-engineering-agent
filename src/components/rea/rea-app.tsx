@@ -9,8 +9,16 @@ import { useReaStore } from "@/store/rea-store";
 import { AppShell } from "@/components/rea/app-shell";
 import { AuthView } from "@/components/rea/auth-view";
 
-export function ReaApp() {
+export function ReaShell({ children }: { children: React.ReactNode }) {
   const { booted, user, setUser } = useReaStore();
+  /** ?auth=signin | ?auth=register deep link (set by the middleware redirect). */
+  const [authMode, setAuthMode] = React.useState<"signin" | "register">("signin");
+
+  React.useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("auth");
+    if (requested === "register") setAuthMode("register");
+    else if (requested === "signin") setAuthMode("signin");
+  }, []);
 
   // Resolve the session once on boot.
   React.useEffect(() => {
@@ -54,14 +62,14 @@ export function ReaApp() {
   }
 
   if (!user) {
-    return <AuthView onAuthenticated={(u) => setUser(u)} />;
+    return <AuthView initialMode={authMode} onAuthenticated={(u) => setUser(u)} />;
   }
 
   return (
     // Respect the OS "reduce motion" preference for every framer-motion
     // transition in the shell (message entry, sheet slides…).
     <MotionConfig reducedMotion="user">
-      <AppShell user={user} />
+      <AppShell user={user}>{children}</AppShell>
     </MotionConfig>
   );
 }

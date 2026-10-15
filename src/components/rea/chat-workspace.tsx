@@ -212,11 +212,14 @@ function nextId() {
 
 export function ChatWorkspace({
   className,
+  sessionId: routeSessionId,
   onSessionsChanged,
   onTargetsChanged,
   onAttachFile,
 }: {
   className?: string;
+  /** /chat/[sessionId] deep link — synced into the store on mount/param change. */
+  sessionId?: string;
   onSessionsChanged?: () => void;
   onTargetsChanged?: () => void;
   /** Opens the hidden file picker (composer paperclip → upload → draft chat). */
@@ -233,6 +236,15 @@ export function ChatWorkspace({
     setDraftTargetId,
     openInspector,
   } = useReaStore();
+
+  // Route → store sync: a deep link (or back/forward navigation) to
+  // /chat/[sessionId] opens that session. Sessions created mid-stream take
+  // the reverse path (store → replaceState below), so the two stay in step.
+  React.useEffect(() => {
+    if (!routeSessionId) return;
+    const st = useReaStore.getState();
+    if (st.activeSessionId !== routeSessionId) st.openSession(routeSessionId);
+  }, [routeSessionId, openSession]);
 
   const activeSession = React.useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -493,6 +505,9 @@ export function ChatWorkspace({
           if (!sessionId) {
             skipHistoryLoadRef.current = true;
             setActiveSessionId(ev.sessionId);
+            // Promote the draft URL to the real session route WITHOUT a
+            // navigation (a push would remount the workspace mid-stream).
+            window.history.replaceState(null, "", `/chat/${ev.sessionId}`);
             const s = useReaStore.getState();
             s.setSessions([
               {
@@ -812,6 +827,7 @@ export function ChatWorkspace({
       const s = useReaStore.getState();
       s.setSessions([summary, ...s.sessions]);
       s.openSession(summary.id);
+      window.history.replaceState(null, "", `/chat/${summary.id}`);
       toast({
         title: "Chat forked",
         description: `“${summary.title}” continues from this point (${summary.messageCount} messages).`,

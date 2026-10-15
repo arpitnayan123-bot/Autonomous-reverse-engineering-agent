@@ -17,7 +17,14 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /**
  * Minimal sign-in gate. Deliberately plain: a centered card, nothing else.
  */
-export function AuthView({ onAuthenticated }: { onAuthenticated: (user: ReaUser) => void }) {
+export function AuthView({
+  onAuthenticated,
+  initialMode = "signin",
+}: {
+  onAuthenticated: (user: ReaUser) => void;
+  /** Deep-linked tab — middleware redirects land here with ?auth=signin. */
+  initialMode?: "signin" | "register";
+}) {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-4">
       <div className="w-full max-w-sm">
@@ -37,7 +44,7 @@ export function AuthView({ onAuthenticated }: { onAuthenticated: (user: ReaUser)
           </div>
         </div>
 
-        <Tabs defaultValue="signin">
+        <Tabs defaultValue={initialMode}>
           <TabsList className="grid w-full grid-cols-2 bg-zinc-900">
             <TabsTrigger value="signin">Sign in</TabsTrigger>
             <TabsTrigger value="register">Create account</TabsTrigger>
