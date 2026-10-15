@@ -23,6 +23,7 @@ import {
   ShieldCheck,
   Settings2,
   Sparkles,
+  Trophy,
   Upload,
   X,
 } from "lucide-react";
@@ -428,7 +429,9 @@ export function AppShell({
 
   const topBarTitle = pathname.startsWith("/targets")
     ? "Targets"
-    : isPlatformRoute
+    : pathname.startsWith("/leaderboard")
+      ? "Public leaderboard"
+      : isPlatformRoute
       ? "Universal Platform"
       : activeSession
         ? activeSession.title
@@ -550,6 +553,7 @@ export function AppShell({
             { id: "chat", label: "CHAT", icon: MessageSquare, href: "/chat", title: "Chat workspace", active: isChatRoute },
             { id: "platform", label: "PLATFORM", icon: Radar, href: "/projects", title: "Universal platform — crawl, parse, research, build, verify", active: pathname.startsWith("/projects") },
             { id: "targets", label: "TARGETS", icon: Binary, href: "/targets", title: "Uploaded targets — evidence, findings, analysis runs", active: pathname.startsWith("/targets") },
+            { id: "leaderboard", label: "BOARD", icon: Trophy, href: "/leaderboard", title: "Public leaderboard — measured & cited scores", active: pathname.startsWith("/leaderboard") },
           ] as const).map((tab) => (
             <button
               key={tab.id}

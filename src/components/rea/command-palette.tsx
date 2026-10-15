@@ -17,6 +17,7 @@ import {
   Plus,
   Radar,
   ShieldCheck,
+  Trophy,
   Upload,
 } from "lucide-react";
 
@@ -221,6 +222,12 @@ export function CommandPalette({
             label="Targets — files & evidence"
             hint="/targets"
             onSelect={() => run(() => router.push("/targets"))}
+          />
+          <Item
+            icon={Trophy}
+            label="Public leaderboard — measured & cited scores"
+            hint="/leaderboard"
+            onSelect={() => run(() => router.push("/leaderboard"))}
           />
           <Item
             icon={ShieldCheck}

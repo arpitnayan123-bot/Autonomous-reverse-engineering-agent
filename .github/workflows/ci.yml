@@ -6,8 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# CI has no committed .env — give Prisma an ephemeral SQLite database for
+# generate/db push and the unit suites (none of them touch real data).
+# Relative sqlite URLs resolve schema-relative (prisma/), which exists in a
+# fresh checkout, so the engine can create the file on demand.
+env:
+  DATABASE_URL: file:./ci.db
+
 jobs:
-  quality:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -21,11 +28,90 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Prisma generate
-        run: bunx prisma generate
-
       - name: Lint
         run: bun run lint
 
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node 22 (Prisma engine runtime)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prisma generate
+        run: bunx prisma generate
+
       - name: Typecheck
         run: bunx tsc --noEmit
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node 22 (Prisma engine runtime)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prisma generate + schema
+        run: |
+          bunx prisma generate
+          bunx prisma db push --accept-data-loss
+
+      - name: Unit tests (retools / platform / agent)
+        run: bun test src/server/retools src/server/platform/__tests__ src/server/agent/__tests__
+
+  bench:
+    # The fast benchmark (runner --fast → scorer → report) spawns a real
+    # server and bills the LLM judge, so it only runs on main. It needs
+    # platform-LLM credentials to judge rubric tasks — until that secret is
+    # configured in the repo, failures here are advisory, not blocking.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node 22 (Prisma engine runtime)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Prisma generate + schema
+        run: |
+          bunx prisma generate
+          bunx prisma db push --accept-data-loss
+
+      - name: Fast benchmark
+        run: bun run bench:fast
