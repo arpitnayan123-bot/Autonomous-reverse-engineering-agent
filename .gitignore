@@ -71,3 +71,9 @@ vscode/out/
 vscode/node_modules/
 vscode/.vscode-test/
 *.vsix
+
+# Python training artifacts
+__pycache__/
+training/out/
+training/data/
+*.pyc

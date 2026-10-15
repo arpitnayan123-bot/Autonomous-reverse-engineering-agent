@@ -1,0 +1,54 @@
+# REA RE-tool backend images — build matrix (Capability C1, wave W1b).
+#
+# Build everything:
+#   docker compose -f docker/docker-compose.yml --profile retools build
+# Build one:
+#   docker compose -f docker/docker-compose.yml --profile retools build ghidra
+#
+# These are BUILD-ONLY services: nobody should `compose up` them. The platform
+# runner (src/server/retools/runner.ts) constructs every `docker run` itself
+# with the per-tool profile (read-only rootfs, --network none, tmpfs /tmp,
+# work dir bind-mounted rw at /rea) and passes the full registry argv after
+# the image name. Per-image pinning args (RIZIN_REF / PYCDC_REF / ANGR_SPEC)
+# are documented in the Dockerfiles; the defaults follow the W1b spec.
+#
+# `ida` and `hopper` are intentionally NOT here: their Dockerfiles refuse to
+# build without the operator's licensed installer (see docker/ida/README.md,
+# docker/hopper/README.md) — they can never be part of an automated build.
+
+services:
+  ghidra:
+    image: rea/ghidra:11
+    build:
+      context: ./ghidra
+      dockerfile: Dockerfile
+    profiles: ["retools"]
+    restart: "no"
+    command: ["echo", "build-only service — the REA runner executes this image, not compose"]
+
+  rizin:
+    image: rea/rizin:latest
+    build:
+      context: ./rizin
+      dockerfile: Dockerfile
+    profiles: ["retools"]
+    restart: "no"
+    command: ["echo", "build-only service — the REA runner executes this image, not compose"]
+
+  pycdc:
+    image: rea/pycdc:latest
+    build:
+      context: ./pycdc
+      dockerfile: Dockerfile
+    profiles: ["retools"]
+    restart: "no"
+    command: ["echo", "build-only service — the REA runner executes this image, not compose"]
+
+  angr:
+    image: rea/angr:latest
+    build:
+      context: ./angr
+      dockerfile: Dockerfile
+    profiles: ["retools"]
+    restart: "no"
+    command: ["echo", "build-only service — the REA runner executes this image, not compose"]
