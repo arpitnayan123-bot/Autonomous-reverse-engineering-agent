@@ -357,7 +357,7 @@ model OrchestrationStep {
   orchestrationId String
   orchestration   Orchestration @relation(fields: [orchestrationId], references: [id], onDelete: Cascade)
   createdAt       DateTime      @default(now())
-  stage           String // discover|collect|understand|map|research|plan|build|test|verify
+  stage           String // discover|collect|understand|map|research|plan|build|clone|test|verify
   name            String
   status          String        @default("pending") // pending|running|done|failed|skipped|awaiting_approval|cancelled
   attempts        Int           @default(0)

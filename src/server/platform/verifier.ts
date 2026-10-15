@@ -256,3 +256,123 @@ export async function runVerification(
 function candWords(text: string): number {
   return text.split(/\s+/).filter(Boolean).length;
 }
+
+// ---------------------------------------------------------------------------
+// Clone equivalence (CLONE stage) — behavioral comparison of a booted clone
+// against the original. Real HTTP fetches on both sides, word-level drift,
+// status parity, title parity. Persisted as a VerificationRun so it lands in
+// the same ledger (and regression tracking) as every other verification.
+// ---------------------------------------------------------------------------
+
+export interface CloneEquivalenceResult {
+  score: number;
+  checks: VerifyCheck[];
+  originalUrl: string;
+  cloneUrl: string;
+}
+
+export async function runCloneVerification(
+  projectId: string,
+  opts: { originalUrl: string; cloneUrl: string }
+): Promise<CloneEquivalenceResult> {
+  const checks: VerifyCheck[] = [];
+  let original: Awaited<ReturnType<typeof safeFetch>> | null = null;
+  let clone: Awaited<ReturnType<typeof safeFetch>> | null = null;
+
+  const fetchSide = async (url: string) => {
+    try {
+      return await safeFetch(url, { maxBytes: 2 * 1024 * 1024 });
+    } catch {
+      return null;
+    }
+  };
+
+  [original, clone] = await Promise.all([fetchSide(opts.originalUrl), fetchSide(opts.cloneUrl)]);
+
+  checks.push({
+    name: "clone-reachable",
+    passed: Boolean(clone && clone.status >= 200 && clone.status < 400),
+    detail: clone ? `clone HTTP ${clone.status} (${clone.ms}ms)` : "clone unreachable",
+    ms: clone?.ms ?? 0,
+  });
+  checks.push({
+    name: "original-reachable",
+    passed: Boolean(original && original.status >= 200 && original.status < 400),
+    detail: original ? `original HTTP ${original.status} (${original.ms}ms)` : "original unreachable (equivalence not measurable)",
+    ms: original?.ms ?? 0,
+  });
+
+  if (original && clone) {
+    checks.push({
+      name: "status-parity",
+      passed: Math.floor(original.status / 100) === Math.floor(clone.status / 100),
+      detail: `original ${original.status} vs clone ${clone.status}`,
+      ms: 0,
+    });
+
+    const textOf = (res: NonNullable<typeof original>) => {
+      if (!res.contentType.includes("html")) return res.body.toString("utf8").slice(0, 200_000);
+      const $ = cheerio.load(res.body.toString("utf8").slice(0, 1_000_000));
+      return $("body").text().replace(/\s+/g, " ").trim();
+    };
+    const origText = textOf(original);
+    const cloneText = textOf(clone);
+
+    const hunks = diffLines(origText, cloneText);
+    const added = hunks.filter((h) => h.added).reduce((a, h) => a + h.count!, 0);
+    const removed = hunks.filter((h) => h.removed).reduce((a, h) => a + h.count!, 0);
+    const denom = Math.max(origText.split(/\s+/).filter(Boolean).length, cloneText.split(/\s+/).filter(Boolean).length, 1);
+    const drift = Math.round(((added + removed) / denom) * 100);
+    checks.push({
+      name: "text-equivalence",
+      passed: drift < 50,
+      detail: `word drift ~${Math.min(drift, 999)}% (+${added}/-${removed} lines)`,
+      ms: 0,
+    });
+
+    const origTitle = original.contentType.includes("html") ? (cheerio.load(original.body.toString("utf8").slice(0, 1_000_000))("title").first().text() || "").trim() : "";
+    const cloneTitle = clone.contentType.includes("html") ? (cheerio.load(clone.body.toString("utf8").slice(0, 1_000_000))("title").first().text() || "").trim() : "";
+    checks.push({
+      name: "title-parity",
+      passed: Boolean(origTitle) && origTitle.toLowerCase() === cloneTitle.toLowerCase(),
+      detail: origTitle ? `original "${origTitle.slice(0, 60)}" vs clone "${cloneTitle.slice(0, 60)}"` : "original has no title to compare",
+      ms: 0,
+    });
+  }
+
+  const weights: Record<string, number> = {
+    "clone-reachable": 2, "original-reachable": 1, "status-parity": 2, "text-equivalence": 4, "title-parity": 1,
+  };
+  let earned = 0;
+  let total = 0;
+  for (const c of checks) {
+    const w = weights[c.name] ?? 1;
+    total += w;
+    if (c.passed) earned += w;
+  }
+  const score = Math.round((earned / Math.max(total, 1)) * 100);
+
+  await db.verificationRun.create({
+    data: {
+      projectId,
+      url: opts.cloneUrl,
+      status: "completed",
+      score,
+      checks: JSON.stringify(checks),
+      diffSummary: `clone equivalence vs ${opts.originalUrl}`,
+      regression: null,
+    },
+  });
+
+  await upsertGraph(projectId, [
+    {
+      kind: "finding",
+      key: `clone-equivalence:${new Date().toISOString()}`,
+      label: `Clone equivalence ${score}/100`,
+      meta: { originalUrl: opts.originalUrl, cloneUrl: opts.cloneUrl, score },
+      provenance: "OBSERVED",
+    },
+  ], []);
+
+  return { score, checks, originalUrl: original?.url ?? opts.originalUrl, cloneUrl: clone?.url ?? opts.cloneUrl };
+}

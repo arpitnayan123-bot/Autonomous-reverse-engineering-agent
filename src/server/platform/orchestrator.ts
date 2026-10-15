@@ -7,7 +7,8 @@ import { runResearch, analyzeGitHubRepo, parseGitHubRef } from "./research";
 import {
   materializeGitHubRepo, materializeTarget, writeFile, runCommand, workspaceStatus, ensureWorkspace,
 } from "./builder";
-import { runVerification } from "./verifier";
+import { runVerification, runCloneVerification } from "./verifier";
+import { cloneDockerize, cloneDecompile, cloneRebuild } from "./clone";
 import { tryBrowser } from "./browser";
 
 /**
@@ -30,7 +31,7 @@ import { tryBrowser } from "./browser";
 
 export type Stage =
   | "discover" | "collect" | "understand" | "map" | "research"
-  | "plan" | "build" | "test" | "verify";
+  | "plan" | "build" | "clone" | "test" | "verify";
 
 const APPROVAL_STAGES = new Set<Stage>(["plan", "build"]);
 const CONTEXT_LIMIT = 150_000; // chars
@@ -58,6 +59,7 @@ function websitePipeline(): StepTemplate[] {
     { stage: "research", name: "research:web", dependsOn: ["discover:probe"], timeoutMs: 120_000 },
     { stage: "plan", name: "plan:reconstruction", dependsOn: ["understand:stack", "map:navigation", "research:web"], timeoutMs: 120_000 },
     { stage: "build", name: "build:scaffold", dependsOn: ["plan:reconstruction"], timeoutMs: 90_000 },
+    { stage: "clone", name: "clone:dockerize", dependsOn: ["build:scaffold"], timeoutMs: 300_000, optional: true },
     { stage: "test", name: "test:functional", dependsOn: ["build:scaffold"], timeoutMs: 150_000 },
     { stage: "verify", name: "verify:report", dependsOn: ["test:functional"], timeoutMs: 120_000 },
   ];
@@ -75,6 +77,7 @@ function githubPipeline(): StepTemplate[] {
     { stage: "research", name: "research:web", dependsOn: [], timeoutMs: 120_000 },
     { stage: "plan", name: "plan:reconstruction", dependsOn: ["understand:parse", "map:architecture", "research:web"], timeoutMs: 120_000 },
     { stage: "build", name: "build:scaffold", dependsOn: ["plan:reconstruction"], timeoutMs: 90_000 },
+    { stage: "clone", name: "clone:dockerize", dependsOn: ["build:scaffold"], timeoutMs: 300_000, optional: true },
     { stage: "test", name: "test:workspace", dependsOn: ["build:scaffold"], timeoutMs: 120_000 },
     { stage: "verify", name: "verify:report", dependsOn: ["test:workspace"], timeoutMs: 120_000 },
   ];
@@ -87,6 +90,8 @@ function filePipeline(): StepTemplate[] {
     { stage: "understand", name: "understand:parse", dependsOn: ["collect:materialize"], timeoutMs: 180_000 },
     { stage: "map", name: "map:architecture", dependsOn: ["understand:parse"], timeoutMs: 60_000 },
     { stage: "plan", name: "plan:analysis", dependsOn: ["understand:parse", "map:architecture"], timeoutMs: 120_000 },
+    { stage: "clone", name: "clone:decompile", dependsOn: ["collect:materialize"], timeoutMs: 540_000, optional: true },
+    { stage: "clone", name: "clone:rebuild", dependsOn: ["clone:decompile"], timeoutMs: 180_000, optional: true },
     { stage: "test", name: "test:workspace", dependsOn: ["collect:materialize"], timeoutMs: 120_000 },
     { stage: "verify", name: "verify:report", dependsOn: ["plan:analysis", "test:workspace"], timeoutMs: 120_000 },
   ];
@@ -221,6 +226,15 @@ async function execStep(
       }
       return { written };
     }
+    case "clone:dockerize": {
+      return cloneDockerize(projectId, { name: project.name, reference: project.reference }, goal);
+    }
+    case "clone:decompile": {
+      return cloneDecompile(projectId);
+    }
+    case "clone:rebuild": {
+      return cloneRebuild(projectId);
+    }
     case "test:functional": {
       const ctxProbe = (ctx["discover:probe"] ?? {}) as { finalUrl?: string };
       const url = ctxProbe.finalUrl ?? project.reference;
@@ -233,6 +247,7 @@ async function execStep(
       const context = digest(ctx, [
         "collect:crawl", "understand:stack", "understand:parse", "map:architecture",
         "plan:reconstruction", "plan:analysis", "build:scaffold",
+        "clone:dockerize", "clone:decompile", "clone:rebuild",
         "test:functional", "test:workspace", "discover:repo",
       ]);
       let verificationScore: number | null = null;
@@ -246,6 +261,25 @@ async function execStep(
             verificationScore = v.score;
           } catch {
             verificationScore = null;
+          }
+        }
+      }
+      // Clone equivalence: when the CLONE stage actually booted the clone,
+      // the final score becomes the BEHAVIORAL EQUIVALENCE between the
+      // original and the clone — a stronger claim than either side alone.
+      const cloneOut = (ctx["clone:dockerize"] ?? null) as { boot?: { url?: string | null } } | null;
+      const cloneBootUrl = cloneOut?.boot?.url ?? null;
+      if (cloneBootUrl) {
+        const originalUrl =
+          project.kind === "website"
+            ? ((ctx["discover:probe"] ?? {}) as { finalUrl?: string }).finalUrl ?? project.reference
+            : ((ctx["discover:repo"] ?? {}) as { homepage?: string }).homepage ?? null;
+        if (originalUrl && /^https?:\/\//.test(originalUrl)) {
+          try {
+            const eq = await runCloneVerification(projectId, { originalUrl, cloneUrl: cloneBootUrl });
+            verificationScore = eq.score;
+          } catch {
+            // an equivalence-check failure must not erase the functional score
           }
         }
       }
