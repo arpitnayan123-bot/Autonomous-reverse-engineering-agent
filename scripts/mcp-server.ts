@@ -136,6 +136,39 @@ const TOOLS: Tool[] = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "rea_re_tools",
+    description:
+      "List REA's classical RE toolchain (Ghidra, rizin, pycdc, angr; IDA/Hopper when licensed) with LIVE availability per tool: docker image, local binary, or unavailable-with-enable-instructions.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "rea_re_tool",
+    description:
+      "Run a classical RE tool from REA's registry on an input: operations decompile | disassemble | functions | info | symbolic. Input: targetId of an owned uploaded target, or path under platform storage. Sandboxed execution; real output only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tool: { type: "string", description: 'Registry id: ghidra | rizin | pycdc | pycdas | angr | ida | hopper.' },
+        operation: { type: "string", description: "decompile | disassemble | functions | info | symbolic" },
+        targetId: { type: "string", description: "Id of an owned uploaded target." },
+        path: { type: "string", description: "Alternative: absolute path under platform storage." },
+      },
+      required: ["tool", "operation"],
+    },
+  },
+  {
+    name: "rea_leaderboard_top",
+    description:
+      "Top entries of REA's public verification leaderboard (best score per agent/benchmark/category, provenance-graded: OBSERVED = measured by the open harness; INFERRED = external claim with methodology).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        benchmark: { type: "string", description: "Optional filter, e.g. rea-bench." },
+        category: { type: "string", description: "Optional filter: binary|web|code|mixed|overall." },
+      },
+    },
+  },
+  {
     name: "rea_list_projects",
     description:
       "List the authenticated user's REA projects with activity counters (pages, graph nodes, reports, orchestrations, verifications) and each project's latest pipeline status.",
@@ -388,6 +421,30 @@ async function executeTool(name: string, args: Args): Promise<ReturnType<typeof 
   switch (name) {
     case "rea_health": {
       const r = await api("/api");
+      return toolJson(r);
+    }
+    case "rea_re_tools": {
+      const r = await api("/api/retools");
+      return toolJson(r);
+    }
+    case "rea_re_tool": {
+      const r = await api("/api/retools", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tool: args.tool,
+          operation: args.operation,
+          ...(args.targetId ? { targetId: args.targetId } : {}),
+          ...(args.path ? { path: args.path } : {}),
+        }),
+      }, 300_000);
+      return toolJson(r);
+    }
+    case "rea_leaderboard_top": {
+      const qs = new URLSearchParams();
+      if (args.benchmark) qs.set("benchmark", String(args.benchmark));
+      if (args.category) qs.set("category", String(args.category));
+      const r = await api(`/api/leaderboard${qs.toString() ? `?${qs}` : ""}`);
       return toolJson(r);
     }
     case "rea_list_projects": {
