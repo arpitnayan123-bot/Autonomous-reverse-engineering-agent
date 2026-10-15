@@ -1,6 +1,8 @@
 import { promises as fs } from "fs";
 import path from "path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { db } from "@/lib/db";
+import { isPathInside } from "@/lib/security";
 import { rea } from "@/server/engine/rea-bridge";
 import { CHAT_TOOL_TIMEOUT_MS } from "@/lib/security";
 // Shared strings helper owned by task 2-a (use as-is): cache-first extraction
@@ -17,11 +19,22 @@ import {
   isValidGitRev,
   listFiles as workspaceListFiles,
   readFile as workspaceReadFile,
+  resolveSafe,
   runCommand as workspaceRunCommand,
   runGit,
+  workspaceDir,
   writeFile as workspaceWriteFile,
   workspaceDiskUsage,
 } from "@/server/platform/builder";
+import {
+  acquireServer,
+  detectServer,
+  formatLspUnavailableMessage,
+  lspLanguageForExtension,
+  lspLanguageIdForExtension,
+  lspServerSpec,
+  type LspClient,
+} from "@/server/platform/lsp";
 import {
   MEMORY_MAX_KEY_CHARS,
   MEMORY_MAX_VALUE_CHARS,
@@ -797,6 +810,10 @@ const WORKSPACE_TOOL_NAMES = [
   "workspace_diff",
   "workspace_log",
   "workspace_reset",
+  "lsp_diagnostics",
+  "lsp_definition",
+  "lsp_references",
+  "lsp_hover",
 ] as const;
 
 export type WorkspaceToolName = (typeof WORKSPACE_TOOL_NAMES)[number];
@@ -1115,8 +1132,217 @@ export async function runWorkspaceTool(
       ].join("\n");
     }
 
+    case "lsp_diagnostics":
+    case "lsp_definition":
+    case "lsp_references":
+    case "lsp_hover":
+      return runLspTool(name, args, key);
+
     default:
       return `Error: unknown workspace tool "${name}". Workspace tools: ${WORKSPACE_TOOL_NAMES.join(", ")}.`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// LSP tools — deep code intelligence over workspace files, via REAL language
+// servers (typescript-language-server, rust-analyzer, gopls, pyright, clangd).
+//
+// Security/honesty contract (mirrors the other workspace tools):
+//   - the file path is jailed to the session workspace (resolveSafe) before
+//     anything reaches a server; the language server itself is a platform
+//     binary discovered on the PLATFORM PATH — never model-supplied,
+//   - a missing server is reported with the EXACT unavailable message; the
+//     tools never fabricate diagnostics, definitions, references or hovers,
+//   - positions are 0-based everywhere (the LSP convention), stated as such
+//     in every description and every result so the model can aim precisely.
+// ---------------------------------------------------------------------------
+
+const LSP_DIAGNOSTICS_WAIT_MS = 10_000;
+const LSP_MAX_REFERENCES = 50;
+
+type LspToolName = "lsp_diagnostics" | "lsp_definition" | "lsp_references" | "lsp_hover";
+
+/** Strict position parse: non-negative integers only (numeric strings OK). */
+function lspPositionArg(v: unknown): number | null {
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+  if (typeof n !== "number" || !Number.isFinite(n) || !Number.isInteger(n) || n < 0) return null;
+  return n;
+}
+
+/** Normalize a definition/references result to a location list. */
+function normalizeLspLocations(result: unknown): unknown[] {
+  if (!result) return [];
+  if (Array.isArray(result)) return result;
+  return [result];
+}
+
+/**
+ * Render one Location / LocationLink as `rel:path:line:character (0-based)`.
+ * file:// URIs inside the workspace are shown workspace-relative; anything
+ * else stays raw (honest — an outside location is real and worth seeing).
+ */
+function formatLspLocation(loc: unknown, workspacePath: string): string | null {
+  if (!loc || typeof loc !== "object") return null;
+  const o = loc as Record<string, unknown>;
+  const uri =
+    typeof o.uri === "string" ? o.uri : typeof o.targetUri === "string" ? o.targetUri : null;
+  if (!uri) return null;
+  const range = (o.range ?? o.targetSelectionRange ?? o.targetRange ?? {}) as Record<string, unknown>;
+  const start = (range.start ?? {}) as Record<string, unknown>;
+  const line = typeof start.line === "number" ? start.line : 0;
+  const character = typeof start.character === "number" ? start.character : 0;
+  let where = uri;
+  if (uri.startsWith("file://")) {
+    try {
+      const abs = fileURLToPath(uri);
+      where = isPathInside(abs, workspacePath) ? path.relative(workspacePath, abs) : abs;
+    } catch {
+      /* keep the raw uri */
+    }
+  }
+  return `${where}:${line}:${character} (0-based)`;
+}
+
+function formatLspRange(range: unknown): string {
+  const r = (range ?? {}) as Record<string, unknown>;
+  const s = (r.start ?? {}) as Record<string, unknown>;
+  const e = (r.end ?? {}) as Record<string, unknown>;
+  const num = (v: unknown): string => (typeof v === "number" ? String(v) : "?");
+  return `line ${num(s.line)}, character ${num(s.character)} → line ${num(e.line)}, character ${num(e.character)} (0-based)`;
+}
+
+/** Render a hover `contents` (MarkupContent | MarkedString | array) as text. */
+function formatHoverContent(c: unknown): string {
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) return c.map(formatHoverContent).filter(Boolean).join("\n\n");
+  if (c && typeof c === "object") {
+    const o = c as Record<string, unknown>;
+    if (typeof o.value === "string") {
+      if (o.kind === "markdown") return o.value;
+      if (typeof o.language === "string" && o.language) {
+        return `\`\`\`${o.language}\n${o.value}\n\`\`\``;
+      }
+      return o.value;
+    }
+  }
+  return "";
+}
+
+async function runLspTool(name: LspToolName, args: Record<string, unknown>, key: string): Promise<string> {
+  const rel = argStr(args, "path");
+  if (!rel) {
+    return `Error: 'path' is required (workspace-relative file path, e.g. "src/index.ts").`;
+  }
+  const wantsPosition = name !== "lsp_diagnostics";
+  let line = 0;
+  let character = 0;
+  if (wantsPosition) {
+    const l = lspPositionArg(args?.["line"]);
+    const c = lspPositionArg(args?.["character"]);
+    if (l === null || c === null) {
+      return `Error: 'line' and 'character' must be non-negative integers — LSP positions are 0-based (the file's first character is line 0, character 0).`;
+    }
+    line = l;
+    character = c;
+  }
+
+  // Extension → language family → server availability. Every refusal here is
+  // the EXACT honest message — with no server installed, nothing is queried
+  // and nothing is made up.
+  const ext = path.extname(rel).toLowerCase().replace(/^\./, "");
+  const language = lspLanguageForExtension(ext);
+  const spec = language ? lspServerSpec(language) : null;
+  if (!language || !spec) return formatLspUnavailableMessage(ext, null);
+  const available = await detectServer(language);
+  if (!available) return formatLspUnavailableMessage(ext, spec.label);
+
+  // Workspace binding: make sure the (possibly fresh) session workspace
+  // exists, then read the file THROUGH the workspace jail (1 MB cap).
+  try {
+    await ensureWorkspace(key);
+  } catch {
+    /* acquireServer/readFile surface honest failures below */
+  }
+  const root = workspaceDir(key);
+  let abs: string;
+  let content: string;
+  try {
+    abs = resolveSafe(key, rel);
+    content = await workspaceReadFile(key, rel);
+  } catch (err) {
+    return workspaceErr(`cannot read "${rel}" (paths must stay inside the workspace; 1 MB read cap)`, err);
+  }
+
+  let client: LspClient;
+  try {
+    client = await acquireServer(root, language);
+  } catch (err) {
+    return workspaceErr(`cannot start the ${spec.label} language server`, err);
+  }
+
+  const uri = pathToFileURL(abs).href;
+  const languageId = lspLanguageIdForExtension(ext);
+  // `since` must be captured BEFORE the document is pushed so the waiter only
+  // accepts diagnostics published for THIS content version.
+  const since = Date.now();
+  try {
+    client.syncDocument(uri, languageId, content);
+
+    if (name === "lsp_diagnostics") {
+      const { diagnostics, stale } = await client.waitForDiagnostics(uri, since, LSP_DIAGNOSTICS_WAIT_MS);
+      const head = `# lsp_diagnostics — ${diagnostics.length} diagnostic${diagnostics.length === 1 ? "" : "s"} for ${rel} (server: ${spec.label}, language: ${language})`;
+      if (diagnostics.length === 0) {
+        return `${head}\n\nThe server analyzed the current content and reported NO errors or warnings.${stale ? "\n\n(Note: no fresh publish arrived within 10s — this is the server's latest word, reported as received.)" : ""}`;
+      }
+      const rows = diagnostics.map((d) => {
+        const src = d.source ? ` [${d.source}]` : "";
+        return `- ${d.label} (line ${d.line}, col ${d.character} — 0-based): ${d.message}${src}`;
+      });
+      return `${head}\n\n${rows.join("\n")}${stale ? "\n\n(Note: diagnostics may be stale — the server did not republish within 10s.)" : ""}`;
+    }
+
+    const textDoc = { textDocument: { uri }, position: { line, character } };
+
+    if (name === "lsp_definition") {
+      const result = await client.request("textDocument/definition", textDoc);
+      const locs = normalizeLspLocations(result)
+        .map((l) => formatLspLocation(l, root))
+        .filter((s): s is string => s !== null);
+      if (locs.length === 0) {
+        return `# lsp_definition — no definition found\n\nThe server reports no definition location for ${rel}:${line}:${character} (0-based). The position may point at whitespace, a keyword, or an unindexed symbol.`;
+      }
+      return `# lsp_definition — ${locs.length} location(s) for ${rel}:${line}:${character} (0-based)\n\n${locs.map((l) => `- ${l}`).join("\n")}`;
+    }
+
+    if (name === "lsp_references") {
+      const result = await client.request("textDocument/references", {
+        ...textDoc,
+        context: { includeDeclaration: true },
+      });
+      const locs = normalizeLspLocations(result)
+        .map((l) => formatLspLocation(l, root))
+        .filter((s): s is string => s !== null);
+      if (locs.length === 0) {
+        return `# lsp_references — no references found\n\nThe server reports no references to the symbol at ${rel}:${line}:${character} (0-based).`;
+      }
+      const shown = locs.slice(0, LSP_MAX_REFERENCES);
+      const more =
+        locs.length > shown.length
+          ? `\n\n…${locs.length - shown.length} more (list capped at ${LSP_MAX_REFERENCES}).`
+          : "";
+      return `# lsp_references — ${locs.length} location(s) for ${rel}:${line}:${character} (0-based)\n\n${shown.map((l) => `- ${l}`).join("\n")}${more}`;
+    }
+
+    // lsp_hover
+    const result = (await client.request("textDocument/hover", textDoc)) as Record<string, unknown> | null;
+    if (!result || typeof result !== "object") {
+      return `# lsp_hover — no hover information\n\nThe server has no type information or documentation for the symbol at ${rel}:${line}:${character} (0-based).`;
+    }
+    const contents = formatHoverContent(result.contents);
+    const rangeNote = result.range ? `\n\n- symbol range: ${formatLspRange(result.range)}` : "";
+    return `# lsp_hover — ${rel}:${line}:${character} (0-based)\n\n${contents || "(the server returned an empty hover)"}${rangeNote}`;
+  } catch (err) {
+    return workspaceErr(`${name} failed against the ${spec.label} server`, err);
   }
 }
 
@@ -1276,6 +1502,83 @@ const workspaceResetTool: AgentTool = {
     additionalProperties: false,
   },
   run: workspaceRun("workspace_reset"),
+};
+
+// ---------------------------------------------------------------------------
+// LSP tools — the four registry entries. All scope "any": routable in target
+// chats AND free chats, always bound to the SESSION workspace (there is no
+// honest LSP story without one — a missing session context is refused with
+// the same honest error as the other workspace tools, never a fabrication).
+// ---------------------------------------------------------------------------
+
+const lspDiagnosticsTool: AgentTool = {
+  name: "lsp_diagnostics",
+  scope: "any",
+  description:
+    "Get REAL compiler/linter diagnostics (errors, warnings, hints) for a workspace file from its language server (typescript-language-server for TS/JS, rust-analyzer for Rust, gopls for Go, pyright for Python, clangd for C/C++ — chosen by file extension). The file's CURRENT content is opened in the server and analyzed; results carry 0-based line/column. When no server is installed for the file's language the tool says so honestly (with the exact binary to install) — it never invents diagnostics. Use after workspace_write to catch mistakes before running code.",
+  args: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: 'Workspace-relative file path, e.g. "src/index.ts" or "main.py".' },
+    },
+    required: ["path"],
+    additionalProperties: false,
+  },
+  run: workspaceRun("lsp_diagnostics"),
+};
+
+const lspDefinitionTool: AgentTool = {
+  name: "lsp_definition",
+  scope: "any",
+  description:
+    "Find where the symbol at a given position in a workspace file is DEFINED, via the file's language server. Returns the definition location (workspace-relative path, 0-based line/character) — the honest 'no definition found' is returned when the position points at nothing. Position convention: line and character are 0-BASED (the file's first character is line 0, character 0).",
+  args: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: 'Workspace-relative file path, e.g. "src/index.ts".' },
+      line: { type: "number", description: "0-based line of the symbol." },
+      character: { type: "number", description: "0-based character within the line." },
+    },
+    required: ["path", "line", "character"],
+    additionalProperties: false,
+  },
+  run: workspaceRun("lsp_definition"),
+};
+
+const lspReferencesTool: AgentTool = {
+  name: "lsp_references",
+  scope: "any",
+  description:
+    "List all references to the symbol at a given position in a workspace file, via the file's language server (the declaration is included). Returns workspace-relative locations with 0-based line/character, capped at 50 entries. Positions are 0-BASED.",
+  args: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: 'Workspace-relative file path, e.g. "src/index.ts".' },
+      line: { type: "number", description: "0-based line of the symbol." },
+      character: { type: "number", description: "0-based character within the line." },
+    },
+    required: ["path", "line", "character"],
+    additionalProperties: false,
+  },
+  run: workspaceRun("lsp_references"),
+};
+
+const lspHoverTool: AgentTool = {
+  name: "lsp_hover",
+  scope: "any",
+  description:
+    "Get type information / documentation for the symbol at a given position in a workspace file, via the file's language server (hover: inferred types, function signatures, doc comments). Returns the server's rendered contents verbatim. Positions are 0-BASED.",
+  args: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: 'Workspace-relative file path, e.g. "src/index.ts".' },
+      line: { type: "number", description: "0-based line of the symbol." },
+      character: { type: "number", description: "0-based character within the line." },
+    },
+    required: ["path", "line", "character"],
+    additionalProperties: false,
+  },
+  run: workspaceRun("lsp_hover"),
 };
 
 // ---------------------------------------------------------------------------
@@ -1804,6 +2107,10 @@ export const AGENT_TOOLS: AgentTool[] = [
   workspaceLogTool,
   workspaceResetTool,
   workspaceVerifyTool,
+  lspDiagnosticsTool,
+  lspDefinitionTool,
+  lspReferencesTool,
+  lspHoverTool,
   spawnSubagentTool,
   rememberTool,
   recallTool,
